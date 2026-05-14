@@ -2,10 +2,7 @@
 import { computed } from "vue";
 import "katex/dist/katex.min.css";
 import { marked } from "../utils/aiMarkdownMarkedSetup";
-import {
-  ensureMarkedStrongDelimiterSpacing,
-  normalizeMarkdownAsterisks,
-} from "../utils/aiMarkdownMarkedPrep";
+import { ensureSpacesAroundMarkdownStrongPairs } from "../utils/aiMarkdownMarkedPrep";
 import {
   chapterNumStrFromMarkerMatch,
   createAiChapterMarkerRegex,
@@ -72,9 +69,9 @@ function injectChapterRefButtons(html: string): string {
 }
 
 const html = computed(() => {
-  let md = normalizeMarkdownAsterisks(props.source);
+  let md = props.source;
   md = normalizeCompoundAiChapterMarkers(md);
-  md = ensureMarkedStrongDelimiterSpacing(md);
+  md = ensureSpacesAroundMarkdownStrongPairs(md);
   const parsed = marked.parse(md, { breaks: true, async: false }) as string;
   return injectChapterRefButtons(parsed);
 });
