@@ -412,6 +412,8 @@ export function useAppFileSession(deps: {
       return;
     }
 
+    deps.sidebarTab.value = "chapters";
+
     try {
       const st = await window.colorTxt.stat(path);
       if (!st.isFile) {
@@ -458,7 +460,6 @@ export function useAppFileSession(deps: {
       deps.physicalReaderPath.value = resolved.physicalPath;
       deps.currentFileSize.value = resolved.displaySize;
       scheduleDeferredFileListSizeSync(path, resolved.listSizeAtSessionPath);
-      deps.sidebarTab.value = "chapters";
       await waitNextPaintFrame();
       window.colorTxt.streamFile(resolved.physicalPath, {
         sessionFilePath: resolved.sessionFilePath,

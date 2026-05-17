@@ -347,6 +347,23 @@ export function registerMainIpcHandlers(
     return shouldRestoreSessionByWindowId.get(win.id) === true;
   });
 
+  /** 首屏侧栏 tab：同步返回本窗口是否会加载文件（恢复会话 / 待打开路径） */
+  ipcMain.on("window:getInitialLoadIntent", (evt) => {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    if (!win) {
+      evt.returnValue = {
+        shouldRestoreSession: false,
+        hasPendingOpenTxt: false,
+      };
+      return;
+    }
+    evt.returnValue = {
+      shouldRestoreSession:
+        shouldRestoreSessionByWindowId.get(win.id) === true,
+      hasPendingOpenTxt: pendingOpenTxtByWindowId.has(win.id),
+    };
+  });
+
   ipcMain.handle("window:consumePendingOpenTxtPath", (evt) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     if (!win) return null;

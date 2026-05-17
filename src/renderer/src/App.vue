@@ -32,6 +32,10 @@ import {
 } from "@shared/aiSkills";
 import { bookmarkNoteInputRefKey } from "./injectionKeys";
 import type { ReaderSidebarTab } from "./constants/readerSidebarTab";
+import {
+  resolveInitialReaderSidebarTab,
+  type InitialWindowLoadIntent,
+} from "./reader/initialSidebarTab";
 import { useAppBookmarkPins } from "./composables/useAppBookmarkPins";
 import { useAppChapterListSync } from "./composables/useAppChapterListSync";
 import { useAppChapterNavigation } from "./composables/useAppChapterNavigation";
@@ -245,7 +249,13 @@ const aiAssistantSpoilerSafe = ref(false);
 const voiceReadSettings = ref<VoiceReadSettings>(
   mergeVoiceReadSettings(undefined),
 );
-const sidebarTab = ref<ReaderSidebarTab>("files");
+const initialWindowLoadIntent: InitialWindowLoadIntent =
+  typeof window !== "undefined" && window.colorTxt?.getInitialWindowLoadIntent
+    ? window.colorTxt.getInitialWindowLoadIntent()
+    : { shouldRestoreSession: false, hasPendingOpenTxt: false };
+const sidebarTab = ref<ReaderSidebarTab>(
+  resolveInitialReaderSidebarTab(initialWindowLoadIntent),
+);
 /** 设置 → AI「启用 AI 阅读助手功能」，控制侧栏「AI 阅读助手」 */
 const aiFeaturesEnabled = ref(true);
 /** AI 开启且文生图开启时显示「角色卡」标签 */

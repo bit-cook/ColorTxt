@@ -263,6 +263,12 @@ const api = {
     ipcRenderer.invoke("window:setFullscreen", value) as Promise<boolean>,
   shouldRestoreSession: () =>
     ipcRenderer.invoke("window:shouldRestoreSession") as Promise<boolean>,
+  /** 首屏用：本窗口是否会加载文件（新窗口为 false；首启恢复 / 打开方式为 true） */
+  getInitialWindowLoadIntent: () =>
+    ipcRenderer.sendSync("window:getInitialLoadIntent") as {
+      shouldRestoreSession: boolean;
+      hasPendingOpenTxt: boolean;
+    },
   /** 安装包关联 / 命令行启动时由主进程写入，仅可取一次 */
   consumePendingOpenTxtPath: () =>
     ipcRenderer.invoke("window:consumePendingOpenTxtPath") as Promise<
