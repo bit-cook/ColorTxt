@@ -49,10 +49,21 @@ const ACTION_BY_ID: Record<string, ActionKey> = {
   openNewWindow: "openNewWindow",
 };
 
+/** 编辑模式下焦点在 Monaco 内时，应交给编辑器处理的窗口快捷键（滚屏/查找等） */
+export const EDIT_MODE_MONACO_DEFERRED_ACTIONS: ReadonlySet<ActionKey> =
+  new Set([
+    "scrollDownLine",
+    "scrollUpLine",
+    "scrollPageUp",
+    "scrollPageDown",
+    "toggleFind",
+  ]);
+
 export function bindAppShortcuts(
   actions: AppShortcutActions,
   getBindings: () => ShortcutBindingMap,
   shouldHandleEvent?: (ev: KeyboardEvent) => boolean,
+  shouldDeferAction?: (action: ActionKey, ev: KeyboardEvent) => boolean,
 ): () => void {
   const onShortcutKeyDown = (ev: KeyboardEvent) => {
     if (shouldHandleEvent && !shouldHandleEvent(ev)) return;
@@ -69,6 +80,7 @@ export function bindAppShortcuts(
       break;
     }
     if (!matchedAction) return;
+    if (shouldDeferAction?.(matchedAction, ev)) return;
     ev.preventDefault();
     ev.stopPropagation();
     void actions[matchedAction]();

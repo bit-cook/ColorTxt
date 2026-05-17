@@ -6,7 +6,10 @@ import {
   dataTransferLikelyHasExternalFiles,
 } from "../utils/dragDropFsPaths";
 import { appAlert } from "../services/appDialog";
-import { bindAppShortcuts } from "../services/shortcutService";
+import {
+  bindAppShortcuts,
+  EDIT_MODE_MONACO_DEFERRED_ACTIONS,
+} from "../services/shortcutService";
 import { hasModalOrEscBeforeModalLayer } from "../utils/modalStack";
 import { useAppFileSession } from "./useAppFileSession";
 import { useTxtStreamPipeline } from "./useTxtStreamPipeline";
@@ -38,7 +41,7 @@ function keyboardEventFromReaderSidebar(ev: KeyboardEvent): boolean {
   return false;
 }
 
-/** 焦点是否在主阅读器 Monaco 编辑器内（用于编辑模式下放行全部按键给 Monaco） */
+/** 焦点是否在主阅读器 Monaco 编辑器内（用于编辑模式下判断是否让出冲突快捷键） */
 function keyboardTargetInsideReaderMonacoEditor(
   ev: KeyboardEvent,
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>,
@@ -124,7 +127,7 @@ export function useAppWindowBindings(deps: {
   readerDropOverlayVisible: Ref<boolean>;
   /** 主进程拦截关窗后由渲染进程决定是否 `proceedCloseWindow` */
   handleWindowCloseRequest: () => Promise<void>;
-  /** 为 true 时：焦点在阅读器 Monaco 内不处理窗口级快捷键与全屏 Esc，交给编辑器 */
+  /** 编辑模式：焦点在 Monaco 内时，仅滚屏/查找等冲突快捷键交给编辑器，其余窗口快捷键仍生效 */
   readerEditMode: Ref<boolean>;
   /** 语音朗读播放中：禁用窗口级滚动/翻页快捷键 */
   voiceReadScrollLocked?: Ref<boolean>;
@@ -251,11 +254,11 @@ export function useAppWindowBindings(deps: {
         (ev) =>
           !hasModalOrEscBeforeModalLayer() &&
           !keyboardEventFromReaderSidebar(ev) &&
-          !deps.voiceReadScrollLocked?.value &&
-          !(
-            deps.readerEditMode.value &&
-            keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef)
-          ),
+          !deps.voiceReadScrollLocked?.value,
+        (action, ev) =>
+          deps.readerEditMode.value &&
+          keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef) &&
+          EDIT_MODE_MONACO_DEFERRED_ACTIONS.has(action),
       ),
     );
 
