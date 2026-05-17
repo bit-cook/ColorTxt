@@ -1,16 +1,13 @@
 import { nextTick, type Ref } from "vue";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
-  detectChapterTitle,
-  filterChaptersByMinCharCount,
   getChapterMatchRules,
   setChapterMatchRules,
   type Chapter,
   type ChapterMatchRule,
 } from "../chapter";
 import { pickActiveChapterIdx } from "../reader/chapterIndex";
-import { countCharsForLine } from "../utils/format";
-import type { TxtFileItem } from "../services/fileListService";
+import { buildChaptersFromReaderDisplayText } from "../reader/readerDisplayPipeline";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
@@ -23,7 +20,6 @@ export function useAppChapterNavigation(deps: {
   viewportTopLine: Ref<number>;
   viewportEndLine: Ref<number>;
   currentFile: Ref<string | null>;
-  /** 为 false 时不根据视口调用 touchRecentFile（加载与滚动恢复完成前忽略阅读进度写账） */
   readingProgressSynced: Ref<boolean>;
   stream: Stream;
   touchRecentFile: (
@@ -44,15 +40,6 @@ export function useAppChapterNavigation(deps: {
   showChapterRulePanel: Ref<boolean>;
   sidebarTab: Ref<import("../constants/readerSidebarTab").ReaderSidebarTab>;
   persistSettings: () => void;
-  openFilePath: (
-    filePath: string,
-    options?: {
-      restorePhysicalLine?: number;
-      skipRememberCurrent?: boolean;
-      keepSidebarTab?: boolean;
-      listRow?: TxtFileItem;
-    },
-  ) => Promise<boolean>;
 }) {
   function jumpToChapter(ch: Chapter) {
     deps.readerRef.value?.jumpToLine(ch.lineNumber);
@@ -60,7 +47,6 @@ export function useAppChapterNavigation(deps: {
     if (idx !== deps.activeChapterIdx.value) deps.activeChapterIdx.value = idx;
   }
 
-  /** 与阅读器滚动换章一致：侧栏章节列表随当前章平滑滚入视口 */
   function withChapterListSmoothScroll(run: () => void) {
     deps.chapterListScrollSmooth.value = true;
     void nextTick(() => {
@@ -69,7 +55,6 @@ export function useAppChapterNavigation(deps: {
     run();
   }
 
-  /** 按当前阅读位置所在章节，跳到上一/下一章标题行 */
   function jumpToPrevChapter() {
     const list = deps.chapters.value;
     if (list.length === 0) return;
@@ -104,10 +89,7 @@ export function useAppChapterNavigation(deps: {
         });
       }
     }
-    if (
-      deps.readingProgressSynced.value &&
-      deps.currentFile.value
-    ) {
+    if (deps.readingProgressSynced.value && deps.currentFile.value) {
       deps.touchRecentFile(deps.currentFile.value, false, {
         updateMeta: false,
         progress: deps.stream.calcProgressPercentByViewportDisplay(
@@ -118,57 +100,26 @@ export function useAppChapterNavigation(deps: {
     }
   }
 
-  function rebuildChaptersFromCurrentText() {
+  /** 对当前 Monaco 展示全文统一匹配章节（加载后 / 规则变更 / 刷新章节） */
+  function refreshChapterListFromReader() {
     const text = deps.readerRef.value?.getAllText?.();
     if (!text) {
       deps.chapters.value = [];
       deps.activeChapterIdx.value = -1;
-      deps.stream.setChapterWriteIndex(-1);
       deps.readerRef.value?.setChapters([]);
       return;
     }
 
-    const lines = text.split(/\n/);
-    const next: Chapter[] = [];
-    let lineNo = 0;
-    let currentIdx = -1;
     const leadingLinkLabels =
       deps.readerRef.value?.getEbookLeadingLinkLabelsByDisplayLine?.() ??
       new Map<number, readonly string[]>();
 
-    for (const rawLine of lines) {
-      lineNo += 1;
-      const title = detectChapterTitle(rawLine);
-      if (title) {
-        const labels = leadingLinkLabels.get(lineNo);
-        if (labels && labels.length > 0) {
-          const t = title.trim();
-          const fromLeadingLink = labels.some((lab) => {
-            const L = lab.trim();
-            return L.length > 0 && t.startsWith(L);
-          });
-          if (fromLeadingLink) {
-            if (currentIdx >= 0) {
-              next[currentIdx].charCount += countCharsForLine(rawLine);
-            }
-            continue;
-          }
-        }
-        next.push({ title, lineNumber: lineNo, charCount: 0 });
-        currentIdx = next.length - 1;
-        continue;
-      }
-      if (currentIdx >= 0) {
-        next[currentIdx].charCount += countCharsForLine(rawLine);
-      }
-    }
+    const filtered = buildChaptersFromReaderDisplayText(text, {
+      minCharCount: deps.chapterMinCharCount.value,
+      leadingLinkLabelsByDisplayLine: leadingLinkLabels,
+    });
 
-    const filtered = filterChaptersByMinCharCount(
-      next,
-      deps.chapterMinCharCount.value,
-    );
     deps.chapters.value = filtered;
-    deps.stream.setChapterWriteIndex(filtered.length - 1);
     deps.readerRef.value?.setChapters(
       filtered.map((ch) => ({ title: ch.title, lineNumber: ch.lineNumber })),
     );
@@ -186,14 +137,8 @@ export function useAppChapterNavigation(deps: {
       deps.chapterRuleState.value = getChapterMatchRules();
       deps.chapterRuleErrorText.value = "";
       deps.persistSettings();
-      const openedFilePath = deps.currentFile.value;
-      if (openedFilePath) {
-        const physicalP = deps.stream.viewportDisplayLineToPhysicalLine(
-          deps.viewportEndLine.value,
-        );
-        await deps.openFilePath(openedFilePath, { restorePhysicalLine: physicalP });
-      } else {
-        rebuildChaptersFromCurrentText();
+      if (deps.currentFile.value) {
+        refreshChapterListFromReader();
       }
       deps.sidebarTab.value = "chapters";
       deps.showChapterRulePanel.value = false;
@@ -208,7 +153,7 @@ export function useAppChapterNavigation(deps: {
     jumpToPrevChapter,
     jumpToNextChapter,
     onProbeLineChange,
-    rebuildChaptersFromCurrentText,
+    refreshChapterListFromReader,
     applyChapterMatchRules,
   };
 }

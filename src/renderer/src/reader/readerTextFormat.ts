@@ -1,8 +1,8 @@
+import type { ReaderDisplayFormatOptions } from "./readerDisplayPipeline";
 import {
-  applyLeadIndentFullWidth,
-  detectChapterTitle,
-} from "../chapter";
-import { isBlankPhysicalLineContent } from "./lineMapping";
+  formatPhysicalLinesForReader,
+  formatPhysicalPlainTextForReader,
+} from "./readerDisplayPipeline";
 
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -10,43 +10,25 @@ function normalizeNewlines(text: string): string {
 
 export type CompressBlankFormatResult = {
   text: string;
-  /** 显示行号 i（1-based）→ 格式化前源文件物理行号 */
   displayLineToPhysicalLine: number[];
 };
 
-/**
- * 与流式读盘「压缩空行」展示逻辑一致，用于编辑模式对 Monaco 全文一次性格式化。
- */
+/** 编辑模式：仅压缩空行（不含行首缩进，除非 options 指定） */
 export function formatPlainTextCompressBlankLinesWithMap(
   text: string,
   keepOneBlank: boolean,
+  extra?: Pick<ReaderDisplayFormatOptions, "leadIndentFullWidth">,
 ): CompressBlankFormatResult {
-  const rawLines = normalizeNewlines(text).split("\n");
-  const out: string[] = [];
-  const displayLineToPhysicalLine: number[] = [];
-  const blanksAbove = keepOneBlank ? 1 : 2;
-  let physicalLine = 0;
-
-  const pushDisplay = (lineText: string) => {
-    displayLineToPhysicalLine.push(physicalLine);
-    out.push(lineText);
+  const lines = normalizeNewlines(text).split("\n");
+  const result = formatPhysicalLinesForReader(lines, {
+    compressBlankLines: true,
+    compressBlankKeepOneBlank: keepOneBlank,
+    leadIndentFullWidth: extra?.leadIndentFullWidth ?? false,
+  });
+  return {
+    text: result.text,
+    displayLineToPhysicalLine: result.displayLineToPhysicalLine,
   };
-
-  for (const rawLine of rawLines) {
-    physicalLine += 1;
-    if (isBlankPhysicalLineContent(rawLine)) continue;
-    const title = detectChapterTitle(rawLine);
-    if (title) {
-      for (let i = 0; i < blanksAbove; i += 1) pushDisplay("");
-      pushDisplay(rawLine);
-      pushDisplay("");
-      continue;
-    }
-    pushDisplay(rawLine);
-    if (keepOneBlank) pushDisplay("");
-  }
-
-  return { text: out.join("\n"), displayLineToPhysicalLine };
 }
 
 export function formatPlainTextCompressBlankLines(
@@ -56,8 +38,11 @@ export function formatPlainTextCompressBlankLines(
   return formatPlainTextCompressBlankLinesWithMap(text, keepOneBlank).text;
 }
 
-/** 对全文逐行应用行首全角缩进（章节标题与空行除外） */
+/** 编辑模式：仅行首全角缩进 */
 export function formatPlainTextLeadIndentFullWidth(text: string): string {
-  const lines = normalizeNewlines(text).split("\n");
-  return lines.map((line) => applyLeadIndentFullWidth(line)).join("\n");
+  return formatPhysicalPlainTextForReader(text, {
+    compressBlankLines: false,
+    compressBlankKeepOneBlank: false,
+    leadIndentFullWidth: true,
+  }).text;
 }

@@ -1,15 +1,11 @@
-import type { Ref } from "vue";
-import {
-  applyLeadIndentFullWidth,
-  detectChapterTitle,
-  type Chapter,
-} from "../chapter";
+import { nextTick, type Ref } from "vue";
+import { applyLeadIndentFullWidth } from "../chapter";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
-  isBlankPhysicalLineContent,
   physicalLineToFilteredDisplayLine,
   physicalLineToLastFilteredDisplayLine,
 } from "../reader/lineMapping";
+import { formatPhysicalLinesForReader } from "../reader/readerDisplayPipeline";
 import {
   countCharsForLine,
   floorReadingProgressPercentByLines,
@@ -19,35 +15,26 @@ import { createPhysicalLineSplitter } from "../services/physicalLineStream";
 type ReaderRef = Ref<InstanceType<typeof ReaderMain> | null>;
 
 /**
- * txt 流式解析：物理行计数、滤空映射、章节检测与写入 Monaco。
- * 状态与 App 内原实现一致，供 App.vue 集中管理阅读器数据流。
+ * txt 流式读盘：仅累积物理行与加载进度；展示格式化与章节匹配在加载完成后统一处理。
  */
 export function useTxtStreamPipeline(deps: {
   readerRef: ReaderRef;
-  chapters: Ref<Chapter[]>;
   totalCharCount: Ref<number>;
   totalLineCount: Ref<number>;
   compressBlankLines: Ref<boolean>;
-  /** 压缩空行时是否在每行正文下方保留一行空行（章节标题行除外） */
   compressBlankKeepOneBlank: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
-  /** 流结束、`setFullText` 与正文内图片区处理完成后：从阅读器模型重算章节等 */
+  /** 展示正文写入 Monaco 且插图/内链处理完成后 */
   afterFullTextInstalled: () => void | Promise<void>;
 }) {
   const lineSplitter = createPhysicalLineSplitter();
 
+  /** Monaco 展示行数（滤空后与物理行数可能不同） */
   let lineCount = 0;
-  /** 源文件物理行号（含空行），与 Monaco 未滤空时的行号一致 */
-  let physicalLineCount = 0;
+  /** 源文件物理行（含空行）；加载阶段只 push，行/字数在格式化完成后写入 ref */
   let physicalLineContents: string[] = [];
-  /**
-   * 滤空行时：显示行号 i（1-based）对应源文件中的物理行号
-   * 下标 i-1 为第 i 个显示行
-   */
+  /** 展示行号 i（1-based）→ 物理行号 */
   let filteredDisplayToPhysicalLine: number[] = [];
-  let currentChapterIdx = -1;
-  /** 主进程分块读盘时先累积于此，流结束再一次性 `setFullText` 写入 Monaco */
-  let monacoBuffer = "";
 
   function lineForReaderDisplay(rawLine: string): string {
     return deps.leadIndentFullWidth.value
@@ -55,7 +42,6 @@ export function useTxtStreamPipeline(deps: {
       : rawLine;
   }
 
-  /** 当前阅读器「显示行号」→ 源文件物理行号（未滤空时二者相同） */
   function viewportDisplayLineToPhysicalLine(displayLine: number): number {
     const v = Math.max(1, Math.floor(displayLine));
     if (!deps.compressBlankLines.value) return v;
@@ -71,12 +57,6 @@ export function useTxtStreamPipeline(deps: {
     return filteredDisplayToPhysicalLine[idx]!;
   }
 
-  /**
-   * 滤空模式下将物理行映射为 Monaco 显示行。
-   * 同一物理行可能对应多行显示（章节标题前的留白、保留一空行等），
-   * `physicalLineToFilteredDisplayLine` 取首个 `map[i]>=p` 会落到留白行而非正文行；
-   * 此处在与当前 Monaco 正文比对一致时优先取「内容与 lineForReaderDisplay(物理行) 相同」的那一行。
-   */
   function physicalLineToDisplayForReader(physicalLine: number): number {
     if (!deps.compressBlankLines.value) {
       return Math.max(1, Math.floor(physicalLine));
@@ -102,9 +82,6 @@ export function useTxtStreamPipeline(deps: {
     return physicalLineToFilteredDisplayLine(p, map);
   }
 
-  /**
-   * 流结束贴底恢复：同一物理行多行显示时取**最后一行**，与视口最底一行语义一致。
-   */
   function physicalLineToBottomDisplayForReader(physicalLine: number): number {
     if (!deps.compressBlankLines.value) {
       return Math.max(1, Math.floor(physicalLine));
@@ -115,20 +92,15 @@ export function useTxtStreamPipeline(deps: {
     );
   }
 
-  /** 按源文件物理行号与当前已解析的物理总行数估算阅读进度（%） */
   function calcProgressPercentByPhysicalLine(
     physicalLine: number,
   ): number | undefined {
-    const total = physicalLineCount;
+    const total = physicalLineContents.length;
     if (total <= 0) return undefined;
     const current = Math.min(total, Math.max(1, Math.floor(physicalLine)));
     return floorReadingProgressPercentByLines(current, total);
   }
 
-  /**
-   * 与底栏/持久化一致：按视口在正文中的位置估算 %。
-   * 视口顶行为文档首行时强制 0%；视口末行为文档末行时强制 100%（整篇可见时后者优先）。
-   */
   function calcProgressPercentByViewportDisplay(
     topDisplayLine: number,
     bottomDisplayLine: number,
@@ -148,24 +120,18 @@ export function useTxtStreamPipeline(deps: {
 
   function resetStreamInternals() {
     lineCount = 0;
-    physicalLineCount = 0;
     physicalLineContents = [];
     filteredDisplayToPhysicalLine = [];
-    currentChapterIdx = -1;
-    monacoBuffer = "";
     lineSplitter.reset();
   }
 
   /**
-   * 从阅读器模型同步镜像。
-   * 未滤空：与正文一一对应，可整表替换。
-   * 滤空：「显示行→物理行」数组仅由读盘 pipeline 生成，此处只更新总字数，不要写成 1..N，
-   * 　　　否则切换「压缩空行」后 `physicalLineToBottomDisplayForReader` 仍得到切换前的显示行号。
+   * 从阅读器模型同步镜像（插图删行等外部改动后）。
+   * 滤空模式下勿把 map 写成 1..N。
    */
   function syncMirrorFromReaderModel() {
     const text = deps.readerRef.value?.getAllText() ?? "";
     const lines = text.length > 0 ? text.split("\n") : [""];
-    const newLineCount = lines.length;
     let c = 0;
     for (const ln of lines) {
       c += countCharsForLine(ln);
@@ -173,9 +139,8 @@ export function useTxtStreamPipeline(deps: {
     deps.totalCharCount.value = c;
 
     if (!deps.compressBlankLines.value) {
-      physicalLineCount = newLineCount;
       physicalLineContents = lines;
-      lineCount = newLineCount;
+      lineCount = lines.length;
       deps.totalLineCount.value = lineCount;
       filteredDisplayToPhysicalLine = lines.map((_, i) => i + 1);
       return;
@@ -185,228 +150,86 @@ export function useTxtStreamPipeline(deps: {
     deps.totalLineCount.value = lineCount;
   }
 
-  async function finalizeReaderMonaco() {
-    const r = deps.readerRef.value;
-    if (!r) return;
-    await r.setFullText(monacoBuffer);
-    syncMirrorFromReaderModel();
-    await deps.afterFullTextInstalled();
-    if (deps.leadIndentFullWidth.value) {
-      r.normalizeLastLineLeadIndent();
-    }
-    syncMirrorFromReaderModel();
-  }
-
-  function rememberPhysicalLineContent(content: string) {
-    physicalLineContents.push(content);
-  }
-
-  function pushDisplayLine(
-    out: string[],
-    text: string,
-    physicalLine: number,
-    withTrailingNewline: boolean,
-  ) {
-    lineCount += 1;
-    deps.totalLineCount.value = lineCount;
-    filteredDisplayToPhysicalLine.push(physicalLine);
-    out.push(withTrailingNewline ? `${text}\n` : text);
-  }
-
-  function flushBlankNormalizationForChapter(
-    out: string[],
-    chapterPhysicalLine: number,
-    withTrailingNewline: boolean,
-    /** 与当前 chunk 开始时「保留一个空行」一致，由调用方每 chunk / EOF 读一次 deps，避免每行读 ref */
-    keepOneBlank: boolean,
-  ) {
-    // 标题上方：启用「压缩空行时保留一个空行」时为 1 行，否则为 2 行；源文本原有空白全部吸收。
-    const blanksAbove = keepOneBlank ? 1 : 2;
-    for (let i = 0; i < blanksAbove; i += 1) {
-      pushDisplayLine(out, "", chapterPhysicalLine, withTrailingNewline);
-    }
-  }
-
   function processChunk(chunk: string) {
     const parts = lineSplitter.push(chunk);
-
-    if (!deps.compressBlankLines.value && !deps.leadIndentFullWidth.value) {
-      for (const rawLine of parts) {
-        physicalLineCount += 1;
-        rememberPhysicalLineContent(rawLine);
-        deps.totalCharCount.value += countCharsForLine(rawLine);
-        lineCount += 1;
-        deps.totalLineCount.value = lineCount;
-        const title = detectChapterTitle(rawLine);
-        if (title) {
-          deps.chapters.value.push({
-            title,
-            lineNumber: lineCount,
-            charCount: 0,
-          });
-          currentChapterIdx = deps.chapters.value.length - 1;
-        } else if (currentChapterIdx >= 0) {
-          deps.chapters.value[currentChapterIdx].charCount +=
-            countCharsForLine(rawLine);
-        }
-      }
-      monacoBuffer += chunk;
-      return;
-    }
-
-    if (!deps.compressBlankLines.value && deps.leadIndentFullWidth.value) {
-      // 不把 splitter 的 pending 写入阅读器：pending 是未闭合行的后缀，下一 chunk 会在 parts[0]
-      // 里再次输出整行；若这里追加 pending 会与下一 chunk 重复（常见于换行符落在新 chunk 开头时）。
-      for (const rawLine of parts) {
-        physicalLineCount += 1;
-        rememberPhysicalLineContent(rawLine);
-        const shown = applyLeadIndentFullWidth(rawLine);
-        deps.totalCharCount.value += countCharsForLine(shown);
-        lineCount += 1;
-        deps.totalLineCount.value = lineCount;
-        const title = detectChapterTitle(rawLine);
-        if (title) {
-          deps.chapters.value.push({
-            title,
-            lineNumber: lineCount,
-            charCount: 0,
-          });
-          currentChapterIdx = deps.chapters.value.length - 1;
-        } else if (currentChapterIdx >= 0) {
-          deps.chapters.value[currentChapterIdx].charCount +=
-            countCharsForLine(shown);
-        }
-      }
-      let toAppend = "";
-      for (const rawLine of parts) {
-        toAppend += `${applyLeadIndentFullWidth(rawLine)}\n`;
-      }
-      if (toAppend) monacoBuffer += toAppend;
-      return;
-    }
-
-    const toAppendParts: string[] = [];
-    const keepOneBlank = deps.compressBlankKeepOneBlank.value;
     for (const rawLine of parts) {
-      physicalLineCount += 1;
-      rememberPhysicalLineContent(rawLine);
-      if (isBlankPhysicalLineContent(rawLine)) {
-        continue;
-      }
-      const shown = lineForReaderDisplay(rawLine);
-      deps.totalCharCount.value += countCharsForLine(shown);
-      const title = detectChapterTitle(rawLine);
-      if (title) {
-        flushBlankNormalizationForChapter(
-          toAppendParts,
-          physicalLineCount,
-          true,
-          keepOneBlank,
-        );
-        pushDisplayLine(toAppendParts, shown, physicalLineCount, true);
-        deps.chapters.value.push({
-          title,
-          lineNumber: lineCount,
-          charCount: 0,
+      physicalLineContents.push(rawLine);
+    }
+  }
+
+  function restoreViewportAfterDisplayChange(
+    restorePhysicalLine: number | undefined,
+  ): Promise<void> {
+    const r = deps.readerRef.value;
+    if (!r || restorePhysicalLine == null) return Promise.resolve();
+    const totalPhysical = physicalLineContents.length;
+    const phys = Math.min(
+      totalPhysical,
+      Math.max(1, Math.floor(restorePhysicalLine)),
+    );
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (phys >= totalPhysical) {
+            r.scrollToBottom?.(false);
+          } else if (phys <= 1) {
+            r.jumpToLine?.(1, false);
+          } else {
+            const jumpLine = physicalLineToBottomDisplayForReader(phys);
+            if (jumpLine <= 1) {
+              r.jumpToLine?.(1, false);
+            } else {
+              r.scrollLineToBottom?.(jumpLine, false);
+            }
+          }
+          void nextTick(() => {
+            r.normalizeScrollAfterEmbeddedViewZones?.();
+            r.emitProbeLine?.();
+            resolve();
+          });
         });
-        currentChapterIdx = deps.chapters.value.length - 1;
-        // 标题下方固定 1 行空白。
-        pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-      } else if (currentChapterIdx >= 0) {
-        pushDisplayLine(toAppendParts, shown, physicalLineCount, true);
-        if (keepOneBlank) {
-          pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-        }
-        deps.chapters.value[currentChapterIdx].charCount +=
-          countCharsForLine(shown);
-      } else {
-        pushDisplayLine(toAppendParts, shown, physicalLineCount, true);
-        if (keepOneBlank) {
-          pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-        }
-      }
+      });
+    });
+  }
+
+  /**
+   * 由已缓存的物理行生成展示正文并写入 Monaco（加载完成 / 切换压缩或缩进 / 保留一空行设置）。
+   */
+  async function applyReaderDisplayFromPhysicalLines(
+    restorePhysicalLine?: number,
+  ): Promise<boolean> {
+    const r = deps.readerRef.value;
+    if (!r) return false;
+
+    const formatted = formatPhysicalLinesForReader(physicalLineContents, {
+      compressBlankLines: deps.compressBlankLines.value,
+      compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
+      leadIndentFullWidth: deps.leadIndentFullWidth.value,
+    });
+
+    filteredDisplayToPhysicalLine = formatted.displayLineToPhysicalLine;
+    lineCount = formatted.lineCount;
+    deps.totalCharCount.value = formatted.charCount;
+    deps.totalLineCount.value = formatted.lineCount;
+
+    await r.setFullText(formatted.text);
+    if (deps.leadIndentFullWidth.value) {
+      r.normalizeLastLineLeadIndent?.();
     }
-    if (toAppendParts.length > 0) {
-      monacoBuffer += toAppendParts.join("");
-    }
+    await deps.afterFullTextInstalled();
+    await restoreViewportAfterDisplayChange(restorePhysicalLine);
+    return true;
+  }
+
+  async function finalizeReaderMonaco(restorePhysicalLine?: number) {
+    await applyReaderDisplayFromPhysicalLines(restorePhysicalLine);
   }
 
   async function flushCarry() {
     try {
       const tail = lineSplitter.flushEof();
-      if (tail == null) {
-        return;
-      }
-
-      if (!deps.compressBlankLines.value) {
-        const tailShown = deps.leadIndentFullWidth.value
-          ? applyLeadIndentFullWidth(tail)
-          : tail;
-        physicalLineCount += 1;
-        rememberPhysicalLineContent(tail);
-        deps.totalCharCount.value += countCharsForLine(tailShown);
-        lineCount += 1;
-        deps.totalLineCount.value = lineCount;
-        const title = detectChapterTitle(tail);
-        if (title) {
-          deps.chapters.value.push({
-            title,
-            lineNumber: lineCount,
-            charCount: 0,
-          });
-          currentChapterIdx = deps.chapters.value.length - 1;
-        } else if (currentChapterIdx >= 0) {
-          deps.chapters.value[currentChapterIdx].charCount +=
-            countCharsForLine(tailShown);
-        }
-        // 未开「全角缩进」时正文已随各 chunk 写入 buffer；尾行无换行符时已在最后一块中。
-        if (deps.leadIndentFullWidth.value) {
-          monacoBuffer += tailShown;
-        }
-        return;
-      }
-
-      physicalLineCount += 1;
-      rememberPhysicalLineContent(tail);
-      if (isBlankPhysicalLineContent(tail)) {
-        return;
-      }
-
-      const tailShown = lineForReaderDisplay(tail);
-      deps.totalCharCount.value += countCharsForLine(tailShown);
-      const toAppendParts: string[] = [];
-      const title = detectChapterTitle(tail);
-      const keepOneBlank = deps.compressBlankKeepOneBlank.value;
-      if (title) {
-        flushBlankNormalizationForChapter(
-          toAppendParts,
-          physicalLineCount,
-          true,
-          keepOneBlank,
-        );
-        pushDisplayLine(toAppendParts, tailShown, physicalLineCount, true);
-        deps.chapters.value.push({ title, lineNumber: lineCount, charCount: 0 });
-        currentChapterIdx = deps.chapters.value.length - 1;
-        pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-      } else if (currentChapterIdx >= 0) {
-        if (keepOneBlank) {
-          pushDisplayLine(toAppendParts, tailShown, physicalLineCount, true);
-          pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-        } else {
-          pushDisplayLine(toAppendParts, tailShown, physicalLineCount, false);
-        }
-        deps.chapters.value[currentChapterIdx].charCount +=
-          countCharsForLine(tailShown);
-      } else {
-        if (keepOneBlank) {
-          pushDisplayLine(toAppendParts, tailShown, physicalLineCount, true);
-          pushDisplayLine(toAppendParts, "", physicalLineCount, true);
-        } else {
-          pushDisplayLine(toAppendParts, tailShown, physicalLineCount, false);
-        }
-      }
-      if (toAppendParts.length > 0) {
-        monacoBuffer += toAppendParts.join("");
+      if (tail != null) {
+        physicalLineContents.push(tail);
       }
     } finally {
       await finalizeReaderMonaco();
@@ -414,7 +237,7 @@ export function useTxtStreamPipeline(deps: {
   }
 
   function getPhysicalLineCount(): number {
-    return physicalLineCount;
+    return physicalLineContents.length;
   }
 
   function getLineCount(): number {
@@ -426,26 +249,15 @@ export function useTxtStreamPipeline(deps: {
     return physicalLineContents[idx] ?? "";
   }
 
-  /** 源文件物理行原文拼接（不含压缩空行/行首缩进等阅读器展示变换） */
   function getPhysicalFilePlainText(): string {
     if (physicalLineContents.length === 0) return "";
     return physicalLineContents.join("\n");
   }
 
-  /** 从当前正文重算章节列表后，同步流式解析用的章节字数累计游标 */
-  function setChapterWriteIndex(idx: number) {
-    currentChapterIdx = idx;
-  }
-
-  /** 在 Monaco 模型被外部修改后（如移除 `<<IMG:…>>` 行）重算字数/行数镜像 */
   function resyncMirrorFromReader() {
     syncMirrorFromReaderModel();
   }
 
-  /**
-   * `replaceImgAnchorLinesWithViewZones` 删除插图占位行前，`filteredDisplayToPhysicalLine` 仍对应删行前总行数；
-   * 须在压缩空行模式下按删行前 1-based Monaco 行号（降序）从映射表中移除同名条目，保持与正文行数一致。
-   */
   function removeFilteredDisplayLinesAtOriginalIndices(
     deletedOriginalLineNumbersDesc: readonly number[],
   ) {
@@ -475,8 +287,8 @@ export function useTxtStreamPipeline(deps: {
     getLineCount,
     getPhysicalLineContent,
     getPhysicalFilePlainText,
-    setChapterWriteIndex,
     resyncMirrorFromReader,
     removeFilteredDisplayLinesAtOriginalIndices,
+    applyReaderDisplayFromPhysicalLines,
   };
 }

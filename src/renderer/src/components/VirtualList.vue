@@ -89,17 +89,27 @@ onBeforeUnmount(() => {
 
 watch(
   () => props.itemCount,
-  () => {
+  (newCount, oldCount) => {
     void nextTick(() => {
       const el = scrollEl.value;
       if (!el) return;
-      const maxScroll = Math.max(
-        0,
-        props.itemCount * props.rowStride - el.clientHeight,
-      );
-      if (el.scrollTop > maxScroll) {
-        el.scrollTop = maxScroll;
-        virtualScrollTop.value = maxScroll;
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      let nextTop = el.scrollTop;
+      if (nextTop > maxScroll) {
+        nextTop = maxScroll;
+      }
+      // 项数变化后须同步 virtualScrollTop，否则窗口仍按旧 scrollTop 渲染错误区段
+      if (oldCount !== newCount || Math.abs(virtualScrollTop.value - nextTop) > 0.5) {
+        el.scrollTop = nextTop;
+        virtualScrollTop.value = nextTop;
+      }
+      if (oldCount !== newCount && el.clientHeight > 0) {
+        void nextTick(() => {
+          const max2 = Math.max(0, el.scrollHeight - el.clientHeight);
+          const top = Math.min(virtualScrollTop.value, max2);
+          el.scrollTop = top;
+          virtualScrollTop.value = top;
+        });
       }
     });
   },
@@ -133,6 +143,8 @@ function scrollToIndex(
   options?: {
     align?: "center" | "auto";
     behavior?: ScrollBehavior;
+    /** 为 true 时即使 scrollTop 已接近目标也仍写入（章节表整表替换后须强制对齐） */
+    force?: boolean;
   },
 ) {
   const el = scrollEl.value;
@@ -147,7 +159,13 @@ function scrollToIndex(
   const behavior = options?.behavior ?? "auto";
 
   let nextScrollTop = el.scrollTop;
-  const { contentH, maxScroll } = getScrollHostContentViewport(el);
+  const { contentH, maxScroll: domMaxScroll } = getScrollHostContentViewport(el);
+  const expectedInner = n * stride;
+  // 项数刚变时 scrollHeight 可能仍为旧值；force 时用理论高度避免 clamp 错位
+  let maxScroll = domMaxScroll;
+  if (options?.force && el.scrollHeight + 4 < expectedInner) {
+    maxScroll = Math.max(0, expectedInner - contentH);
+  }
 
   if (align === "center") {
     let viewH = contentH;
@@ -168,7 +186,7 @@ function scrollToIndex(
     nextScrollTop = Math.max(0, Math.min(nextScrollTop, maxScroll));
   }
 
-  if (Math.abs(nextScrollTop - el.scrollTop) < 0.5) {
+  if (!options?.force && Math.abs(nextScrollTop - el.scrollTop) < 0.5) {
     return;
   }
 
@@ -230,7 +248,8 @@ function scrollToIndex(
     return;
   }
 
-  el.scrollTo({ top: nextScrollTop, behavior });
+  // 程序化对齐须直接写入 scrollTop；scrollTo 在部分 WebView 下可能延迟，随后 onScroll 用旧值覆盖 virtualScrollTop
+  el.scrollTop = nextScrollTop;
   virtualScrollTop.value = nextScrollTop;
 }
 

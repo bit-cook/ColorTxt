@@ -8,12 +8,8 @@ import {
   useTemplateRef,
   watch,
 } from "vue";
-import type { ComponentPublicInstance } from "vue";
-import {
-  buildChaptersFromPlainText,
-  getChapterMatchRules,
-  type Chapter,
-} from "./chapter";
+import { nextTick, type ComponentPublicInstance } from "vue";
+import { getChapterMatchRules, type Chapter } from "./chapter";
 import AppHeader, { type RecentFileItem } from "./components/AppHeader.vue";
 import VoiceReadToolbar from "./components/VoiceReadToolbar.vue";
 import ReaderSidebar from "./components/ReaderSidebar.vue";
@@ -49,7 +45,6 @@ import { useAppShellThemeWatch } from "./composables/useAppShellThemeWatch";
 import { useAppSyncCurrentFileWatch } from "./composables/useAppSyncCurrentFileWatch";
 import { useAppWindowBindings } from "./composables/useAppWindowBindings";
 import { useAppVoiceRead } from "./composables/useAppVoiceRead";
-import { pickActiveChapterIdx } from "./reader/chapterIndex";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
 import { fileHistoryKey } from "./stores/recentHistoryStore";
 import {
@@ -335,9 +330,9 @@ const {
 /** 阅读区无打开文件且未在加载/转换时，居中显示 defaultReaderIdleHint */
 const showReaderIdleHint = computed(() => !currentFile.value && !loading.value);
 /** 电子书正文流尚未写入行时，复用 `.readerIdleHint` 居中提示 */
+/** 流式读盘期间底栏显示字节进度；行/字数在格式化完成后才有 */
 const showReaderBusyHint = computed(
-  () =>
-    loading.value && totalLineCount.value === 0 && totalCharCount.value === 0,
+  () => loading.value && Boolean(currentFile.value),
 );
 const readerBusyHintText = computed(() => readerTxtLoadingHintText);
 /** 已打开文件且流式加载完成、正文行数与字数均为 0 时居中提示（仅只读；编辑模式不遮挡空白编辑区） */
@@ -539,6 +534,8 @@ const pendingRestorePhysicalLine = ref<number | null>(null);
 const pendingRestoreEditorViewState = ref<unknown | null>(null);
 /** 与视图状态同时恢复的视口首行物理行号锚点（用于恢复后校验） */
 const pendingRestoreViewportTopPhysicalLine = ref<number | null>(null);
+/** 只读→编辑：在切换模式前采集的视口末行对应物理行，供载入磁盘原文后恢复滚动 */
+const pendingReaderEditRestorePhysicalLine = ref<number | null>(null);
 /** 与主进程 file:stream 的 requestId 对齐；resetSession 时清空，避免重复打开同一文件时旧 chunk 串入 */
 const activeStreamRequestId = ref<number | null>(null);
 const activeStreamFilePath = ref<string | null>(null);
@@ -652,7 +649,6 @@ let afterStreamFullTextInstalled: () => void | Promise<void> = async () => {};
 
 const stream = useTxtStreamPipeline({
   readerRef,
-  chapters,
   totalCharCount,
   totalLineCount,
   compressBlankLines,
@@ -660,6 +656,30 @@ const stream = useTxtStreamPipeline({
   leadIndentFullWidth,
   afterFullTextInstalled: () => afterStreamFullTextInstalled(),
 });
+
+/** 程序化刷新章节表期间禁止侧栏 watch 抢跑滚动（会与 centerActiveChapterInList 竞态） */
+const suppressChapterListAutoScroll = ref(false);
+
+function captureViewportAnchorPhysicalLine(): number {
+  const endLine = Math.max(
+    1,
+    Math.floor(
+      readerRef.value?.getViewportEndLine?.() ?? viewportEndLine.value,
+    ),
+  );
+  return stream.viewportDisplayLineToPhysicalLine(endLine);
+}
+
+async function withChapterListScrollSuppressed<T>(
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  suppressChapterListAutoScroll.value = true;
+  try {
+    return await fn();
+  } finally {
+    suppressChapterListAutoScroll.value = false;
+  }
+}
 
 /** 侧栏文件列表是否处于编辑模式；编辑中不写文件列表缓存，退出时再落盘 */
 const fileListEditing = ref(false);
@@ -1119,7 +1139,6 @@ const chapterNav = useAppChapterNavigation({
   showChapterRulePanel,
   sidebarTab,
   persistSettings,
-  openFilePath,
 });
 
 afterStreamFullTextInstalled = async () => {
@@ -1136,8 +1155,14 @@ afterStreamFullTextInstalled = async () => {
     );
   }
   stream.resyncMirrorFromReader();
-  chapterNav.rebuildChaptersFromCurrentText();
 };
+
+/** 视口已按物理行恢复且 probe 已更新后：重算章节并居中侧栏（加载结束等） */
+async function syncChaptersAfterViewportSettled() {
+  chapterNav.refreshChapterListFromReader();
+  await nextTick();
+  await readerSidebarRef.value?.centerActiveChapterInList?.(false);
+}
 
 const {
   jumpToChapter,
@@ -1214,17 +1239,7 @@ const canEnterReaderEditMode = computed(
 
 function applyChaptersFromReaderPlainText() {
   if (!readerEditMode.value) return;
-  const text = readerRef.value?.getAllText() ?? "";
-  const next = buildChaptersFromPlainText(text, chapterMinCharCount.value);
-  chapters.value = next;
-  stream.setChapterWriteIndex(Math.max(-1, next.length - 1));
-  readerRef.value?.setChapters(
-    next.map((ch) => ({ title: ch.title, lineNumber: ch.lineNumber })),
-  );
-  activeChapterIdx.value = pickActiveChapterIdx(
-    chapters.value,
-    lastProbeLine.value,
-  );
+  chapterNav.refreshChapterListFromReader();
 }
 
 async function onToggleReaderEdit() {
@@ -1232,32 +1247,39 @@ async function onToggleReaderEdit() {
     if (readerEditorDirty.value) {
       if (!(await confirmReaderEditDiscardUnsaved())) return;
     }
-    readerEditMode.value = false;
     readerEditorDirty.value = false;
     const path = currentFile.value;
-    if (path) {
-      const endLine = Math.max(
-        1,
-        Math.floor(
-          readerRef.value?.getViewportEndLine?.() ?? viewportEndLine.value,
-        ),
-      );
-      /** 编辑态 Monaco 与磁盘一一对应，行号即源物理行；滤空映射仅适用于只读压缩正文，不可用于编辑态行号 */
-      const physicalP = compressBlankLines.value
-        ? endLine
-        : stream.viewportDisplayLineToPhysicalLine(endLine);
-      await openFilePath(path, {
-        restorePhysicalLine: physicalP,
-        skipRememberCurrent: true,
-        keepSidebarTab: true,
-        skipReaderEditGuard: true,
-      });
+    if (!path) {
+      readerEditMode.value = false;
+      return;
     }
+    suppressChapterListAutoScroll.value = true;
+    readerEditMode.value = false;
+    /** 编辑态 Monaco 行号即源文件物理行 */
+    const physicalP = Math.max(
+      1,
+      Math.floor(
+        readerRef.value?.getViewportEndLine?.() ?? viewportEndLine.value,
+      ),
+    );
+    const opened = await openFilePath(path, {
+      restorePhysicalLine: physicalP,
+      skipRememberCurrent: true,
+      keepSidebarTab: true,
+      skipReaderEditGuard: true,
+    });
+    if (!opened) {
+      suppressChapterListAutoScroll.value = false;
+    }
+    // 成功时保持 suppress，待流式加载结束 syncChapters 后解除
   } else {
     if (!canEnterReaderEditMode.value) {
       appToast("请等待当前文件加载完成后再进入编辑模式。");
       return;
     }
+    pendingReaderEditRestorePhysicalLine.value =
+      captureViewportAnchorPhysicalLine();
+    suppressChapterListAutoScroll.value = true;
     readerEditMode.value = true;
   }
 }
@@ -1266,18 +1288,28 @@ async function onSaveReaderFile() {
   void (await saveReaderBufferWithIpcEncoding(readerSaveEncoding.value));
 }
 
-function onFormatEditCompressBlankLines() {
+async function runEditFormatWithChapterSync(
+  format: () => Promise<boolean | undefined> | boolean | undefined,
+) {
   if (!readerEditMode.value) return;
-  const changed = readerRef.value?.applyEditFormatCompressBlankLines?.(
-    compressBlankKeepOneBlank.value,
+  await withChapterListScrollSuppressed(async () => {
+    const changed = await format();
+    if (changed) await syncChaptersAfterViewportSettled();
+  });
+}
+
+function onFormatEditCompressBlankLines() {
+  void runEditFormatWithChapterSync(() =>
+    readerRef.value?.applyEditFormatCompressBlankLines?.(
+      compressBlankKeepOneBlank.value,
+    ),
   );
-  if (changed) applyChaptersFromReaderPlainText();
 }
 
 function onFormatEditLeadIndentFullWidth() {
-  if (!readerEditMode.value) return;
-  const changed = readerRef.value?.applyEditFormatLeadIndentFullWidth?.();
-  if (changed) applyChaptersFromReaderPlainText();
+  void runEditFormatWithChapterSync(() =>
+    readerRef.value?.applyEditFormatLeadIndentFullWidth?.(),
+  );
 }
 
 async function onFooterSaveFileAsEncoding(codec: "utf8" | "gb2312") {
@@ -1288,10 +1320,17 @@ function onReaderEditLoaded(payload: { encoding: string }) {
   readerSaveEncoding.value = normalizeIpcEncoding(
     (payload.encoding || "utf8").trim() || "utf8",
   );
-  applyChaptersFromReaderPlainText();
+  pendingReaderEditRestorePhysicalLine.value = null;
+  try {
+    chapterNav.refreshChapterListFromReader();
+  } finally {
+    suppressChapterListAutoScroll.value = false;
+  }
 }
 
 function onReaderEditLoadFailed() {
+  pendingReaderEditRestorePhysicalLine.value = null;
+  suppressChapterListAutoScroll.value = false;
   readerEditMode.value = false;
 }
 
@@ -1322,10 +1361,11 @@ const readerUi = useAppReaderUiPrefs({
   monacoAdvancedWrapping,
   compressBlankLines,
   leadIndentFullWidth,
+  withChapterListScrollSuppressed,
   currentFile,
   stream,
+  syncChaptersAfterViewportSettled,
   persistSettings,
-  openFilePath,
   isFullscreenView,
   showFullscreenHeader,
   viewportTopLine,
@@ -1804,27 +1844,24 @@ async function applySettings(payload: SettingsApplyPayload) {
   readerRef.value?.setWrappingStrategyAdvanced(monacoAdvancedWrapping.value);
   showSettingsPanel.value = false;
   if (prevChapterMinCharCount !== chapterMinCharCount.value) {
-    chapterNav.rebuildChaptersFromCurrentText();
+    chapterNav.refreshChapterListFromReader();
   }
 
   if (
     prevCompressBlankKeepOneBlank !== compressBlankKeepOneBlank.value &&
     compressBlankLines.value &&
-    currentFile.value
+    currentFile.value &&
+    !readerEditMode.value
   ) {
-    const path = currentFile.value;
-    const physicalP = stream.viewportDisplayLineToPhysicalLine(
-      viewportEndLine.value,
-    );
-    void openFilePath(path, {
-      restorePhysicalLine: physicalP,
-      skipRememberCurrent: true,
-      keepSidebarTab: true,
-    }).then((ok) => {
+    const physicalP = captureViewportAnchorPhysicalLine();
+    void withChapterListScrollSuppressed(async () => {
+      const ok = await stream.applyReaderDisplayFromPhysicalLines(physicalP);
       if (!ok) {
         compressBlankKeepOneBlank.value = prevCompressBlankKeepOneBlank;
         persistSettings();
+        return;
       }
+      await syncChaptersAfterViewportSettled();
     });
   }
 }
@@ -1856,6 +1893,7 @@ useAppWindowBindings({
   recordFullscreenPointer,
   enterOrExitFullscreenView,
   pulseChapterListCenter,
+  syncChaptersAfterViewportSettled,
   currentTheme,
   readerFontSize,
   readerLineHeightMultiple,
@@ -2031,6 +2069,7 @@ useAppShellThemeWatch({
           "
           :chapter-list-scroll-smooth="chapterListScrollSmooth"
           :should-center-chapter-list="shouldCenterChapterList"
+          :suppress-chapter-list-auto-scroll="suppressChapterListAutoScroll"
           :should-center-file-list="shouldCenterFileList"
           :should-center-bookmark-list="shouldCenterBookmarkList"
           v-model:activeTab="sidebarTab"
@@ -2179,6 +2218,9 @@ useAppShellThemeWatch({
           "
           :before-reveal-find-widget="ensurePinBeforeRevealFindWidget"
           :reader-edit-mode="readerEditMode"
+          :reader-edit-restore-physical-line="
+            pendingReaderEditRestorePhysicalLine
+          "
           :physical-reader-path="physicalReaderPath"
           @probe-line-change="onProbeLineChange"
           @viewport-top-line-change="onViewportTopLineChange"

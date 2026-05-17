@@ -56,6 +56,7 @@ export type ReaderSidebarListProps = Readonly<{
   inFullscreen?: boolean;
   chapterListScrollSmooth?: boolean;
   shouldCenterChapterList?: boolean;
+  suppressChapterListAutoScroll?: boolean;
   shouldCenterFileList?: boolean;
   shouldCenterBookmarkList?: boolean;
   activeScrollMode?: "edge" | "center";
@@ -342,6 +343,59 @@ export function useReaderSidebarLists(
 
   const MAX_CHAPTER_LIST_LAYOUT_RETRIES = 48;
 
+  async function waitChapterListLayoutFrames(frameCount = 2): Promise<void> {
+    let left = Math.max(0, Math.floor(frameCount));
+    await new Promise<void>((resolve) => {
+      const step = () => {
+        if (left <= 0) {
+          resolve();
+          return;
+        }
+        left -= 1;
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  function resetChapterListScroll(): void {
+    chapterListRef.value?.scrollToTop();
+  }
+
+  function resolveActiveChapterVisibleIndex(): number {
+    const visible = chaptersVisible.value;
+    if (visible.length === 0) return -1;
+    const line = sidebarActiveLineNumber.value;
+    if (line >= 0) {
+      const byLine = visible.findIndex((ch) => ch.lineNumber === line);
+      if (byLine >= 0) return byLine;
+    }
+    const ai = props.activeChapterIdx;
+    const full = props.chapters;
+    if (ai >= 0 && ai < full.length) {
+      return visible.findIndex((ch) => ch.lineNumber === full[ai]!.lineNumber);
+    }
+    return -1;
+  }
+
+  /** 章节表就绪后：将当前章滚到列表视口垂直居中 */
+  async function centerActiveChapterInList(smooth = false): Promise<void> {
+    await nextTick();
+    await waitChapterListLayoutFrames(2);
+    const idx = resolveActiveChapterVisibleIndex();
+    if (idx < 0) return;
+    await ensureActiveChapterVisible(
+      {
+        smooth,
+        allowWhenHidden: true,
+        align: "center",
+        force: true,
+      },
+      0,
+      idx,
+    );
+  }
+
   async function ensureActiveChapterVisible(
     override?: {
       smooth?: boolean;
@@ -352,8 +406,11 @@ export function useReaderSidebarLists(
        * - allowWhenHidden=false：保持原行为（不打断用户/不做隐藏滚动）
        */
       allowWhenHidden?: boolean;
+      /** 展示选项切换后须强制滚动（避免旧 scrollTop 触发 early-return） */
+      force?: boolean;
     },
     layoutRetry = 0,
+    visibleIndexOverride?: number,
   ): Promise<void> {
     const wantSmoothScroll = props.inFullscreen
       ? false
@@ -369,10 +426,11 @@ export function useReaderSidebarLists(
     if (Date.now() < suppressAutoScrollUntil) {
       return;
     }
-    const targetLine = sidebarActiveLineNumber.value;
-    if (targetLine < 0) return;
     const list = chaptersVisible.value;
-    const idx = list.findIndex((ch) => ch.lineNumber === targetLine);
+    const idx =
+      visibleIndexOverride != null && visibleIndexOverride >= 0
+        ? Math.min(visibleIndexOverride, list.length - 1)
+        : resolveActiveChapterVisibleIndex();
     if (idx < 0) return;
 
     const vl = chapterListRef.value;
@@ -392,8 +450,10 @@ export function useReaderSidebarLists(
                 smooth: wantSmoothScroll,
                 allowWhenHidden,
                 align,
+                force: override?.force,
               },
               layoutRetry + 1,
+              visibleIndexOverride,
             ),
         );
       }
@@ -404,6 +464,7 @@ export function useReaderSidebarLists(
     vl.scrollToIndex(idx, {
       align: align === "center" ? "center" : "auto",
       behavior,
+      force: override?.force === true,
     });
   }
 
@@ -469,11 +530,10 @@ export function useReaderSidebarLists(
     () => props.shouldCenterChapterList,
     (v) => {
       if (!v) return;
+      if (props.suppressChapterListAutoScroll) return;
       if (props.activeChapterIdx < 0) return;
       const smooth = props.chapterListScrollSmooth;
-      // 恢复阅读进度/全屏切换等场景需要做一次居中：
-      // 即使章节列表未显示，也要把虚拟滚动位置写入，避免之后再打开 tab 时不对齐。
-      void ensureActiveChapterVisible({ smooth, allowWhenHidden: true });
+      void centerActiveChapterInList(smooth);
     },
   );
 
@@ -484,6 +544,7 @@ export function useReaderSidebarLists(
         number,
       ],
     (curr, prev) => {
+      if (props.suppressChapterListAutoScroll) return;
       const [idx, line] = curr;
       if (idx < 0 || line < 0) return;
       if (prev) {
@@ -508,6 +569,7 @@ export function useReaderSidebarLists(
               smooth: false,
               allowWhenHidden: false,
               align: "center",
+              force: true,
             });
           } else if (tab === "files" && props.currentFilePath) {
             void ensureCurrentFileVisible("center");
@@ -601,5 +663,7 @@ export function useReaderSidebarLists(
     ensureActiveBookmarkVisible,
     ensureCurrentFileVisible,
     scrollFileListToIndex,
+    resetChapterListScroll,
+    centerActiveChapterInList,
   };
 }

@@ -9,7 +9,6 @@ import {
   normalizeLineHeightMultiple,
 } from "../constants/appUi";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
-import type { TxtFileItem } from "../services/fileListService";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
 
@@ -22,18 +21,11 @@ export function useAppReaderUiPrefs(deps: {
   monacoAdvancedWrapping: Ref<boolean>;
   compressBlankLines: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
+  withChapterListScrollSuppressed: <T>(fn: () => Promise<T> | T) => Promise<T>;
   currentFile: Ref<string | null>;
   stream: Stream;
+  syncChaptersAfterViewportSettled: () => void | Promise<void>;
   persistSettings: () => void;
-  openFilePath: (
-    filePath: string,
-    options?: {
-      restorePhysicalLine?: number;
-      skipRememberCurrent?: boolean;
-      keepSidebarTab?: boolean;
-      listRow?: TxtFileItem;
-    },
-  ) => Promise<boolean>;
   isFullscreenView: Ref<boolean>;
   showFullscreenHeader: Ref<boolean>;
   viewportTopLine: Ref<number>;
@@ -120,11 +112,12 @@ export function useAppReaderUiPrefs(deps: {
     deps.persistSettings();
   }
 
-  async function toggleCompressBlankLines() {
-    const next = !deps.compressBlankLines.value;
-    const path = deps.currentFile.value;
-    if (!path) {
-      deps.compressBlankLines.value = next;
+  async function applyDisplayToggleFromPhysical(
+    applyNext: () => void,
+    revert: () => void,
+  ) {
+    if (!deps.currentFile.value) {
+      applyNext();
       deps.persistSettings();
       return;
     }
@@ -133,43 +126,41 @@ export function useAppReaderUiPrefs(deps: {
     const physicalP = deps.stream.viewportDisplayLineToPhysicalLine(
       Math.max(1, Math.floor(endLine)),
     );
-    deps.compressBlankLines.value = next;
-    deps.persistSettings();
-    const ok = await deps.openFilePath(path, {
-      restorePhysicalLine: physicalP,
-      skipRememberCurrent: true,
-      keepSidebarTab: true,
-    });
-    if (!ok) {
-      deps.compressBlankLines.value = !next;
+    await deps.withChapterListScrollSuppressed(async () => {
+      applyNext();
       deps.persistSettings();
-    }
+      const ok = await deps.stream.applyReaderDisplayFromPhysicalLines(physicalP);
+      if (!ok) {
+        revert();
+        deps.persistSettings();
+        return;
+      }
+      await deps.syncChaptersAfterViewportSettled();
+    });
+  }
+
+  async function toggleCompressBlankLines() {
+    const next = !deps.compressBlankLines.value;
+    await applyDisplayToggleFromPhysical(
+      () => {
+        deps.compressBlankLines.value = next;
+      },
+      () => {
+        deps.compressBlankLines.value = !next;
+      },
+    );
   }
 
   async function toggleLeadIndentFullWidth() {
     const next = !deps.leadIndentFullWidth.value;
-    const path = deps.currentFile.value;
-    if (!path) {
-      deps.leadIndentFullWidth.value = next;
-      deps.persistSettings();
-      return;
-    }
-    const endLine =
-      deps.readerRef.value?.getViewportEndLine?.() ?? deps.viewportEndLine.value;
-    const physicalP = deps.stream.viewportDisplayLineToPhysicalLine(
-      Math.max(1, Math.floor(endLine)),
+    await applyDisplayToggleFromPhysical(
+      () => {
+        deps.leadIndentFullWidth.value = next;
+      },
+      () => {
+        deps.leadIndentFullWidth.value = !next;
+      },
     );
-    deps.leadIndentFullWidth.value = next;
-    deps.persistSettings();
-    const ok = await deps.openFilePath(path, {
-      restorePhysicalLine: physicalP,
-      skipRememberCurrent: true,
-      keepSidebarTab: true,
-    });
-    if (!ok) {
-      deps.leadIndentFullWidth.value = !next;
-      deps.persistSettings();
-    }
   }
 
   function toggleReaderFind() {
@@ -178,9 +169,6 @@ export function useAppReaderUiPrefs(deps: {
   }
 
   function onToggleFind() {
-    if (deps.isVoiceReadBlocksFind?.value) return;
-    // 全屏下先收顶栏再切换查找（关闭查找时顶栏本可保持，再收一次无害）
-    if (deps.isFullscreenView.value) deps.showFullscreenHeader.value = false;
     toggleReaderFind();
   }
 

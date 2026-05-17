@@ -15,10 +15,13 @@ export function useAppChapterListSync() {
   /** 触发章节列表跟随当前章（smooth 仅阅读器滚动换章时为 true） */
   function pulseChapterListCenter(smooth: boolean) {
     chapterListScrollSmooth.value = smooth;
-    shouldCenterChapterList.value = true;
+    shouldCenterChapterList.value = false;
     void nextTick(() => {
-      chapterListScrollSmooth.value = false;
-      shouldCenterChapterList.value = false;
+      shouldCenterChapterList.value = true;
+      void nextTick(() => {
+        chapterListScrollSmooth.value = false;
+        shouldCenterChapterList.value = false;
+      });
     });
   }
 

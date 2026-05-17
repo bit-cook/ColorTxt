@@ -40,7 +40,7 @@ function onBindListRef(value: Element | ComponentPublicInstance | null) {
           :item-count="chaptersVisible.length"
           :row-stride="READER_SIDEBAR_ROW_STRIDE"
           :overscan="10"
-          :item-key="(i) => chaptersVisible[i]?.lineNumber ?? i"
+          :item-key="(i) => i"
         >
           <template #default="{ index }">
             <button

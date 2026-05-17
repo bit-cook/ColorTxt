@@ -43,10 +43,7 @@ import {
   chapterTitleForDisplay,
   leadingWhitespaceColumnCount,
 } from "../chapter";
-import {
-  formatPlainTextCompressBlankLinesWithMap,
-  formatPlainTextLeadIndentFullWidth,
-} from "../reader/readerTextFormat";
+import { formatPhysicalPlainTextForReader } from "../reader/readerDisplayPipeline";
 import { physicalLineToLastFilteredDisplayLine } from "../reader/lineMapping";
 import AppContextMenu from "./AppContextMenu.vue";
 import ReaderHighlightFloat from "./ReaderHighlightFloat.vue";
@@ -199,6 +196,11 @@ const props = withDefaults(
     voiceReadPaused?: boolean;
     /** 编辑模式：Monaco 展示磁盘原文，不经阅读管线后处理 */
     readerEditMode?: boolean;
+    /**
+     * 只读→编辑前由 App 采集的视口锚点（源文件物理行号）；
+     * 须在 `readerEditMode` 置 true 之前写入，避免切换后 `getViewportEndLine` 失真。
+     */
+    readerEditRestorePhysicalLine?: number | null;
     /** 与流式读盘一致的磁盘 txt 路径（编辑读/存用） */
     physicalReaderPath?: string | null;
   }>(),
@@ -221,6 +223,7 @@ const props = withDefaults(
     voiceReadScrollLocked: false,
     voiceReadPaused: false,
     readerEditMode: false,
+    readerEditRestorePhysicalLine: null,
     physicalReaderPath: null,
   },
 );
@@ -240,6 +243,8 @@ const emit = defineEmits<{
 }>();
 
 let readerEditSavedSnapshot = "";
+/** 载入编辑正文、恢复视口等程序化写入期间不判 dirty */
+let readerEditSuppressDirty = false;
 let readerEditContentDisposable: monaco.IDisposable | null = null;
 /** 成功载入编辑态正文的磁盘路径，用于同路径内避免重复整文件读 */
 let readerEditLoadedPhysicalKey = "";
@@ -252,9 +257,17 @@ function teardownReaderEditContentListener() {
 
 function emitReaderEditDirtyIfChanged() {
   const m = model.value;
-  if (!m || !props.readerEditMode) return;
+  if (!m || !props.readerEditMode || readerEditSuppressDirty) return;
   const dirty = m.getValue() !== readerEditSavedSnapshot;
   emit("readerEditDirtyChange", dirty);
+}
+
+/** 以 Monaco 当前全文为「未修改」基线（须在 setValue / 视口恢复之后调用） */
+function sealReaderEditBaseline() {
+  const m = model.value;
+  if (!m) return;
+  readerEditSavedSnapshot = m.getValue();
+  emit("readerEditDirtyChange", false);
 }
 
 /** 只读 / 编辑：切换 Monaco「阅读优化 chrome」与原生编辑 chrome（字体与配色仍走共享逻辑） */
@@ -274,73 +287,70 @@ async function loadReaderEditFromDisk() {
   const m = model.value;
   const e = editor.value;
   if (!m || !e) return;
-  /** 与「压缩空行」开关切换一致：视口末行 → 物理行；编辑态全文无滤空，Monaco 行号即物理行，用 {@link scrollLineToBottom} 贴底恢复 */
-  let restorePhysicalLine: number | null = null;
+  /** 视口末行 → 物理行；编辑态全文无滤空，Monaco 行号即物理行，用 {@link scrollLineToBottom} 贴底恢复 */
+  const pendingAnchor = props.readerEditRestorePhysicalLine;
+  let restorePhysicalLine: number;
   if (
-    props.compressBlankLines &&
-    typeof props.ebookDisplayLineToPhysical === "function"
+    pendingAnchor != null &&
+    Number.isFinite(pendingAnchor) &&
+    pendingAnchor >= 1
   ) {
+    restorePhysicalLine = Math.max(1, Math.floor(pendingAnchor));
+  } else {
     const endDisplay = Math.max(1, Math.floor(getViewportEndLine()));
-    const rawP = props.ebookDisplayLineToPhysical(endDisplay);
-    if (Number.isFinite(rawP) && rawP >= 1) {
-      restorePhysicalLine = Math.max(1, Math.floor(rawP));
-    }
+    const rawP =
+      typeof props.ebookDisplayLineToPhysical === "function"
+        ? props.ebookDisplayLineToPhysical(endDisplay)
+        : endDisplay;
+    restorePhysicalLine = Math.max(1, Math.floor(rawP));
   }
   disposeEbookInternalLinks();
   await applyEmbeddedImageAnchors(null);
+  readerEditSuppressDirty = true;
   m.setValue(r.text);
-  readerEditSavedSnapshot = r.text;
   readerEditLoadedPhysicalKey = p;
   applyReaderMonacoModeOptions(true);
   teardownReaderEditContentListener();
   readerEditContentDisposable = m.onDidChangeContent(() => {
     emitReaderEditDirtyIfChanged();
   });
-  emit("readerEditLoaded", { encoding: r.encoding });
-  emit("readerEditDirtyChange", false);
+  const emitReaderEditLoadedAfterViewport = () => {
+    sealReaderEditBaseline();
+    readerEditSuppressDirty = false;
+    emit("readerEditLoaded", { encoding: r.encoding });
+  };
 
-  if (restorePhysicalLine != null) {
-    const phys = restorePhysicalLine;
-    const totalPhysical = Math.max(1, m.getLineCount());
+  const phys = restorePhysicalLine;
+  const totalPhysical = Math.max(1, m.getLineCount());
+  requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (phys >= totalPhysical) {
-          scrollToBottom(false);
-        } else if (phys <= 1) {
-          jumpToLine(1, false);
-        } else {
-          scrollLineToBottom(Math.min(phys, totalPhysical), false);
-        }
-        void nextTick(() => {
-          normalizeScrollAfterEmbeddedViewZones();
-          emitProbeLine(false);
-        });
+      if (phys >= totalPhysical) {
+        scrollToBottom(false);
+      } else if (phys <= 1) {
+        jumpToLine(1, false);
+      } else {
+        scrollLineToBottom(Math.min(phys, totalPhysical), false);
+      }
+      void nextTick(() => {
+        normalizeScrollAfterEmbeddedViewZones();
+        emitProbeLine(false);
+        emitReaderEditLoadedAfterViewport();
       });
     });
-  }
+  });
 }
 
 function markReaderEditSaved() {
-  readerEditSavedSnapshot = model.value?.getValue() ?? "";
-  emit("readerEditDirtyChange", false);
+  sealReaderEditBaseline();
 }
 
-/** `setValue` 会清空撤销栈；格式化须走 `executeEdits` 以便 Ctrl+Z 撤销。 */
-function replaceModelTextWithUndo(text: string): boolean {
-  const e = editor.value;
+/** 编辑模式格式化整篇替换（`setValue` 比 `executeEdits` 更快，但会清空撤销栈，不支持撤销）。 */
+function setModelTextIfChanged(text: string): boolean {
   const m = model.value;
-  if (!e || !m) return false;
+  if (!m) return false;
   if (text === m.getValue()) return false;
-  /** 前后各 `pushUndoStop`，避免连续两次格式化被合并为一次撤销 */
-  e.pushUndoStop();
-  const ok = e.executeEdits("readerEditFormat", [
-    {
-      range: m.getFullModelRange(),
-      text,
-    },
-  ]);
-  if (ok) e.pushUndoStop();
-  return ok;
+  m.setValue(text);
+  return true;
 }
 
 /**
@@ -350,53 +360,63 @@ function restoreViewportAfterEditFormatByPhysicalLine(
   anchorPhysicalLine: number,
   sourcePhysicalLineCount: number,
   displayLineToPhysicalLine?: readonly number[],
-) {
+): Promise<void> {
   const m = model.value;
-  if (!m) return;
+  if (!m) return Promise.resolve();
   const totalPhysical = Math.max(1, sourcePhysicalLineCount);
-  const phys = Math.min(Math.max(1, Math.floor(anchorPhysicalLine)), totalPhysical);
+  const phys = Math.min(
+    Math.max(1, Math.floor(anchorPhysicalLine)),
+    totalPhysical,
+  );
 
-  requestAnimationFrame(() => {
+  return new Promise((resolve) => {
     requestAnimationFrame(() => {
-      if (phys >= totalPhysical) {
-        scrollToBottom(false);
-      } else if (phys <= 1) {
-        jumpToLine(1, false);
-      } else {
-        let jumpLine =
-          displayLineToPhysicalLine != null
-            ? physicalLineToLastFilteredDisplayLine(
-                phys,
-                displayLineToPhysicalLine,
-              )
-            : phys;
-        const maxDisplay = Math.max(1, m.getLineCount());
-        jumpLine = Math.min(Math.max(1, jumpLine), maxDisplay);
-        if (jumpLine <= 1) {
+      requestAnimationFrame(() => {
+        if (phys >= totalPhysical) {
+          scrollToBottom(false);
+        } else if (phys <= 1) {
           jumpToLine(1, false);
         } else {
-          scrollLineToBottom(jumpLine, false);
+          let jumpLine =
+            displayLineToPhysicalLine != null
+              ? physicalLineToLastFilteredDisplayLine(
+                  phys,
+                  displayLineToPhysicalLine,
+                )
+              : phys;
+          const maxDisplay = Math.max(1, m.getLineCount());
+          jumpLine = Math.min(Math.max(1, jumpLine), maxDisplay);
+          if (jumpLine <= 1) {
+            jumpToLine(1, false);
+          } else {
+            scrollLineToBottom(jumpLine, false);
+          }
         }
-      }
-      void nextTick(() => {
-        normalizeScrollAfterEmbeddedViewZones();
-        emitProbeLine(false);
-        editor.value?.focus();
+        void nextTick(() => {
+          normalizeScrollAfterEmbeddedViewZones();
+          emitProbeLine(false);
+          editor.value?.focus();
+          resolve();
+        });
       });
     });
   });
 }
 
-function applyEditFormatCompressBlankLines(keepOneBlank: boolean): boolean {
+async function applyEditFormat(
+  format: (plain: string) => {
+    text: string;
+    displayLineToPhysicalLine?: readonly number[];
+  },
+): Promise<boolean> {
   const m = model.value;
   if (!m || !props.readerEditMode) return false;
   const anchorPhysical = Math.max(1, Math.floor(getViewportEndLine()));
   const sourcePhysicalLineCount = m.getLineCount();
-  const { text, displayLineToPhysicalLine } =
-    formatPlainTextCompressBlankLinesWithMap(m.getValue(), keepOneBlank);
-  if (!replaceModelTextWithUndo(text)) return false;
+  const { text, displayLineToPhysicalLine } = format(m.getValue());
+  if (!setModelTextIfChanged(text)) return false;
   emitReaderEditDirtyIfChanged();
-  restoreViewportAfterEditFormatByPhysicalLine(
+  await restoreViewportAfterEditFormatByPhysicalLine(
     anchorPhysical,
     sourcePhysicalLineCount,
     displayLineToPhysicalLine,
@@ -404,19 +424,26 @@ function applyEditFormatCompressBlankLines(keepOneBlank: boolean): boolean {
   return true;
 }
 
-function applyEditFormatLeadIndentFullWidth(): boolean {
-  const m = model.value;
-  if (!m || !props.readerEditMode) return false;
-  const anchorPhysical = Math.max(1, Math.floor(getViewportEndLine()));
-  const sourcePhysicalLineCount = m.getLineCount();
-  const next = formatPlainTextLeadIndentFullWidth(m.getValue());
-  if (!replaceModelTextWithUndo(next)) return false;
-  emitReaderEditDirtyIfChanged();
-  restoreViewportAfterEditFormatByPhysicalLine(
-    anchorPhysical,
-    sourcePhysicalLineCount,
+async function applyEditFormatCompressBlankLines(
+  keepOneBlank: boolean,
+): Promise<boolean> {
+  return applyEditFormat((plain) =>
+    formatPhysicalPlainTextForReader(plain, {
+      compressBlankLines: true,
+      compressBlankKeepOneBlank: keepOneBlank,
+      leadIndentFullWidth: false,
+    }),
   );
-  return true;
+}
+
+async function applyEditFormatLeadIndentFullWidth(): Promise<boolean> {
+  return applyEditFormat((plain) =>
+    formatPhysicalPlainTextForReader(plain, {
+      compressBlankLines: false,
+      compressBlankKeepOneBlank: false,
+      leadIndentFullWidth: true,
+    }),
+  );
 }
 
 const HL_TIP_H = 36;
@@ -786,6 +813,8 @@ function setFullText(text: string) {
   const m = model.value;
   const e = editor.value;
   if (!m || !e) return;
+  /** `setValue` 整文替换会使行内装饰失效；须使下次 `setChapters` 强制重建（仅切换行首缩进时行号不变） */
+  lastChapterTitleDecorationsLineKey = "";
   m.setValue(text);
 }
 
@@ -1035,21 +1064,24 @@ function setChapters(chapters: ChapterStickyLine[]) {
     }));
 
   const maxLine = m.getLineCount();
-  const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
-  for (const ch of chaptersSnapshot) {
-    const ln = ch.lineNumber;
-    if (ln < 1 || ln > maxLine) continue;
-    const line = m.getLineContent(ln);
-    const n = leadingWhitespaceColumnCount(line);
-    if (n > 0) {
-      edits.push({
-        range: new monaco.Range(ln, 1, ln, n + 1),
-        text: "",
-      });
+  /** 编辑态仅同步章节元数据，勿 applyEdits 剥标题行首空白（会误触 dirty） */
+  if (!props.readerEditMode) {
+    const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
+    for (const ch of chaptersSnapshot) {
+      const ln = ch.lineNumber;
+      if (ln < 1 || ln > maxLine) continue;
+      const line = m.getLineContent(ln);
+      const n = leadingWhitespaceColumnCount(line);
+      if (n > 0) {
+        edits.push({
+          range: new monaco.Range(ln, 1, ln, n + 1),
+          text: "",
+        });
+      }
     }
-  }
-  if (edits.length > 0) {
-    m.applyEdits(edits);
+    if (edits.length > 0) {
+      m.applyEdits(edits);
+    }
   }
 
   const maxAfter = m.getLineCount();
@@ -1815,6 +1847,7 @@ defineExpose({
   applyEditFormatCompressBlankLines,
   applyEditFormatLeadIndentFullWidth,
   markReaderEditSaved,
+  sealReaderEditBaseline,
   getEditorLineContent,
   getModelLineCount,
   getSelectedText,
@@ -2087,8 +2120,8 @@ watch(
       readerEditContentDisposable = m.onDidChangeContent(() => {
         emitReaderEditDirtyIfChanged();
       });
+      sealReaderEditBaseline();
     }
-    emitReaderEditDirtyIfChanged();
   },
   { flush: "post" },
 );

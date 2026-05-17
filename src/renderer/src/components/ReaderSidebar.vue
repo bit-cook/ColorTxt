@@ -89,6 +89,8 @@ const props = withDefaults(
     chapterListScrollSmooth?: boolean;
     /** App 在需将当前章滚入视口/居中时置为 true（一拍后清除） */
     shouldCenterChapterList?: boolean;
+    /** 程序化整表刷新章节时置 true，避免 watch 与 centerActiveChapterInList 竞态 */
+    suppressChapterListAutoScroll?: boolean;
     /** App 在需将文件列表滚到当前文件并居中时置为 true（一拍后清除） */
     shouldCenterFileList?: boolean;
     /** App 在需将书签列表滚到当前书签并居中时置为 true（一拍后清除） */
@@ -125,6 +127,7 @@ const props = withDefaults(
     showFullscreenSidebar: undefined,
     chapterListScrollSmooth: false,
     shouldCenterChapterList: false,
+    suppressChapterListAutoScroll: false,
     shouldCenterFileList: false,
     shouldCenterBookmarkList: false,
     metaProgressByPathKey: () => new Map(),
@@ -239,6 +242,8 @@ const {
   sidebarActiveLineNumber,
   onChapterItemClick,
   scrollFileListToIndex,
+  resetChapterListScroll,
+  centerActiveChapterInList,
 } = useReaderSidebarLists(props, (e, chapter) => emit(e, chapter));
 
 const activityBarWidthPx = `${SIDEBAR_ACTIVITY_BAR_WIDTH}px`;
@@ -461,6 +466,8 @@ function onSidebarDrop(ev: DragEvent) {
 
 defineExpose({
   scrollFileListToIndex,
+  resetChapterListScroll,
+  centerActiveChapterInList,
 });
 </script>
 

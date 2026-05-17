@@ -76,6 +76,7 @@ export function useAppWindowBindings(deps: {
   recordFullscreenPointer?: (ev: MouseEvent) => void;
   enterOrExitFullscreenView: () => Promise<void>;
   pulseChapterListCenter: (smooth: boolean) => void;
+  syncChaptersAfterViewportSettled: () => void | Promise<void>;
   currentTheme: Ref<string>;
   readerFontSize: Ref<number>;
   readerLineHeightMultiple: Ref<number>;
@@ -337,9 +338,12 @@ export function useAppWindowBindings(deps: {
 
           const finishReadingSync = () => {
             deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
-            deps.pulseChapterListCenter(false);
-            markReadingProgressSynced();
             deps.readerRef.value?.emitProbeLine();
+            void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
+              () => {
+                markReadingProgressSynced();
+              },
+            );
           };
 
           if (
@@ -394,9 +398,12 @@ export function useAppWindowBindings(deps: {
                 deps.readerRef.value?.scrollToBottom?.(false);
                 void nextTick(() => {
                   deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
-                  deps.pulseChapterListCenter(false);
-                  markReadingProgressSynced();
                   deps.readerRef.value?.emitProbeLine();
+                  void Promise.resolve(
+                    deps.syncChaptersAfterViewportSettled(),
+                  ).then(() => {
+                    markReadingProgressSynced();
+                  });
                 });
               });
             });
@@ -425,17 +432,24 @@ export function useAppWindowBindings(deps: {
                 }
                 void nextTick(() => {
                   deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
-                  deps.pulseChapterListCenter(false);
-                  markReadingProgressSynced();
                   deps.readerRef.value?.emitProbeLine();
+                  void Promise.resolve(
+                    deps.syncChaptersAfterViewportSettled(),
+                  ).then(() => {
+                    markReadingProgressSynced();
+                  });
                 });
               });
             });
           } else {
             void nextTick(() => {
               deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
-              markReadingProgressSynced();
               deps.readerRef.value?.emitProbeLine();
+              void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
+                () => {
+                  markReadingProgressSynced();
+                },
+              );
             });
           }
         })();

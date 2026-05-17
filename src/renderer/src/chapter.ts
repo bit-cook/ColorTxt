@@ -20,7 +20,7 @@ import {
   CHAPTER_MATCH_BUILTIN_NUM_ORDERED_EXAMPLES,
   CHAPTER_MATCH_BUILTIN_NUM_ORDERED_PATTERN,
 } from "@shared/chapterMatchBuiltinPatterns";
-import { countCharsForLine } from "./utils/format";
+import { buildChaptersFromReaderDisplayText } from "./reader/readerDisplayPipeline";
 
 const BUILTIN_RULE_MAIN_ID = "builtin-main";
 const BUILTIN_RULE_ALT_ID = "builtin-alt";
@@ -233,30 +233,12 @@ export function filterChaptersByMinCharCount(
   return chapters.filter((ch) => ch.charCount >= floor);
 }
 
-/**
- * 从「编辑模式」下 Monaco 全文（与磁盘行一一对应、无压缩空行）重建章节列表。
- * 不处理电子书行首链内标签前缀（编辑态不 strip `<<A:…>>`）。
- */
+/** 编辑态等：对当前 Monaco 全文（通常为物理原文）匹配章节 */
 export function buildChaptersFromPlainText(
   text: string,
   minCharCount: number,
 ): Chapter[] {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const lines = normalized.split("\n");
-  const next: Chapter[] = [];
-  let currentIdx = -1;
-  let lineNo = 0;
-  for (const rawLine of lines) {
-    lineNo += 1;
-    const title = detectChapterTitle(rawLine);
-    if (title) {
-      next.push({ title, lineNumber: lineNo, charCount: 0 });
-      currentIdx = next.length - 1;
-    } else if (currentIdx >= 0) {
-      next[currentIdx]!.charCount += countCharsForLine(rawLine);
-    }
-  }
-  return filterChaptersByMinCharCount(next, minCharCount);
+  return buildChaptersFromReaderDisplayText(text, { minCharCount });
 }
 
 /** 行首缩进：非空行且非章节标题时，去掉行首空白后统一为两个全角空格「　　」 */
