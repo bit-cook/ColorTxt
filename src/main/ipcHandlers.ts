@@ -56,6 +56,7 @@ type DirListScanProgress = (item: { name: string; path: string }) => void;
 function isTxtOrEbookFileName(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".txt")) return true;
+  if (lower.endsWith(".md")) return true;
   return EBOOK_DOT_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 

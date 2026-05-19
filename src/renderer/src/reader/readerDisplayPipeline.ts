@@ -4,6 +4,11 @@ import {
   filterChaptersByMinCharCount,
   type Chapter,
 } from "../chapter";
+import {
+  collectQualifiedMarkdownChapterTitlePhysicalLines,
+  detectMarkdownHeading,
+} from "../markdown/markdownChapter";
+import { createMarkdownBlockContextTracker } from "../markdown/markdownBlockContext";
 import { isBlankPhysicalLineContent } from "./lineMapping";
 import { countCharsForLine } from "../utils/format";
 
@@ -13,6 +18,13 @@ export type ReaderDisplayFormatOptions = {
   leadIndentFullWidth: boolean;
   /** 与侧栏章节列表一致：不足最少字数的标题行不插入章节上下空行 */
   minCharCount?: number;
+  /** Markdown：用 ATX `#` 标题（物理行扫描，跳过代码块） */
+  isMarkdown?: boolean;
+  /**
+   * Markdown 编辑态格式化：保留行内 `##` 等原文，仅豁免标题行缩进/留白规则；
+   * 只读展示仍为去掉 `#` 的标题正文。
+   */
+  preserveMarkdownSourceLines?: boolean;
 };
 
 export type ReaderDisplayFormatResult = {
@@ -31,11 +43,46 @@ function lineForReaderDisplay(
   leadIndentFullWidth: boolean,
   qualifiedChapterTitles: ReadonlySet<number>,
   physicalLine: number,
+  exemptAsChapterTitle = false,
 ): string {
   if (!leadIndentFullWidth) return rawLine;
   return applyLeadIndentFullWidth(rawLine, {
-    exemptChapterTitle: qualifiedChapterTitles.has(physicalLine),
+    exemptChapterTitle:
+      exemptAsChapterTitle || qualifiedChapterTitles.has(physicalLine),
   });
+}
+
+function resolvePhysicalLineDisplay(
+  rawLine: string,
+  physicalLine: number,
+  options: ReaderDisplayFormatOptions,
+  qualifiedChapterTitles: ReadonlySet<number>,
+  mdTracker: ReturnType<typeof createMarkdownBlockContextTracker> | null,
+): { shown: string; isChapterTitleLine: boolean } {
+  let content = rawLine;
+  let isChapterTitleLine = false;
+  if (options.isMarkdown && mdTracker) {
+    mdTracker.feedLine(rawLine);
+    if (!mdTracker.isInCodeBlock()) {
+      const h = detectMarkdownHeading(rawLine);
+      if (h) {
+        isChapterTitleLine = true;
+        if (!options.preserveMarkdownSourceLines) {
+          content = h.title;
+        }
+      }
+    }
+  } else {
+    isChapterTitleLine = detectChapterTitle(rawLine) != null;
+  }
+  const shown = lineForReaderDisplay(
+    content,
+    options.leadIndentFullWidth,
+    qualifiedChapterTitles,
+    physicalLine,
+    isChapterTitleLine,
+  );
+  return { shown, isChapterTitleLine };
 }
 
 /**
@@ -44,8 +91,17 @@ function lineForReaderDisplay(
  */
 export function collectQualifiedChapterTitlePhysicalLines(
   physicalLines: readonly string[],
-  options: { minCharCount: number; leadIndentFullWidth: boolean },
+  options: {
+    minCharCount: number;
+    leadIndentFullWidth: boolean;
+    isMarkdown?: boolean;
+  },
 ): Set<number> {
+  if (options.isMarkdown) {
+    return collectQualifiedMarkdownChapterTitlePhysicalLines(physicalLines, {
+      minCharCount: options.minCharCount,
+    });
+  }
   const floor = Math.max(0, Math.floor(options.minCharCount));
   const qualified = new Set<number>();
   const sections: { titlePhysicalLine: number; charCount: number }[] = [];
@@ -91,8 +147,13 @@ export function formatPhysicalLinesForReader(
     {
       minCharCount,
       leadIndentFullWidth: options.leadIndentFullWidth,
+      isMarkdown: options.isMarkdown,
     },
   );
+
+  const mdTracker = options.isMarkdown
+    ? createMarkdownBlockContextTracker()
+    : null;
 
   if (!options.compressBlankLines) {
     const out: string[] = [];
@@ -100,11 +161,12 @@ export function formatPhysicalLinesForReader(
     let physicalLine = 0;
     for (const rawLine of physicalLines) {
       physicalLine += 1;
-      const shown = lineForReaderDisplay(
+      const { shown } = resolvePhysicalLineDisplay(
         rawLine,
-        options.leadIndentFullWidth,
-        qualifiedChapterTitles,
         physicalLine,
+        options,
+        qualifiedChapterTitles,
+        mdTracker,
       );
       out.push(shown);
       displayLineToPhysicalLine.push(physicalLine);
@@ -130,15 +192,15 @@ export function formatPhysicalLinesForReader(
   for (const rawLine of physicalLines) {
     physicalLine += 1;
     if (isBlankPhysicalLineContent(rawLine)) continue;
-    const shown = lineForReaderDisplay(
+    const { shown, isChapterTitleLine } = resolvePhysicalLineDisplay(
       rawLine,
-      options.leadIndentFullWidth,
-      qualifiedChapterTitles,
       physicalLine,
+      options,
+      qualifiedChapterTitles,
+      mdTracker,
     );
     const isQualifiedChapterTitle =
-      detectChapterTitle(rawLine) != null &&
-      qualifiedChapterTitles.has(physicalLine);
+      isChapterTitleLine && qualifiedChapterTitles.has(physicalLine);
     if (isQualifiedChapterTitle) {
       for (let i = 0; i < blanksAbove; i += 1) {
         pushDisplay("", physicalLine);

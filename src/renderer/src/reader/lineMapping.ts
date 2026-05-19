@@ -33,3 +33,33 @@ export function physicalLineToLastFilteredDisplayLine(
 export function isBlankPhysicalLineContent(line: string): boolean {
   return line.trim().length === 0;
 }
+
+/**
+ * 压缩空行时同一物理行可对应多行展示（章节留白等）。
+ * 章节标题应落在「有正文」的展示行，而非首个映射行（常为留白空行）。
+ */
+export function physicalLineToChapterTitleDisplayLine(
+  physicalP: number,
+  map: readonly number[],
+  options?: {
+    wantShown?: string;
+    getDisplayLineContent?: (displayLine: number) => string;
+  },
+): number {
+  if (map.length === 0) return 1;
+  const p = Math.max(1, Math.floor(physicalP));
+  const want = options?.wantShown ?? "";
+  const getLine = options?.getDisplayLineContent;
+  let firstNonBlank = 0;
+  for (let i = 0; i < map.length; i++) {
+    if (map[i] !== p) continue;
+    const displayLine = i + 1;
+    const content = getLine?.(displayLine) ?? "";
+    if (want.length > 0 && content === want) return displayLine;
+    if (content.trim().length > 0) {
+      if (!firstNonBlank) firstNonBlank = displayLine;
+    }
+  }
+  if (firstNonBlank > 0) return firstNonBlank;
+  return physicalLineToFilteredDisplayLine(p, map);
+}

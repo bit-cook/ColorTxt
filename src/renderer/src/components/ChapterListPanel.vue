@@ -18,6 +18,12 @@ const emit = defineEmits<{
   bindListRef: [value: InstanceType<typeof VirtualList> | null];
 }>();
 
+function headingPaddingStyle(ch: Chapter): { paddingLeft: string } | undefined {
+  const level = ch.headingLevel;
+  if (level == null || level <= 1) return undefined;
+  return { paddingLeft: `${(level - 1) * 10}px` };
+}
+
 function onBindListRef(value: Element | ComponentPublicInstance | null) {
   if (value && typeof value === "object" && "$el" in value) {
     emit("bindListRef", value as InstanceType<typeof VirtualList>);
@@ -52,7 +58,11 @@ function onBindListRef(value: Element | ComponentPublicInstance | null) {
               :title="chaptersVisible[index].title"
               @click="emit('jumpToChapter', chaptersVisible[index])"
             >
-              <span class="itemName">{{ chaptersVisible[index].title }}</span>
+              <span
+                class="itemName"
+                :style="headingPaddingStyle(chaptersVisible[index])"
+                >{{ chaptersVisible[index].title }}</span
+              >
               <span v-if="showChapterCounts" class="itemMeta">{{
                 formatCharCount(chaptersVisible[index].charCount)
               }}</span>

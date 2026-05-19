@@ -8,11 +8,16 @@ export function isEbookFilePath(filePath: string): boolean {
   return EBOOK_DOT_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
-/** 拖放 / 关联打开等：TXT 或支持的电子书扩展名 */
+/** 拖放 / 关联打开等：TXT、Markdown 或支持的电子书扩展名 */
 export function isSupportedBookPath(filePath: string): boolean {
   const lower = filePath.replace(/\\/g, "/").trim().toLowerCase();
   if (lower.endsWith(".txt")) return true;
+  if (lower.endsWith(".md")) return true;
   return isEbookFilePath(filePath);
+}
+
+export function isMarkdownFilePath(filePath: string): boolean {
+  return filePath.replace(/\\/g, "/").trim().toLowerCase().endsWith(".md");
 }
 
 export function fileStemFromPath(filePath: string): string {

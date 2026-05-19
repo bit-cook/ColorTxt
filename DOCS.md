@@ -203,6 +203,10 @@ src/
 │       │   ├── ebookAnchorLookup.ts    # 电子书内链行映射
 │       │   ├── readerEbookPointer.ts   # 内链点击命中辅助
 │       │   └── readerHighlightGeometry.ts # 高亮词浮动层几何
+│       ├── markdown/             # Markdown 章节与图片展开
+│       │   ├── markdownChapter.ts      # ATX 标题、章节表
+│       │   ├── markdownBlockContext.ts # 围栏/缩进代码块（# 误识别防护）
+│       │   └── markdownImages.ts       # `![…](…)` → `<<IMG:…>>`
 │       ├── ebook/                # 电子书转 ColorTxt
 │       │   ├── convertEbookToColorTxt.ts   # 调度、缓存与写出
 │       │   ├── ebookFormat.ts    # 路径判定与输出基名
@@ -648,7 +652,13 @@ src/
 | `.pdf`            | `pdfjs-dist` 文本层，`parsePdf.ts`                                                                                 |
 | `.chm`            | `parseChm.ts`；底层块读取与 LZX 在 `chm/chmArchive.ts`、`chm/lzxDecode.ts`                                         |
 
-`ebookFormat.ts` 提供 `isEbookFilePath`、`isSupportedBookPath`（TXT + 上述扩展名）、输出用基名 `ebookSourceFileBaseForOutput`（含 Windows 非法字符净化 `sanitizeWindowsFilenameSegment`）。拖放 / 关联打开时 `useAppWindowBindings` 用 `isSupportedBookPath` 过滤；主进程 `ipcHandlers` 的目录枚举用 `EBOOK_DOT_EXTENSIONS` 与 `.txt` 一并收集。
+`ebookFormat.ts` 提供 `isEbookFilePath`、`isMarkdownFilePath`、`isSupportedBookPath`（TXT、`.md` + 上述电子书扩展名）、输出用基名 `ebookSourceFileBaseForOutput`（含 Windows 非法字符净化 `sanitizeWindowsFilenameSegment`）。拖放 / 关联打开时 `useAppWindowBindings` 用 `isSupportedBookPath` 过滤；主进程 `ipcHandlers` 的目录枚举用 `EBOOK_DOT_EXTENSIONS` 与 `.txt`、`.md` 一并收集。
+
+### Markdown（`.md`）
+
+- **打开**：`resolvePhysicalTextForOpen` 对非电子书路径直接流式读盘（与 `.txt` 相同），`physicalReaderPath` 指向 `.md` 原文件。
+- **章节**：仅识别 ATX 标题（`#` … `######`，行首最多 3 个空白）；`markdownBlockContext` 在围栏代码块与 4 空格/TAB 缩进代码块内跳过 `#`；章节扫描基于**物理行**，避免「行首缩进」展示层误判；侧栏 `headingLevel` 每级缩进 10px；顶栏「章节匹配规则」对 `.md` 禁用。
+- **插图（只读）**：`markdownImages` 将 `![alt](url)` 展开为独占行 `<<IMG:payload>>`，再复用 `readerImageViewZones`；`https:` URL 直链，`img-src` CSP 含 `https:`；编辑模式不展开，保存仍写回 `.md` 原文。
 
 - 基于 [libmspack](https://github.com/kyz/libmspack)（GNU GPL）移植了一套 JavaScript 实现，以支持对 `.chm` 格式的解析
 - 其他电子书格式的解析，主要参考 [foliate-js](https://github.com/johnfactotum/foliate-js)（MIT）

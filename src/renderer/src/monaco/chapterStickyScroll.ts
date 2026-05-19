@@ -40,7 +40,7 @@ export type ChapterStickyScrollProvidersHandle = {
   disposable: monaco.IDisposable;
   /**
    * 章节行号已更新但模型未发生内容变更时调用（如「刷新章节」仅重算行号），
-   * 触发折叠区失效，使粘性条按 `getChapters` 重新拉取（依赖 `stickyScroll.defaultModel: foldingProviderModel`）。
+   * 触发折叠区失效，使粘性条按 `getChapters` 重新拉取折叠/大纲范围。
    */
   notifyChapterFoldingRangesChanged: () => void;
 };

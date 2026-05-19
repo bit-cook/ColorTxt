@@ -25,6 +25,8 @@ import {
   removeViewZonesById,
   type ReplaceImgAnchorsResult,
 } from "../monaco/readerImageViewZones";
+import { expandMarkdownImagesInPlainText } from "../markdown/markdownImages";
+import { formatMarkdownHeadingLineForDisplay } from "../markdown/markdownChapter";
 import {
   READER_EDITOR_DEFAULT_FONT_FAMILY,
   READER_EDITOR_DEFAULT_FONT_SIZE,
@@ -47,6 +49,7 @@ import {
   formatPhysicalPlainTextForReader,
   type ReaderDisplayFormatOptions,
 } from "../reader/readerDisplayPipeline";
+import { isMarkdownFilePath } from "../ebook/ebookFormat";
 import {
   captureReaderViewportRestoreAnchor,
   computeScrollTopForReaderViewportRestoreAnchor,
@@ -217,6 +220,8 @@ const props = withDefaults(
     physicalReaderPath?: string | null;
     /** 章节最少字数；压缩空行格式化时与侧栏章节表一致，不足者不插入标题上下空行 */
     chapterMinCharCount?: number;
+    /** Markdown 只读模式：标题行展示时剥离 ATX `#`（不影响章节检测用的内存标题） */
+    fileIsMarkdown?: boolean;
   }>(),
   {
     monacoCustomHighlight: defaultMonacoCustomHighlight,
@@ -424,14 +429,22 @@ function restoreViewportToRestoreAnchor(
   });
 }
 
+function readerFileIsMarkdown(): boolean {
+  const p = props.physicalReaderPath ?? props.readerFilePath ?? "";
+  return p ? isMarkdownFilePath(p) : false;
+}
+
 function readerFormatOptions(
   overrides: Partial<ReaderDisplayFormatOptions> = {},
 ): ReaderDisplayFormatOptions {
+  const isMarkdown = readerFileIsMarkdown();
   return {
     compressBlankLines: false,
     compressBlankKeepOneBlank: false,
     leadIndentFullWidth: false,
     minCharCount: props.chapterMinCharCount,
+    isMarkdown,
+    preserveMarkdownSourceLines: props.readerEditMode && isMarkdown,
     ...overrides,
   };
 }
@@ -778,10 +791,7 @@ function syncStickyScrollToStreamState() {
   const ed = editor.value;
   if (!ed) return;
   ed.updateOptions({
-    stickyScroll: {
-      enabled: !props.streamLoading,
-      defaultModel: "foldingProviderModel",
-    },
+    stickyScroll: { enabled: !props.streamLoading },
   });
 }
 
@@ -1041,6 +1051,18 @@ function applyEbookInternalLinkMarkers() {
   ebookInternalLinkDecorationIds = e.deltaDecorations([], decs);
 }
 
+function expandMarkdownImagesInModel(mdFileAbsPath: string | null): void {
+  const p = mdFileAbsPath?.trim();
+  if (!p || props.readerEditMode) return;
+  const m = model.value;
+  if (!m) return;
+  const text = m.getValue();
+  const expanded = expandMarkdownImagesInPlainText(text, p);
+  if (expanded !== text) {
+    m.setValue(expanded);
+  }
+}
+
 async function applyEmbeddedImageAnchors(
   convertedTxtAbsPath: string | null,
 ): Promise<ReplaceImgAnchorsResult> {
@@ -1113,7 +1135,22 @@ function setChapters(chapters: ChapterStickyLine[]) {
     for (const ch of chaptersSnapshot) {
       const ln = ch.lineNumber;
       if (ln < 1 || ln > maxLine) continue;
-      const line = m.getLineContent(ln);
+      let line = m.getLineContent(ln);
+      if (props.fileIsMarkdown) {
+        const withoutMarkers = formatMarkdownHeadingLineForDisplay(line);
+        if (withoutMarkers !== line) {
+          edits.push({
+            range: new monaco.Range(
+              ln,
+              1,
+              ln,
+              m.getLineMaxColumn(ln),
+            ),
+            text: withoutMarkers,
+          });
+          line = withoutMarkers;
+        }
+      }
       const n = leadingWhitespaceColumnCount(line);
       if (n > 0) {
         edits.push({
@@ -1912,6 +1949,7 @@ defineExpose({
   scrollToScrollTop,
   getSerializedEditorViewState,
   restoreEditorViewState,
+  expandMarkdownImagesInModel,
   applyEmbeddedImageAnchors,
   applyEbookInternalLinkMarkers,
   getEbookLeadingLinkLabelsByDisplayLine,

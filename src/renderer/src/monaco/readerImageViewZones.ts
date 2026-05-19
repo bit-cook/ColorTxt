@@ -10,6 +10,10 @@ export type ReplaceImgAnchorsResult = {
   deletedOriginalLineNumbersDesc: number[];
 };
 
+function isRemoteImgPayload(payload: string): boolean {
+  return /^https?:\/\//i.test(payload.trim());
+}
+
 function joinUnderDir(dirAbs: string, relativePosix: string): string {
   let out = dirAbs;
   for (const seg of relativePosix.replace(/\\/g, "/").split("/").filter(Boolean)) {
@@ -113,7 +117,10 @@ export async function replaceImgAnchorLinesWithViewZones(
   /** 必须在 `applyEdits` 之前算好：`getLineContent(k)` 用的是删行前的行号 */
   const zoneSpecs: { afterLineNumber: number; absPath: string }[] = [];
   for (const m of matches.slice().sort((a, b) => a.line - b.line)) {
-    const abs = joinUnderDir(txtDir, m.rel.replace(/\\/g, "/"));
+    const rel = m.rel.replace(/\\/g, "/");
+    const abs = isRemoteImgPayload(rel)
+      ? rel
+      : joinUnderDir(txtDir, rel);
     zoneSpecs.push({
       afterLineNumber: afterLineNumberForImgMatch(m),
       absPath: abs,
@@ -132,7 +139,9 @@ export async function replaceImgAnchorLinesWithViewZones(
   const withUrls = await Promise.all(
     zoneSpecs.map(async (z) => ({
       ...z,
-      url: (await window.colorTxt.pathToReadableLocalUrl(z.absPath)) ?? "",
+      url: isRemoteImgPayload(z.absPath)
+        ? z.absPath
+        : ((await window.colorTxt.pathToReadableLocalUrl(z.absPath)) ?? ""),
     })),
   );
 

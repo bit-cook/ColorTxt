@@ -7,6 +7,10 @@ import {
   type ChapterMatchRule,
 } from "../chapter";
 import { pickActiveChapterIdx } from "../reader/chapterIndex";
+import {
+  buildChaptersFromMarkdownEditorText,
+  buildChaptersFromMarkdownPhysicalLines,
+} from "../markdown/markdownChapter";
 import { buildChaptersFromReaderDisplayText } from "../reader/readerDisplayPipeline";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
@@ -20,6 +24,8 @@ export function useAppChapterNavigation(deps: {
   viewportTopLine: Ref<number>;
   viewportEndLine: Ref<number>;
   currentFile: Ref<string | null>;
+  currentFileIsMarkdown: Ref<boolean>;
+  readerEditMode: Ref<boolean>;
   readingProgressSynced: Ref<boolean>;
   stream: Stream;
   touchRecentFile: (
@@ -110,14 +116,35 @@ export function useAppChapterNavigation(deps: {
       return;
     }
 
+    if (deps.readerEditMode.value) {
+      deps.stream.resyncMirrorFromReader();
+    }
+
     const leadingLinkLabels =
       deps.readerRef.value?.getEbookLeadingLinkLabelsByDisplayLine?.() ??
       new Map<number, readonly string[]>();
 
-    const filtered = buildChaptersFromReaderDisplayText(text, {
-      minCharCount: deps.chapterMinCharCount.value,
-      leadingLinkLabelsByDisplayLine: leadingLinkLabels,
-    });
+    const filtered = deps.currentFileIsMarkdown.value
+      ? deps.readerEditMode.value
+        ? buildChaptersFromMarkdownEditorText(text, {
+            minCharCount: deps.chapterMinCharCount.value,
+          })
+        : buildChaptersFromMarkdownPhysicalLines(
+            Array.from(
+              { length: deps.stream.getPhysicalLineCount() },
+              (_, i) => deps.stream.getPhysicalLineContent(i + 1),
+            ),
+            {
+              minCharCount: deps.chapterMinCharCount.value,
+              displayText: text,
+              physicalLineToDisplayLine: (p) =>
+                deps.stream.physicalLineToDisplayForReader(p),
+            },
+          )
+      : buildChaptersFromReaderDisplayText(text, {
+          minCharCount: deps.chapterMinCharCount.value,
+          leadingLinkLabelsByDisplayLine: leadingLinkLabels,
+        });
 
     deps.chapters.value = filtered;
     deps.readerRef.value?.setChapters(

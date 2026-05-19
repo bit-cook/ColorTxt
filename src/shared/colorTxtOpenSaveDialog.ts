@@ -53,6 +53,7 @@ export type ColorTxtSaveDialogResult = {
 /** 「打开电子书」对话框使用的扩展名（与原先主进程 `dialog:openTxt` 一致，不含点） */
 export const COLOR_TXT_OPEN_BOOK_EXTENSIONS = [
   "txt",
+  "md",
   "epub",
   "mobi",
   "azw3",

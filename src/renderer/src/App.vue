@@ -48,6 +48,7 @@ import { useAppReaderUiPrefs } from "./composables/useAppReaderUiPrefs";
 import { useAppShellThemeWatch } from "./composables/useAppShellThemeWatch";
 import { useAppSyncCurrentFileWatch } from "./composables/useAppSyncCurrentFileWatch";
 import { useAppWindowBindings } from "./composables/useAppWindowBindings";
+import { isMarkdownFilePath } from "./ebook/ebookFormat";
 import { useAppVoiceRead } from "./composables/useAppVoiceRead";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
 import { fileHistoryKey } from "./stores/recentHistoryStore";
@@ -573,6 +574,10 @@ const activeStreamRequestId = ref<number | null>(null);
 const activeStreamFilePath = ref<string | null>(null);
 /** 底栏路径与「在文件夹中显示」：电子书打开时为转换后的 `{原名}.txt` 路径 */
 const physicalReaderPath = ref<string | null>(null);
+const currentFileIsMarkdown = computed(() => {
+  const p = physicalReaderPath.value ?? currentFile.value;
+  return p ? isMarkdownFilePath(p) : false;
+});
 /** 当前文件是否已完成加载与阅读位置同步；无打开文件时为 true，打开/重置会话后为 false，流结束并完成滚动后为 true */
 const readingProgressSynced = ref(true);
 
@@ -688,6 +693,7 @@ const stream = useTxtStreamPipeline({
   compressBlankKeepOneBlank,
   leadIndentFullWidth,
   chapterMinCharCount,
+  currentFileIsMarkdown,
   afterFullTextInstalled: () => afterStreamFullTextInstalled(),
 });
 
@@ -1169,6 +1175,8 @@ const chapterNav = useAppChapterNavigation({
   viewportTopLine,
   viewportEndLine,
   currentFile,
+  currentFileIsMarkdown,
+  readerEditMode,
   readingProgressSynced,
   stream,
   touchRecentFile,
@@ -1182,6 +1190,9 @@ const chapterNav = useAppChapterNavigation({
 });
 
 afterStreamFullTextInstalled = async () => {
+  if (currentFileIsMarkdown.value && !readerEditMode.value) {
+    readerRef.value?.expandMarkdownImagesInModel?.(physicalReaderPath.value);
+  }
   const imgAnchors = await readerRef.value?.applyEmbeddedImageAnchors(
     physicalReaderPath.value,
   );
@@ -1384,6 +1395,9 @@ function onReaderEditLoaded(payload: { encoding: string }) {
 
 function onReaderEditContentChange() {
   stream.resyncMirrorFromReader();
+  if (readerEditMode.value && currentFileIsMarkdown.value) {
+    chapterNav.refreshChapterListFromReader();
+  }
   if (readerEditMode.value && searchQuery.value.trim()) {
     scheduleSidebarSearch();
   }
@@ -2121,6 +2135,7 @@ useAppShellThemeWatch({
         @format-edit-compress-blank-lines="onFormatEditCompressBlankLines"
         @format-edit-lead-indent-full-width="onFormatEditLeadIndentFullWidth"
         @toggle-find="onToggleFind"
+        :chapter-rules-disabled="currentFileIsMarkdown"
         @open-chapter-rules="
           chapterRuleErrorText = '';
           showChapterRulePanel = true;
@@ -2318,6 +2333,7 @@ useAppShellThemeWatch({
           :reader-edit-mode="readerEditMode"
           :reader-edit-restore-anchor="pendingReaderEditRestoreAnchor"
           :physical-reader-path="physicalReaderPath"
+          :file-is-markdown="currentFileIsMarkdown && !readerEditMode"
           @probe-line-change="onProbeLineChange"
           @viewport-top-line-change="onViewportTopLineChange"
           @viewport-end-line-change="onViewportEndLineChange"

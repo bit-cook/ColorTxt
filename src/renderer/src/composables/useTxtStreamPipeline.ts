@@ -5,7 +5,7 @@ import {
 } from "../chapter";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
-  physicalLineToFilteredDisplayLine,
+  physicalLineToChapterTitleDisplayLine,
   physicalLineToLastFilteredDisplayLine,
 } from "../reader/lineMapping";
 import { formatPhysicalLinesForReader } from "../reader/readerDisplayPipeline";
@@ -27,6 +27,7 @@ export function useTxtStreamPipeline(deps: {
   compressBlankKeepOneBlank: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
   chapterMinCharCount: Ref<number>;
+  currentFileIsMarkdown: Ref<boolean>;
   /** 展示正文写入 Monaco 且插图/内链处理完成后 */
   afterFullTextInstalled: () => void | Promise<void>;
 }) {
@@ -69,20 +70,16 @@ export function useTxtStreamPipeline(deps: {
     const raw = physicalLineContents[p - 1] ?? "";
     const wantShown = lineForReaderDisplay(raw);
 
-    if (wantShown.length > 0) {
-      const reader = deps.readerRef.value;
-      const getEditorLineContent = reader?.getEditorLineContent;
-      if (reader && typeof getEditorLineContent === "function") {
-        for (let i = 0; i < map.length; i++) {
-          if (map[i] !== p) continue;
-          if (getEditorLineContent.call(reader, i + 1) === wantShown) {
-            return i + 1;
-          }
-        }
-      }
-    }
-
-    return physicalLineToFilteredDisplayLine(p, map);
+    const reader = deps.readerRef.value;
+    const getEditorLineContent = reader?.getEditorLineContent;
+    return physicalLineToChapterTitleDisplayLine(p, map, {
+      wantShown,
+      getDisplayLineContent:
+        reader && typeof getEditorLineContent === "function"
+          ? (displayLine) =>
+              getEditorLineContent.call(reader, displayLine) ?? ""
+          : undefined,
+    });
   }
 
   function physicalLineToBottomDisplayForReader(physicalLine: number): number {
@@ -212,6 +209,7 @@ export function useTxtStreamPipeline(deps: {
       compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
       leadIndentFullWidth: deps.leadIndentFullWidth.value,
       minCharCount: deps.chapterMinCharCount.value,
+      isMarkdown: deps.currentFileIsMarkdown.value,
     });
 
     filteredDisplayToPhysicalLine = formatted.displayLineToPhysicalLine;

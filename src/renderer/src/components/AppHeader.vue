@@ -48,6 +48,8 @@ const props = withDefaults(
     canEnterReaderEditMode: boolean;
     /** 与快捷键面板、按键处理一致，用于「更多」菜单旁展示的快捷键 */
     shortcutBindings: ShortcutBindingMap;
+    /** Markdown 文件：禁用章节正则规则（使用 # 标题） */
+    chapterRulesDisabled?: boolean;
   }>(),
   {
     inFullscreen: false,
@@ -61,6 +63,7 @@ const props = withDefaults(
     voiceReadHeaderLocked: false,
     readerEditMode: false,
     canEnterReaderEditMode: false,
+    chapterRulesDisabled: false,
   },
 );
 
@@ -259,8 +262,13 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
       <span class="toolbarDivider" aria-hidden="true"></span>
       <IconButton
         :icon-html="icons.regExp"
-        title="章节匹配规则"
-        @click="$emit('openChapterRules')"
+        :disabled="chapterRulesDisabled || vrFormatLock"
+        :title="
+          chapterRulesDisabled
+            ? 'Markdown 文件使用 # 标题识别章节'
+            : '章节匹配规则'
+        "
+        @click="!chapterRulesDisabled && $emit('openChapterRules')"
       />
       <IconButton
         :icon-html="currentTheme === 'vs' ? icons.light : icons.dark"

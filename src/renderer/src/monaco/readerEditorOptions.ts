@@ -86,7 +86,7 @@ export function buildReaderEditorSharedCoreOptions(
     automaticLayout: true,
     smoothScrolling,
     wrappingStrategy: wrappingStrategyAdvanced ? "advanced" : "simple",
-    stickyScroll: { enabled: true, defaultModel: "foldingProviderModel" },
+    stickyScroll: { enabled: true },
     lineNumbers: "off",
     lineNumbersMinChars: 0,
     glyphMargin: false,

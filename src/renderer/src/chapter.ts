@@ -2,6 +2,8 @@ export type Chapter = {
   title: string;
   lineNumber: number;
   charCount: number;
+  /** 仅 Markdown：1–6，侧栏 padding = (level - 1) * 10px */
+  headingLevel?: number;
 };
 
 export type ChapterMatchRule = {
