@@ -43,6 +43,11 @@ async function handleLoad(msg: Extract<WorkerIn, { type: "load" }>) {
     env.useFSCache = true;
     env.useBrowserCache = false;
     env.remoteHost = msg.hfRemoteHost.replace(/\/+$/, "");
+    // 内置向量仅 CPU；勿用 dml/auto，以便打包时可省略 DirectML.dll
+    env.backends.onnx = {
+      ...(env.backends.onnx as Record<string, unknown>),
+      executionProviders: ["cpu"],
+    };
 
     const created = await createPipeline("feature-extraction", msg.hfModelId, {
       progress_callback: (p: { status?: string; progress?: number }) => {

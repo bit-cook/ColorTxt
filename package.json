@@ -9,11 +9,11 @@
   "homepage": "https://github.com/ssnangua/ColorTxt",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && electron-builder --publish never",
+    "build": "electron-vite build && node scripts/prune-pack-deps.mjs && electron-builder --publish never",
     "preview": "electron-vite preview",
     "typecheck": "vue-tsc --noEmit",
     "lint": "echo \"(no lint configured)\"",
-    "release": "electron-vite build && electron-builder --publish always",
+    "release": "electron-vite build && node scripts/prune-pack-deps.mjs && electron-builder --publish always",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
@@ -60,7 +60,7 @@
       "**/node_modules/better-sqlite3/**",
       "**/node_modules/sqlite-vec/**",
       "**/node_modules/sqlite-vec-*/**",
-      "**/node_modules/onnxruntime-node/**"
+      "**/node_modules/onnxruntime-node/bin/**"
     ],
     "extraResources": [
       {

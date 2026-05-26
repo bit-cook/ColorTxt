@@ -36,6 +36,18 @@ npm run build
 - Windows：`nsis`、`portable`
 - Linux：`AppImage`
 
+#### 2.3 版本构建逻辑变更
+
+2.3 版本加入了「内置本地模型」，依赖 `@huggingface/transformers`，这是一个比较重的包，需要在 `electron-builder` 打包前对 `node_modules` 进行一些裁剪，以减小安装包的体积。
+
+`npm run build` / `npm run release` 在 `electron-vite build` 之后会执行 **`scripts/prune-pack-deps.mjs`**，从即将打入安装包的 `node_modules` 中移除内置向量模型用不到的依赖（如 `onnxruntime-web`、全平台 `sharp`/`@img`、非当前平台的 `onnxruntime-node` 二进制、Windows 下未使用的 **`DirectML.dll`**（内置向量固定 CPU）、Transformers 的 Web/WASM/CJS/source map、仅保留 Node 入口 **`transformers.node.mjs`** 等），再调用 `electron-builder`。打包完成后若本地 `node_modules` 与开发不一致，可执行 **`npm ci`** 恢复。
+
+相较于之前的版本，**`app.asar` 内 `node_modules` 仍会增大约 15～17MB**（主要为当前平台的 `onnxruntime-node` JS + `@huggingface`；原生 `bin` 在 **`app.asar.unpacked`**，约 15MB）。
+
+`asarUnpack` 仅解包原生模块目录（如 `better-sqlite3`、`onnxruntime-node/bin`），避免整包 `onnxruntime-node` 在 asar 与 `app.asar.unpacked` 中重复占用空间。
+
+打包后本地开发异常可 **`npm ci`** 恢复完整依赖
+
 ### 发布
 
 GitHub 用户 Settings -> Developer settings -> Personal access tokens，生成一个 Token 并勾选 `repo` 权限。
@@ -101,7 +113,7 @@ git push
 | 目录 / 文件               | 说明 |
 | ------------------------- | ---- |
 | `src/`                    | 应用源码（主进程、预加载、渲染进程、共享常量） |
-| `scripts/`                | 开发期间的测试类脚本（辅助性质，不参与应用打包） |
+| `scripts/`                | 构建与开发辅助脚本；**`prune-pack-deps.mjs`** 由 `npm run build` / `release` 在 `electron-builder` 前调用（见 **「构建与打包」**），其余为本地调试/探测用 |
 | `resources/`              | 打包资源（应用图标、macOS entitlements 等） |
 | `dist/`                   | `electron-vite build` 编译输出，供 `electron-builder` 打入安装包 |
 | `release/`                | `electron-builder` 最终产物输出目录 |
@@ -117,6 +129,14 @@ git push
 - 渲染进程配合 `vite-plugin-monaco-editor`：`publicPath` 为 `monacoeditorwork`；`customDistPath` 仅基于 `outDir` 拼接 worker 输出目录，规避 Windows 下将 `root` 与 `outDir` 的绝对路径拼进 `path.join` 时的异常。
 - `transformIndexHtml`：把 `index.html` 里的 `%APP_DISPLAY_NAME%` 替换为上述显示名。
 - 主进程另打包 **`embedding/embeddingWorker`** 入口（`@huggingface/transformers` 在 Worker 线程跑内置嵌入，见 **「内置向量模型与缓存目录」**）。
+
+##### `scripts/` 要点
+
+| 文件 | 说明 |
+| ---- | ---- |
+| `prune-pack-deps.mjs` | **打包管线**：在 `electron-vite build` 之后、`electron-builder` 之前裁剪 `node_modules`（移除 `onnxruntime-web`、`sharp`/`@img`、非目标平台 ORT 二进制、Transformers 非 Node 产物等）。支持 `--platform` / `--arch`；打包后本地开发异常可 **`npm ci`** 恢复完整依赖 |
+| `probe-chm.mjs` / `probe-chm.ts` | 命令行探测 CHM 解析（开发用，不参与打包） |
+| `llm-extract-top-characters.mjs` | 本地大模型角色提取可行性测试（开发用，不参与打包） |
 
 #### `src/` 总览
 

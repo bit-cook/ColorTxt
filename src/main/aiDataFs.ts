@@ -8,13 +8,9 @@ import {
   legacyAiConfigPath,
   legacyVectorDbPath,
 } from "./aiPaths";
+import { closeAiVectorDb } from "./aiVectorDb";
 
 export type AiFsResult = { ok: true } | { ok: false; error: string };
-
-async function closeVectorDbSafe(): Promise<void> {
-  const mod = await import("./aiVectorDb");
-  mod.closeAiVectorDb();
-}
 
 async function pathIsDirectory(abs: string): Promise<boolean> {
   try {
@@ -147,7 +143,7 @@ export async function upgradeLegacyAiDataLayoutIfNeeded(): Promise<void> {
     return;
   }
 
-  await closeVectorDbSafe();
+  closeAiVectorDb();
   const target = defaultAiDataCacheRoot(userData);
   await mkdir(target, { recursive: true });
   for (const name of AI_DATA_CACHE_MIGRATE_FILES) {
@@ -175,7 +171,7 @@ export async function migrateAiDataCacheRoot(
   if (!from || !to) return { ok: false, error: "路径无效" };
   if (from === to) return { ok: true };
 
-  await closeVectorDbSafe();
+  closeAiVectorDb();
   await mkdir(to, { recursive: true });
 
   for (const name of AI_DATA_CACHE_MIGRATE_FILES) {
