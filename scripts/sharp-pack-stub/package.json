@@ -1,0 +1,14 @@
+{
+  "name": "sharp",
+  "version": "0.0.0-colortxt-stub",
+  "private": true,
+  "description": "Pack-time stub so @huggingface/transformers can load without the real sharp native binary.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    }
+  }
+}

@@ -36,17 +36,11 @@ npm run build
 - Windows：`nsis`、`portable`
 - Linux：`AppImage`
 
-#### 2.3 版本构建逻辑变更
+自 2.3 起内置本地向量模型后安装包变大；`npm run build` / `npm run release` 的流程为：`electron-vite build` → **`scripts/prune-pack-deps.mjs`**（裁剪将打入 **`app.asar` / `app.asar.unpacked`** 的 `node_modules`）→ `electron-builder`。**裁剪项清单**见 **项目结构 → `scripts/` →「打包前 node_modules 裁剪」**。
 
-2.3 版本加入了「内置本地模型」，依赖 `@huggingface/transformers`，这是一个比较重的包，需要在 `electron-builder` 打包前对 `node_modules` 进行一些裁剪，以减小安装包的体积。
+相较于 2.2，`app.asar` 内 `node_modules` 仍会增大约 15～17MB（主要为当前平台的 `onnxruntime-node` JS + `@huggingface`；原生 `bin` 在 `app.asar.unpacked`，约 15MB）。`asarUnpack` 仅解包 `better-sqlite3`、`sqlite-vec*`、`onnxruntime-node/bin` 等原生路径。
 
-> `npm run build` / `npm run release` 在 `electron-vite build` 之后会执行 **`scripts/prune-pack-deps.mjs`**，从即将打入安装包的 `node_modules` 中移除内置向量模型用不到的依赖（如 `onnxruntime-web`、全平台 `sharp`/`@img`、非当前平台的 `onnxruntime-node` 二进制、Windows 下未使用的 **`DirectML.dll`**（内置向量固定 CPU）、Transformers 的 Web/WASM/CJS/source map、仅保留 Node 入口 **`transformers.node.mjs`** 等），再调用 `electron-builder`。
->
-> 相较于之前的版本，**`app.asar` 内 `node_modules` 仍会增大约 15～17MB**（主要为当前平台的 `onnxruntime-node` JS + `@huggingface`；原生 `bin` 在 **`app.asar.unpacked`**，约 15MB）。
->
-> `asarUnpack` 仅解包原生模块目录（如 `better-sqlite3`、`onnxruntime-node/bin`），避免整包 `onnxruntime-node` 在 asar 与 `app.asar.unpacked` 中重复占用空间。
-
-如果打包后本地开发异常，可 **`npm ci`** 恢复完整依赖
+打包后本地开发异常可执行 **`npm ci`** 恢复依赖。
 
 ### 发布
 
@@ -113,7 +107,7 @@ git push
 | 目录 / 文件               | 说明 |
 | ------------------------- | ---- |
 | `src/`                    | 应用源码（主进程、预加载、渲染进程、共享常量） |
-| `scripts/`                | 构建与开发辅助脚本；**`prune-pack-deps.mjs`** 由 `npm run build` / `release` 在 `electron-builder` 前调用（见 **「构建与打包」**），其余为本地调试/探测用 |
+| `scripts/`                | 构建与开发辅助脚本；**`prune-pack-deps.mjs`** 由 `npm run build` / `release` 在 `electron-builder` 前调用（见 **「打包前 node_modules 裁剪」**），其余为本地调试/探测用 |
 | `resources/`              | 打包资源（应用图标、macOS entitlements 等） |
 | `dist/`                   | `electron-vite build` 编译输出，供 `electron-builder` 打入安装包 |
 | `release/`                | `electron-builder` 最终产物输出目录 |
@@ -134,9 +128,42 @@ git push
 
 | 文件 | 说明 |
 | ---- | ---- |
-| `prune-pack-deps.mjs` | **打包管线**：在 `electron-vite build` 之后、`electron-builder` 之前裁剪 `node_modules`（移除 `onnxruntime-web`、`sharp`/`@img`、非目标平台 ORT 二进制、Transformers 非 Node 产物等）。支持 `--platform` / `--arch`；打包后本地开发异常可 **`npm ci`** 恢复完整依赖 |
+| `prune-pack-deps.mjs` | **打包管线**：`electron-vite build` 之后、`electron-builder` 之前执行；支持 `--platform` / `--arch`。裁剪清单见下节 |
+| `sharp-pack-stub/` | 打包用 **`sharp` 占位包**（供 `@huggingface/transformers` 加载，非完整 native sharp） |
 | `probe-chm.mjs` / `probe-chm.ts` | 命令行探测 CHM 解析（开发用，不参与打包） |
 | `llm-extract-top-characters.mjs` | 本地大模型角色提取可行性测试（开发用，不参与打包） |
+
+##### 打包前 node_modules 裁剪
+
+由 **`scripts/prune-pack-deps.mjs`** 在打包前修改项目根目录的 `node_modules`（同时影响 **`app.asar`** 与 **`app.asar.unpacked`** 中的依赖树）。交叉编译时可传 `--platform win32|darwin|linux`、`--arch x64|arm64`（默认取当前机器）。裁剪后若需恢复完整依赖：**`npm ci`**。
+
+**整包移除（`node_modules` 顶层）**
+
+| 包 / 模式 | 说明 |
+| --------- | ---- |
+| `onnxruntime-web` | Web/WASM 推理，内置向量不用 |
+| `sharp`（完整包）、`@img/*` | 本应用不做图像推理；根目录 **`package.json` 依赖 `file:scripts/sharp-pack-stub`**，打包时覆盖完整 sharp，保证 asar 内可 `import "sharp"` |
+| `protobufjs`、`@protobufjs/*`、`flatbuffers`、`long`、`platform`、`guid-typescript` | 删 `onnxruntime-web` 后的孤儿依赖 |
+| `prebuild-install`、`napi-build-utils`、`node-abi`、`expand-template`、`mkdirp-classic`、`deep-extend`、`fs-constants`、`github-from-package`、`ini`、`rc`、`simple-concat`、`simple-get`、`tunnel-agent`、`strip-json-comments`、`tar-fs`、`tar-stream` | 仅 install / node-gyp 阶段使用 |
+| `sqlite-vec-*-*`（非当前平台/架构） | 仅保留与 `--platform` / `--arch` 匹配的一个平台包 |
+
+**按包裁剪的路径或文件**
+
+| 包 | 移除内容 | 保留（运行时） |
+| --- | -------- | -------------- |
+| `@huggingface/transformers` | `dist/*` 除 `transformers.node.mjs`；`src/`、`types/`、README；`package.json` 中的 `onnxruntime-web`、`sharp` 依赖声明 | Node 入口 `transformers.node.mjs` |
+| `@huggingface/jinja` | `src/`、`tsconfig.json`、README、`dist/*.d.ts.map` | `dist` 下编译产物 |
+| `onnxruntime-node` | 非目标平台的 `bin/napi-v3/*`；`lib/`、`script/`、README；`dist/*.map`；Windows 下 **`DirectML.dll`**（内置向量固定 CPU） | 当前平台 `bin/napi-v3/{plat}/{arch}` 与 `dist/*.js` |
+| `onnxruntime-common` | `lib/`（TS 源码）、README、`dist/**/*.map`、`dist/**/*.d.ts` | `dist` 下 JS |
+| `better-sqlite3` | **`deps/`**（含 **`sqlite3.c`**）、`src/`、`binding.gyp`、README；`package.json` 中的 **`prebuild-install`** 依赖声明 | `lib/`、`build/Release/*.node`、`bindings` |
+| `font-list` | 非当前平台的 `libs/{darwin,linux,win32}`；`demo.js`、测试脚本、类型定义、README | `index.js`、`index.mjs`（ESM 入口）、`libs/core.js`、当前平台 `libs/` |
+| `sqlite-vec` | README、`index.d.ts` | `index.cjs` / `index.mjs` |
+| `sqlite-vec-{platform}-{arch}` | README | 原生扩展（如 Windows 的 `vec0.dll`） |
+
+**全 `node_modules` 树**
+
+- 所有 **`*.map`**（source map）
+- 各包下的 **`README.md`**、**`CHANGELOG.md`**
 
 #### `src/` 总览
 
@@ -344,7 +371,7 @@ src/
 - **`aiEmbedding.ts`**：`provider === "builtin"` 时走 **`embedding/localEmbeddingBackend`**（Transformers.js Worker）；否则 OpenAI 兼容 **`/embeddings`**；**`probeEmbeddingDimension`** 支持远程与内置。
 - **`embedding/localEmbeddingBackend.ts`**、**`embedding/embeddingWorker.ts`**：内置模型下载、加载、批嵌入与进度；缓存目录 **`{builtinModelCacheDir}/transformers-cache`**。
 - **`aiChat.ts`**：OpenAI 兼容流式对话（非 Agent 直聊路径）。
-- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`（含 `reasoning_delta`、`token_usage_estimate` / `token_usage_final`、`tool_progress` 等）；`ragContext` 优先经 **`aiChapterPlainTextBridge`** 向阅读器取章文，超长章由 **`aiRagChapterDigest`** 分段压缩；多轮与压缩调用的 usage 汇总后写入助手消息 `payload`；开启「深度思考」时经 **`aiChatThinking.resolveAgentDeepThinkingParams`** 注入各厂商思考开关。
+- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`（含 `reasoning_delta`、`token_usage_estimate` / `token_usage_final`、`tool_progress` 等）；`ragContext` 优先经 **`aiChapterPlainTextBridge`** 向阅读器取章文，超长章由 **`aiRagChapterDigest`** 分段压缩；多轮与压缩调用的 usage 汇总后写入助手消息 `payload`；开启「深度思考」时经 **`aiChatThinking.resolveAgentDeepThinkingParams`** 注入各厂商思考开关。用户消息为「生成章节匹配规则」类且已启用对应技能时，**`@shared/chapterMatchAgentTurn`** 判定为专轮：**系统提示禁止 `ragContext`**、工具列表移除 `ragContext`，可直接按用户标题样例输出 fenced 单行（可选 `ragSearch` 抽标题行）。
 - **`aiChatThinking.ts`**：按对话 **`baseUrl`** 识别服务商并设置深度思考请求体（如 DeepSeek / 智谱 `thinking`、通义 / Moonshot `enable_thinking`、本机 `think`、OpenRouter `reasoning.effort`、Gemini 兼容 `reasoning_effort`）；**`extractReasoningFromStreamDelta`** 统一解析 `reasoning_content` / `reasoning` / `thinking` / `thought`；工具轮历史是否回传 **`reasoning_content`** 由 **`shouldAttachReasoningContentOnToolCalls`** 判定。
 - **`aiChapterPlainTextBridge.ts`**：主进程 `fetchChapterPlainTextFromRenderer`：经 `ai:chapter-plain-request` / 一次性 `replyChannel` 向渲染层索取与阅读器一致的章节纯文本（超时 20s）。
 - **`aiRagChapterDigest.ts`**：`RAG_CHAPTER_NO_COMPRESS_CHARS`（1 万）内不压缩；超长章按每 1 万字段压缩，合并后 `mergedMarkdown` 上限约 1 万；`chapterDigestProgressUi` 供工具折叠区展示「读取章节原文（M/N）」进度。
@@ -537,6 +564,7 @@ src/
 - **`characterTypes.ts`**：侧栏「角色」：`CharacterRosterEntry`、`CharacterBookStylePersisted`、`CharacterGender`（按书存 `file.meta`）。
 - **`characterPortraitPaths.ts`**：立绘缓存根默认子目录名 `CharacterPortrait`、按书名净化目录段、立绘/草稿/临时 PNG 文件名与绝对路径拼接。
 - **`chapterMatchBuiltinPatterns.ts`**：章节匹配三条内置正则（与 `renderer/chapter.ts` 同源）。
+- **`chapterMatchAgentTurn.ts`**：判定 Agent 本轮是否以「生成/调整章节匹配规则」为主（配合 `chapter-match-rules` 技能）。
 - **`colorTxtOpenSaveDialog.ts`**：打开/保存对话框选项类型（主进程 `dialogInvoke` 与 preload 对齐）。
 - **`colorTxtShowMessageBox.ts`**：`showMessageBox` 选项类型（主进程 `messageBoxInvoke` 与 preload 对齐）。
 

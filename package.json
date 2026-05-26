@@ -22,8 +22,12 @@
     "electron-updater": "^6.8.3",
     "font-list": "^2.0.2",
     "iconv-lite": "^0.7.2",
+    "sharp": "file:scripts/sharp-pack-stub",
     "sqlite-vec": "^0.1.6",
     "ws": "^8.18.0"
+  },
+  "overrides": {
+    "sharp": "file:scripts/sharp-pack-stub"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
@@ -74,7 +78,8 @@
     ],
     "files": [
       "dist/**",
-      "package.json"
+      "package.json",
+      "node_modules/sharp/**"
     ],
     "electronLanguages": [
       "en-US",

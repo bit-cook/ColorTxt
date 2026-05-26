@@ -15,6 +15,7 @@ import {
   formatAiToolChapterHeading,
 } from "@shared/aiChapterRefPrompt";
 import { CHAPTER_MATCH_RULES_SKILL_ID } from "@shared/aiAgentSkillToolNames";
+import { isChapterMatchRuleAgentTurn } from "@shared/chapterMatchAgentTurn";
 import {
   agentSkillToolFunctionName,
   buildAgentToolsWithSkills,
@@ -105,13 +106,26 @@ function buildAgentSystemPrompt(
   ragEnabled: boolean,
   /** 已启用「章节匹配规则」技能：RAG 不按防剧透截断章节（仅用于标题行格式） */
   chapterMatchSkillRagUnrestricted: boolean,
+  /** 本轮以生成章节匹配规则为主：禁止 ragContext */
+  chapterMatchRuleOnlyTurn: boolean,
 ): string {
   const lines: string[] = [
     "你是资深中文小说阅读助手，正在与用户讨论一部长篇作品。",
     "**重要**：预训练知识中**不包含**当前打开这本书的可靠全文，也不要凭书名、作者或对其它版本（如改编、译本）的笼统印象冒充读过原文。",
   ];
 
-  if (ragEnabled) {
+  if (ragEnabled && chapterMatchRuleOnlyTurn) {
+    lines.push(
+      "## 本轮任务：章节匹配规则（优先于其它检索纪律）",
+      "用户需要的是应用「章节匹配规则」中的 **一行 JavaScript RegExp 参数字符串**（匹配独占一行的章节标题），**不是**阅读、概括或讨论章节剧情。",
+      "**禁止**为本轮调用 **ragContext**（不要读取章节原文或整章提要）。",
+      "若用户消息中已有完整章节标题示例行（如「第三十九回 …」「第一章 …」），**必须先**在**对用户的可见回复**中给出 **一个** fenced 代码块（块内仅一行匹配规则）；可调用 **skill_chapter-match-rules** 获取体裁说明。**不得**以「须先检索」为由省略该 fenced 单行。",
+      "仅当需要对照全书其它章节的**标题行格式**时，可**可选**调用 **ragSearch**（query 侧重章节标题、回目名等），且**只**用返回片段中的标题行作格式参考；**禁止**据正文情节写规则或剧透。",
+      "可调用 **skill_chapter-match-rules**；**不要**为写规则而调用 getSkills 以外的无关技能。",
+      AI_USER_VISIBLE_CH_REF_RULE,
+      "",
+    );
+  } else if (ragEnabled) {
     lines.push(
       "你必须使用 ragSearch、ragContext 检索本书正文后再作答；涉及情节、对白、人名与设定时只能依据工具返回的原文；不得在未检索到相关内容时编造，检索不到时应如实说明。",
       "回答时请引用检索结果中的事实。",
@@ -157,20 +171,21 @@ function buildAgentSystemPrompt(
       .split("\n")
       .map((ln) => (ln.length === 0 ? ">" : `> ${ln}`))
       .join("\n");
-    lines.push(
-      "## 阅读位置周边（节选）",
-      "下列内容来自用户当前选中文本（若有）与阅读视窗附近，仅用于判断阅读位置；**不等于**整章正文。涉及本章全貌或全书细节仍须使用 ragSearch / ragContext（向量检索开启时），勿仅凭本节臆测。",
-      quoted,
-      "",
-    );
+    const surroundingNote =
+      ragEnabled && chapterMatchRuleOnlyTurn
+        ? "下列内容来自用户当前选中文本（若有）与阅读视窗附近，仅用于判断阅读位置；**不等于**章节标题样例。本轮为章节匹配规则任务，**不要**据此调用 ragContext。"
+        : ragEnabled
+          ? "下列内容来自用户当前选中文本（若有）与阅读视窗附近，仅用于判断阅读位置；**不等于**整章正文。涉及本章全貌或全书细节仍须使用 ragSearch / ragContext（向量检索开启时），勿仅凭本节臆测。"
+          : "下列内容来自用户当前选中文本（若有）与阅读视窗附近，仅用于判断阅读位置；**不等于**整章正文。";
+    lines.push("## 阅读位置周边（节选）", surroundingNote, quoted, "");
   }
 
-  if (ragEnabled) {
+  if (ragEnabled && !chapterMatchRuleOnlyTurn) {
     lines.push(
       "说明：「本章」「当前章」指下方「当前阅读章节」；正文须通过 ragContext 或 ragSearch 获取，不要臆测。",
       "",
     );
-  } else {
+  } else if (!ragEnabled) {
     lines.push(
       surrounding
         ? "说明：「本章」「当前章」指上方书籍信息与周边节选所对应位置；未启用向量检索时除上述节选与用户粘贴外勿编造正文。"
@@ -180,7 +195,12 @@ function buildAgentSystemPrompt(
   }
 
   if (deepThinking) {
-    if (ragEnabled) {
+    if (ragEnabled && chapterMatchRuleOnlyTurn) {
+      lines.push(
+        "深度思考模式下可先归纳用户样例行的格式特征，再给出匹配规则；**仍禁止** ragContext 与剧情叙述。",
+        "",
+      );
+    } else if (ragEnabled) {
       lines.push(
         "请先简要列出检索到的关键依据，再给出结论。",
         "在深度思考模式下允许更充分的推理，但最终回答仍须基于工具检索结果，不得臆造情节。",
@@ -203,8 +223,10 @@ function buildAgentSystemPrompt(
         ? ` · ${bookMeta.currentChapterTitle.trim()}`
         : "";
       const spoilerToolRule =
-        ragEnabled && chapterMatchSkillRagUnrestricted
-          ? "2. **例外（本轮已启用「章节匹配规则」技能）**：`ragSearch` / `ragContext` **不按防剧透截断章节**，以便从全书抽取章节标题行样本。你**只能**将这些结果用于归纳正则与行格式；**最终回答仍不得**叙述、总结或暗示当前阅读进度之后的剧情。"
+        ragEnabled && chapterMatchRuleOnlyTurn
+          ? "2. **本轮为章节匹配规则任务**：**禁止** `ragContext`。若使用 `ragSearch`，**不按防剧透截断章节**，但**仅**用于归纳标题行格式；**不得**叙述、总结或暗示剧情。"
+          : ragEnabled && chapterMatchSkillRagUnrestricted
+            ? "2. **例外（本轮已启用「章节匹配规则」技能）**：`ragSearch` / `ragContext` **不按防剧透截断章节**，以便从全书抽取章节标题行样本。你**只能**将这些结果用于归纳正则与行格式；**最终回答仍不得**叙述、总结或暗示当前阅读进度之后的剧情。"
           : ragEnabled
             ? "2. **工具层已限制**：`ragSearch` 仅返回当前章及之前的索引片段；`ragContext` 无法拉取当前章之后的原文。勿尝试绕过（例如臆造检索结果）。"
             : "2. 未启用全书检索时，请自律勿透露明显超出用户阅读进度的剧情；不确定是否属于后文时请不写或明确说明无法确认。";
@@ -243,9 +265,12 @@ function buildAgentSystemPrompt(
   }
 
   if (enabledSkills.length > 0) {
-    const skillFactLine = ragEnabled
-      ? "工具返回中的 **skillPrompt** 与 **instruction** 必须遵守；**事实内容仍须来自本书**：若尚未检索，请先 **ragSearch** / **ragContext** 再作答，不得臆造情节。"
-      : "工具返回中的 **skillPrompt** 与 **instruction** 必须遵守；向量检索未启用时**不得编造本书情节**，只能基于用户已给出的原文或通用阅读方法作答。";
+    const skillFactLine =
+      ragEnabled && chapterMatchRuleOnlyTurn
+        ? "工具返回中的 **skillPrompt** 与 **instruction** 必须遵守；**本轮禁止 ragContext**；用户已给的标题样例优先，须在对用户的回复中交付 fenced 单行匹配规则。"
+        : ragEnabled
+          ? "工具返回中的 **skillPrompt** 与 **instruction** 必须遵守；**事实内容仍须来自本书**：若尚未检索，请先 **ragSearch** / **ragContext** 再作答，不得臆造情节。"
+          : "工具返回中的 **skillPrompt** 与 **instruction** 必须遵守；向量检索未启用时**不得编造本书情节**，只能基于用户已给出的原文或通用阅读方法作答。";
     lines.push(
       "## 技能（可选）",
       "当用户需要特定作答体裁（如章节摘要、概念解释、论证梳理、翻译等）时，可先调用 **getSkills**（参数 `task` 填简短关键词），或直接调用以 **`skill_` 开头的技能工具**（每项对应下方列表）。",
@@ -376,12 +401,19 @@ function trimApiTail(msgs: ApiMsg[], slidingWindowSize: number): ApiMsg[] {
 function formatReadingAnchorForTurn(
   bookMeta: AIAgentBookMeta,
   ragEnabled: boolean,
+  chapterMatchRuleOnlyTurn: boolean,
 ): string {
   const idx = bookMeta.currentChapterIndex;
   if (typeof idx !== "number" || idx < 0) {
     return "【本轮阅读位置】未能解析章节索引；若用户问「本章」，请如实说明无法定位正文。";
   }
   const title = (bookMeta.currentChapterTitle ?? "").trim() || "（无标题）";
+  if (ragEnabled && chapterMatchRuleOnlyTurn) {
+    return (
+      `【本轮阅读位置｜仅供参考】第 ${idx + 1} 章 · ${title}（chapterIndex=${idx}）。` +
+      `本轮为**章节匹配规则**任务：**不要**因阅读位置或消息中的回目名调用 ragContext 读取章节原文；优先使用用户消息中的标题样例直接写匹配规则。`
+    );
+  }
   if (ragEnabled) {
     return (
       `【本轮阅读位置｜须与此对齐】第 ${idx + 1} 章 · ${title}（chapterIndex=${idx}）。` +
@@ -397,6 +429,7 @@ function augmentLatestUserWithReadingAnchor(
   msgs: ApiMsg[],
   bookMeta: AIAgentBookMeta,
   ragEnabled: boolean,
+  chapterMatchRuleOnlyTurn: boolean,
 ): ApiMsg[] {
   let idx = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -408,7 +441,11 @@ function augmentLatestUserWithReadingAnchor(
   if (idx < 0) return msgs;
   const m = msgs[idx]!;
   if (typeof m.content !== "string") return msgs;
-  const anchor = formatReadingAnchorForTurn(bookMeta, ragEnabled);
+  const anchor = formatReadingAnchorForTurn(
+    bookMeta,
+    ragEnabled,
+    chapterMatchRuleOnlyTurn,
+  );
   const next = msgs.slice();
   next[idx] = { role: "user", content: `${anchor}\n\n${m.content}` };
   return next;
@@ -864,6 +901,7 @@ async function dispatchTool(
     webContents: WebContents;
     onTokenUsage?: (usage: AITokenUsageTotals) => void;
     signal?: AbortSignal;
+    chapterMatchRuleOnlyTurn: boolean;
   },
 ): Promise<string> {
   let args: Record<string, unknown> = {};
@@ -945,6 +983,23 @@ async function dispatchTool(
         full,
       });
       return full;
+    }
+    if (name === "ragContext" && ctx.chapterMatchRuleOnlyTurn) {
+      const blocked = JSON.stringify({
+        ok: false,
+        error:
+          "本轮为章节匹配规则任务，已禁止 ragContext（读取章节原文）。请用用户消息中的标题样例直接写 fenced 单行匹配规则；仅当需要时可 ragSearch 抽样章节标题行。",
+      });
+      ctx.emit({
+        type: "tool_result",
+        requestId: ctx.requestId,
+        toolCallId: ctx.toolCallId,
+        name,
+        ok: false,
+        preview: "已禁止读取章节原文（章节匹配规则专轮）",
+        full: blocked,
+      });
+      return blocked;
     }
     if (name === "ragContext") {
       const ch = typeof args.chapterIndex === "number" ? args.chapterIndex : -1;
@@ -1077,6 +1132,10 @@ export async function runAgentChat(opts: {
   const chapterMatchSkillRagUnrestricted = enabledSkills.some(
     (s) => s.id === CHAPTER_MATCH_RULES_SKILL_ID,
   );
+  const chapterMatchRuleOnlyTurn = isChapterMatchRuleAgentTurn(
+    payload.userText,
+    chapterMatchSkillRagUnrestricted,
+  );
   const spoilerMaxChapterIndex =
     payload.spoilerSafe &&
     typeof payload.bookMeta.currentChapterIndex === "number" &&
@@ -1124,6 +1183,7 @@ export async function runAgentChat(opts: {
       history,
       payload.bookMeta,
       ragEnabled,
+      chapterMatchRuleOnlyTurn,
     );
     const systemContent = buildAgentSystemPrompt(
       payload.bookMeta,
@@ -1133,6 +1193,7 @@ export async function runAgentChat(opts: {
       enabledSkills,
       ragEnabled,
       chapterMatchSkillRagUnrestricted,
+      chapterMatchRuleOnlyTurn,
     );
 
     const absorbTokenUsage = (part: AITokenUsageTotals | null | undefined) => {
@@ -1195,7 +1256,9 @@ export async function runAgentChat(opts: {
         ...extraBody,
       };
       if (!finalizeMetaRound) {
-        body.tools = buildAgentToolsWithSkills(enabledSkills, ragEnabled);
+        body.tools = buildAgentToolsWithSkills(enabledSkills, ragEnabled, {
+          includeRagContext: !chapterMatchRuleOnlyTurn,
+        });
         body.stream_options = { include_usage: true };
       }
 
@@ -1323,6 +1386,7 @@ export async function runAgentChat(opts: {
               webContents,
               onTokenUsage: absorbTokenUsage,
               signal: ac.signal,
+              chapterMatchRuleOnlyTurn,
             });
           }
           appendAgentMessageRow({
