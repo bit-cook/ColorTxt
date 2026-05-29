@@ -25,13 +25,29 @@ const EXPLICIT_PATTERNS = [
   /mind\s*map/i,
 ];
 
+/** 用户只想定位章节/时间点，不是要概括或导图（须在 summary 关键词之前判定） */
+const LOCATOR_PATTERNS = [
+  /是在哪[一這这]?章/u,
+  /在哪[一這这]?章/u,
+  /哪[一這这]?章[？?。,\s]*$/u,
+  /第几[回章]/u,
+  /哪[一這这]?回/u,
+  /什么时候/u,
+  /何时/u,
+  /(?:情节|剧情).{0,28}在哪[一這这]?章/u,
+  /在哪[一這这]?章.{0,28}(?:情节|剧情)/u,
+];
+
 const SUMMARY_PATTERNS = [
   /概括/u,
   /总结/u,
   /梳理/u,
   /讲了什么/u,
   /讲了啥/u,
-  /剧情/u,
+  /剧情线/u,
+  /剧情脉络/u,
+  /梳理.{0,6}剧情/u,
+  /概括.{0,6}剧情/u,
   /情节线/u,
   /主线/u,
   /故事线/u,
@@ -57,6 +73,14 @@ const CHARACTER_PATTERNS = [
   /哪些人/u,
 ];
 
+/** 是否为「定位章节/时间点」类问题（不应自动出思维导图） */
+export function isMindmapLocatorQuestion(userText: string): boolean {
+  const t = userText.trim();
+  if (!t) return false;
+  if (/讲了(?:什么|啥)/u.test(t)) return false;
+  return LOCATOR_PATTERNS.some((p) => p.test(t));
+}
+
 export function detectMindmapIntent(userText: string): MindmapIntentKind {
   const t = userText.trim();
   if (!t) return "none";
@@ -64,6 +88,8 @@ export function detectMindmapIntent(userText: string): MindmapIntentKind {
   for (const p of EXCLUDE_PATTERNS) {
     if (p.test(t)) return "none";
   }
+
+  if (isMindmapLocatorQuestion(t)) return "none";
 
   for (const p of EXPLICIT_PATTERNS) {
     if (p.test(t)) return "explicit";
@@ -113,8 +139,9 @@ export function buildMindmapInjectHint(intent: MindmapIntentKind): string {
     "## 本轮：思维导图（优先）",
     `用户意在**${focus}**。`,
     "- 须先通过 **ragSearch** / **ragContext** 依据本书检索结果组织内容；检索不足时如实说明，可省略出图。",
-    "- **全书级概括**（如「概括本书」）：以 **ragSearch** 多关键词跨章检索为主，勿仅用当前章 ragContext。",
+    "- **全书级概括**（仅当用户明确提到全书/本书/整书时）：以 **ragSearch** 多关键词跨章检索；勿因顺带提到「剧情」就拉成全书面貌导图。",
     "- **本章概括**：用户问「本章 / 这章讲了什么」时须 **ragContext(当前章 chapterIndex)**。",
+    "- **定点情节**（未要求全书概括时）：导图须紧扣所问情节或当前章，勿生成全书脉络图。",
     "- 检索充分后**必须**调用 **mindmap**（参数 title、markdown 为 `#`/`##`/`###`/`-` 层级，**禁止** Mermaid mindmap 语法）；**禁止**仅用长篇 Markdown 小节代替 mindmap 工具。",
     "- 出图后用 **不超过 3 条** bullet 简要概括导图结构；主枝建议 4–7 条，人物不宜堆砌过多节点。",
   ].join("\n");

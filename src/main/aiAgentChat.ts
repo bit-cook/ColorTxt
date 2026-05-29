@@ -147,7 +147,7 @@ function buildAgentSystemPrompt(
       "- 其它开放式检索可再用 ragSearch；若 ragSearch 返回的章节号与「当前阅读章节」不一致且用户明显在问当前章，以 ragContext(当前索引) 为准。",
       "- ragSearch 在全书范围内按语义取片段，同一问句在不同阅读位置仍可能命中相似块；用户已换章时应优先用 ragContext(当前章索引) 校准，或改写检索关键词并关注返回结果中的章节号。",
       "## 工具使用纪律（避免无效循环）",
-      "- 一旦 ragSearch 已返回结果，请阅读其中的 chapterIndex、chapterTitle 与片段正文：chapterIndex 从 0 起，**调用 ragContext 与用户可见 `（ch=N）` 时 N 均须使用该 chapterIndex**。",
+      "- 一旦 ragSearch 已返回结果，请阅读其中的 chapterIndex、chapterTitle 与片段正文：chapterIndex 从 0 起，**仅供** ragContext 参数与 `（ch=N）` 的 N；**对用户叙述章节时只写 chapterTitle**，勿写 chapterIndex 或「第 N 章」式换算。",
       "- 若需展开同一章更多原文，应改用 ragContext(chapterIndex)，参数与检索结果中的 chapterIndex 相同（从 0 起），或换用不同的检索关键词。",
       "- ragContext 对**全章**：优先从阅读器取章节原文（与侧栏字数一致）；原文 ≤1 万字时返回完整 mergedMarkdown；超过 1 万字则按每 1 万字一段压缩为全章提要（约 1 万字，`compressed: true`）。向量索引主要用于 ragSearch。",
       "- 信息已足够时，必须结束工具调用，直接输出最终自然语言答案，不要反复检索同一问题。",
@@ -172,10 +172,10 @@ function buildAgentSystemPrompt(
     "## 书籍信息（不含正文）",
     `- 书名：${bookMeta.fileTitle}`,
     `- 总章节数：${bookMeta.chapterCount}`,
-    `- 当前阅读章节：${
+    `- 当前阅读章节：${bookMeta.currentChapterTitle?.trim() || "（未能解析章节）"}${
       bookMeta.currentChapterIndex >= 0
-        ? `第 ${bookMeta.currentChapterIndex + 1} 章 · ${bookMeta.currentChapterTitle || "（无标题）"}`
-        : bookMeta.currentChapterTitle || "（未能解析章节）"
+        ? `（内部 chapterIndex=${bookMeta.currentChapterIndex}，勿写入用户可见回复）`
+        : ""
     }`,
     "",
   );
@@ -429,18 +429,18 @@ function formatReadingAnchorForTurn(
   const title = (bookMeta.currentChapterTitle ?? "").trim() || "（无标题）";
   if (ragEnabled && chapterMatchRuleOnlyTurn) {
     return (
-      `【本轮阅读位置｜仅供参考】第 ${idx + 1} 章 · ${title}（chapterIndex=${idx}）。` +
+      `【本轮阅读位置｜仅供参考】${title}（内部 chapterIndex=${idx}，勿写入用户可见回复）。` +
       `本轮为**章节匹配规则**任务：**不要**因阅读位置或消息中的回目名调用 ragContext 读取章节原文；优先使用用户消息中的标题样例直接写匹配规则。`
     );
   }
   if (ragEnabled) {
     return (
-      `【本轮阅读位置｜须与此对齐】第 ${idx + 1} 章 · ${title}（chapterIndex=${idx}）。` +
+      `【本轮阅读位置｜须与此对齐】${title}（内部 chapterIndex=${idx}，仅供 ragContext/（ch=N），勿写入用户可见回复）。` +
       `用户刚发起本轮提问时的阅读位置以上为准；若对话历史中仍有其它章节的摘要或工具结果，**不得**据此回答本轮「本章 / 这一章 / 总结本章」类问题，必须重新调用 ragContext(${idx}) 后再作答。`
     );
   }
   return (
-    `【本轮阅读位置】第 ${idx + 1} 章 · ${title}。向量检索未启用，无法 ragContext；请勿编造本章情节，可依据系统提示中的节选与用户原文。`
+    `【本轮阅读位置】${title}。向量检索未启用，无法 ragContext；请勿编造本章情节，可依据系统提示中的节选与用户原文。`
   );
 }
 

@@ -7,9 +7,8 @@ import type { Chapter } from "../chapter";
 import {
   chapterNumStrFromMarkerMatch,
   chapterRefButtonLabel,
-  chapterRefButtonTitle,
   createAiChapterMarkerRegex,
-  normalizeAiChapterRefMarkers,
+  formatAiAssistantAnswerForDisplay,
 } from "../utils/aiMarkdownChapterRef";
 
 const props = withDefaults(
@@ -22,7 +21,7 @@ const props = withDefaults(
 
 /**
  * 在 marked 输出 HTML 之后，于 `pre` / `code` 外的文本节点中把
- * `（ch=N）` 中 N = chapterIndex（从 0 起）；按钮展示为「第 N+1 章」。先归一化 `（ch=a-b）`、`（ch=N后缀）` 等变体，并兼容半角括号、`[ch=N]` 等旧输出。
+ * `（ch=N）` 中 N = chapterIndex（从 0 起）；按钮展示为书中章节名。先归一化 `（ch=a-b）`、`（ch=N后缀）` 等变体，并兼容半角括号、`[ch=N]` 等旧输出。
  */
 function injectChapterRefButtons(
   html: string,
@@ -54,9 +53,7 @@ function injectChapterRefButtons(
       btn.className = "aiChRef";
       btn.setAttribute("data-ch", num);
       if (Number.isFinite(idx) && idx >= 0) {
-        btn.textContent = chapterRefButtonLabel(idx);
-        const tip = chapterRefButtonTitle(idx, chapters);
-        if (tip) btn.setAttribute("title", tip);
+        btn.textContent = chapterRefButtonLabel(idx, chapters);
       } else {
         btn.textContent = `章 ${num}`;
       }
@@ -84,8 +81,7 @@ function injectChapterRefButtons(
 }
 
 const html = computed(() => {
-  let md = props.source;
-  md = normalizeAiChapterRefMarkers(md);
+  let md = formatAiAssistantAnswerForDisplay(props.source);
   md = ensureSpacesAroundMarkdownStrongPairs(md);
   const parsed = marked.parse(md, { breaks: true, async: false }) as string;
   return injectChapterRefButtons(parsed, props.chapters);

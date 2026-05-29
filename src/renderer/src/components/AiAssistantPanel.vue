@@ -1145,7 +1145,7 @@ function bookMetaPayload() {
   if (idx >= 0 && ch) {
     const titleBit = (ch.title ?? "").trim() || "（无标题）";
     surroundingParts.push(
-      `【与本节选同位的当前章】第 ${idx + 1} 章 · ${titleBit}（总结/问答「本章」时 ragContext 的 chapterIndex=${idx}）`,
+      `【与本节选同位的当前章】${titleBit}（「本章」类问题 ragContext 用 chapterIndex=${idx}，勿在对用户回复中写该序号）`,
     );
   }
   if (selPart) surroundingParts.push(`当前选中：\n${selPart}`);
@@ -1470,6 +1470,7 @@ async function exportMd() {
       exportTitle,
       false,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
@@ -1494,6 +1495,7 @@ async function exportMdWithReasoning() {
       exportTitle,
       true,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
@@ -1518,6 +1520,7 @@ async function exportJson() {
       exportTitle,
       false,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -1542,6 +1545,7 @@ async function exportJsonWithReasoning() {
       exportTitle,
       true,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -1563,6 +1567,7 @@ async function copyAllMarkdown() {
         exportTitle,
         false,
         skillToolDisplayLabels.value,
+        props.chapters,
       ),
     );
   } catch {
@@ -1585,6 +1590,7 @@ async function copyAllMarkdownWithReasoning() {
         exportTitle,
         true,
         skillToolDisplayLabels.value,
+        props.chapters,
       ),
     );
   } catch {

@@ -100,24 +100,50 @@ export function chapterNumStrFromMarkerMatch(m: RegExpExecArray): string {
   return (m[1] ?? m[2] ?? m[3] ?? m[4])!;
 }
 
-/** 章节跳转按钮展示文案 */
-export function chapterRefButtonLabel(chapterIndex: number): string {
+/** 章节跳转按钮展示文案：优先书中章节名，无标题时回退「第 N 章」 */
+export function chapterRefButtonLabel(
+  chapterIndex: number,
+  chapters?: readonly Chapter[],
+): string {
+  if (chapters && chapters.length > 0) {
+    return chapterRefDisplayLabel(chapterIndex, chapters);
+  }
   return Number.isFinite(chapterIndex) && chapterIndex >= 0
     ? `第 ${chapterIndex + 1} 章`
     : `章 ${chapterIndex}`;
 }
 
-/** 章节跳转按钮 hover 提示：有章节列表时返回原始章节标题 */
-export function chapterRefButtonTitle(
-  chapterIndex: number,
-  chapters: readonly Chapter[],
-): string | undefined {
-  if (!Number.isFinite(chapterIndex) || chapterIndex < 0 || chapters.length === 0) {
-    return undefined;
+/** 移除模型误写入用户正文的 chapterIndex 字面量（保留工具 JSON 代码块外的叙述） */
+export function stripChapterIndexLeakage(md: string): string {
+  let s = md;
+  s = s.replace(/[（(]\s*chapterIndex\s*[=:]\s*\d+\s*[）)]/gi, "");
+  s = s.replace(/[,，]?\s*chapterIndex\s*[=:]\s*\d+/gi, "");
+  s = s.replace(/[,，]?\s*对应全书\*{0,2}第\s*\d+\s*章\*{0,2}/gu, "");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s;
+}
+
+/** 界面 Markdown 渲染前：归一化跳转标记并去掉 chapterIndex 泄漏（保留 `（ch=N）` 供按钮解析） */
+export function formatAiAssistantAnswerForDisplay(
+  md: string,
+): string {
+  if (!md.trim()) return md;
+  let s = normalizeAiChapterRefMarkers(md);
+  s = stripChapterIndexLeakage(s);
+  return s;
+}
+
+/** 导出 / 复制：在 display 处理基础上将 `（ch=N）` 换成书中章节名 */
+export function formatAiAssistantAnswerForUser(
+  md: string,
+  chapters?: readonly Chapter[],
+): string {
+  if (!md.trim()) return md;
+  let s = formatAiAssistantAnswerForDisplay(md);
+  if (chapters && chapters.length > 0) {
+    s = substituteAiChapterMarkersWithTitles(s, chapters);
   }
-  const ch = chapters[chapterIndex];
-  const title = ch ? chapterTitleForDisplay(ch.title) : "";
-  return title || undefined;
+  return s;
 }
 
 /** 展示 / 导出 / 复制前：将各类变体归一为标准 `（ch=N）` */
