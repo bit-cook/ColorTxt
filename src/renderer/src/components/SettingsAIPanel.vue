@@ -25,6 +25,10 @@ import SwitchToggle from "./SwitchToggle.vue";
 import { icons } from "../icons";
 import { resolveDefaultAiDataCacheDirSync } from "../utils/defaultCacheDirs";
 import { useSecretStorageHint } from "../composables/useSecretStorageHint";
+import {
+  SORTABLE_ROW_HANDLE_CLASS,
+  useSortableReorder,
+} from "../composables/useSortableReorder";
 
 const modelValue = defineModel<AIConfig>({ required: true });
 const { secretStorageHint } = useSecretStorageHint();
@@ -151,42 +155,76 @@ function onChatModelPanelOpenChange(isOpen: boolean) {
   void refreshChatModels();
 }
 
+let quickQRowIdSeq = 0;
+
+function newQuickQRowId(): string {
+  quickQRowIdSeq += 1;
+  return `qq-${Date.now()}-${quickQRowIdSeq}`;
+}
+
+/** 与 quickQuestions 下标对齐，供 Sortable 拖动后 Vue 正确复用行 */
+const quickQuestionRowIds = ref<string[]>([]);
+
+function resetQuickQuestionRowIds(count: number) {
+  quickQuestionRowIds.value = Array.from({ length: count }, () => newQuickQRowId());
+}
+
+function ensureQuickQuestionRowIds() {
+  const n = modelValue.value.quickQuestions.length;
+  const ids = quickQuestionRowIds.value;
+  if (ids.length === n) return;
+  if (ids.length < n) {
+    quickQuestionRowIds.value = [
+      ...ids,
+      ...Array.from({ length: n - ids.length }, () => newQuickQRowId()),
+    ];
+    return;
+  }
+  quickQuestionRowIds.value = ids.slice(0, n);
+}
+
+watch(
+  () => modelValue.value.quickQuestions.length,
+  () => ensureQuickQuestionRowIds(),
+  { immediate: true },
+);
+
 function addQuickQuestion() {
   modelValue.value.quickQuestions.push("");
+  quickQuestionRowIds.value.push(newQuickQRowId());
 }
 
 function restoreDefaultQuickQuestions() {
   modelValue.value.quickQuestions = [...DEFAULT_AI_QUICK_QUESTIONS];
+  resetQuickQuestionRowIds(modelValue.value.quickQuestions.length);
 }
 
 function removeQuickQuestion(i: number) {
   const q = modelValue.value.quickQuestions;
   if (q.length <= 1) return;
   q.splice(i, 1);
+  quickQuestionRowIds.value.splice(i, 1);
 }
 
-function canMoveQuickQuestionUp(i: number): boolean {
-  return i > 0;
-}
+const quickQListRef = ref<HTMLElement | null>(null);
+const quickQCount = computed(() => modelValue.value.quickQuestions.length);
 
-function canMoveQuickQuestionDown(i: number): boolean {
-  const q = modelValue.value.quickQuestions;
-  return q.length > 1 && i < q.length - 1;
-}
-
-function moveQuickQuestionUp(i: number) {
-  if (!canMoveQuickQuestionUp(i)) return;
-  const q = modelValue.value.quickQuestions;
-  const [row] = q.splice(i, 1);
-  q.splice(i - 1, 0, row);
-}
-
-function moveQuickQuestionDown(i: number) {
-  if (!canMoveQuickQuestionDown(i)) return;
-  const q = modelValue.value.quickQuestions;
-  const [row] = q.splice(i, 1);
-  q.splice(i + 1, 0, row);
-}
+const { remount: remountQuickQSortable } = useSortableReorder({
+  containerRef: quickQListRef,
+  draggable: ".quickQRow",
+  itemCount: quickQCount,
+  enabled: computed(() => modelValue.value.quickQuestions.length > 1),
+  onReorder(from, to) {
+    const q = modelValue.value.quickQuestions;
+    const ids = quickQuestionRowIds.value;
+    const [row] = q.splice(from, 1);
+    const [id] = ids.splice(from, 1);
+    if (!row || !id) return;
+    q.splice(to, 0, row);
+    ids.splice(to, 0, id);
+    remountQuickQSortable();
+  },
+});
 
 async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   const r = await window.colorTxt.ai.testChat({
@@ -462,47 +500,41 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
 
       <section class="aiSection quickQSection">
         <h3 class="aiSectionTitle">快速提问</h3>
-        <div
-          v-for="(_q, i) in modelValue.quickQuestions"
-          :key="i"
-          class="quickQRow"
-        >
-          <input
-            v-model="modelValue.quickQuestions[i]"
-            type="text"
-            class="settingsStretchInput quickQInput"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="提问内容…"
-          />
-          <div class="quickQRowActions">
-            <button
-              type="button"
-              class="btn iconOnly quickQReorder"
-              title="上移"
-              :disabled="!canMoveQuickQuestionUp(i)"
-              @click="moveQuickQuestionUp(i)"
-            >
-              <span class="iconSvg" v-html="icons.up" />
-            </button>
-            <button
-              type="button"
-              class="btn iconOnly quickQReorder"
-              title="下移"
-              :disabled="!canMoveQuickQuestionDown(i)"
-              @click="moveQuickQuestionDown(i)"
-            >
-              <span class="iconSvg" v-html="icons.down" />
-            </button>
-            <button
-              type="button"
-              class="btn iconOnly quickQRemove"
-              title="删除"
-              :disabled="modelValue.quickQuestions.length <= 1"
-              @click="removeQuickQuestion(i)"
-            >
-              <span class="iconSvg" v-html="icons.remove" />
-            </button>
+        <div ref="quickQListRef" class="quickQList">
+          <div
+            v-for="(_q, i) in modelValue.quickQuestions"
+            :key="quickQuestionRowIds[i]"
+            class="quickQRow"
+          >
+            <input
+              v-model="modelValue.quickQuestions[i]"
+              type="text"
+              class="settingsStretchInput quickQInput"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="提问内容…"
+            />
+            <div class="quickQRowActions">
+              <button
+                type="button"
+                class="btn iconOnly quickQReorder"
+                :class="SORTABLE_ROW_HANDLE_CLASS"
+                title="拖动排序"
+                aria-label="拖动排序"
+                :disabled="modelValue.quickQuestions.length <= 1"
+              >
+                <span class="iconSvg" v-html="icons.move" />
+              </button>
+              <button
+                type="button"
+                class="btn iconOnly quickQRemove"
+                title="删除"
+                :disabled="modelValue.quickQuestions.length <= 1"
+                @click="removeQuickQuestion(i)"
+              >
+                <span class="iconSvg" v-html="icons.remove" />
+              </button>
+            </div>
           </div>
         </div>
         <div class="quickQActions">
@@ -713,6 +745,12 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   margin-bottom: 15px;
 }
 
+.quickQList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .iconOnly {
   padding: 6px;
   flex-shrink: 0;
@@ -771,6 +809,23 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
 .quickQReorder,
 .quickQRemove {
   flex-shrink: 0;
+}
+
+.quickQReorder.sortableRowHandle:not(:disabled) {
+  cursor: grab;
+}
+
+.quickQReorder.sortableRowHandle:not(:disabled):active {
+  cursor: grabbing;
+}
+
+:deep(.quickQRow.sortableRowGhost) {
+  opacity: 0.45;
+}
+
+:deep(.quickQRow.sortableRowChosen) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
 }
 
 .quickQRemove:hover:not(:disabled) {

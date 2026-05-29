@@ -41,6 +41,7 @@ import chapterListIcon from "./assets/chapter_list.svg?raw";
 import highlightMarkIcon from "./assets/highlight.svg?raw";
 import clearIcon from "./assets/clear.svg?raw";
 import addIcon from "./assets/add.svg?raw";
+import moveIcon from "./assets/move.svg?raw";
 import closeIcon from "./assets/close.svg?raw";
 import ascIcon from "./assets/asc.svg?raw";
 import descIcon from "./assets/desc.svg?raw";
@@ -120,6 +121,8 @@ export const icons = {
   highlightMark: highlightMarkIcon,
   clear: clearIcon,
   add: addIcon,
+  /** 列表拖动排序手柄 */
+  move: moveIcon,
   close: closeIcon,
   asc: ascIcon,
   desc: descIcon,

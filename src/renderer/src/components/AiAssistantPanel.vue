@@ -1088,9 +1088,7 @@ async function requestRebuildVectorIndex(): Promise<void> {
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。", {
-      kind: "primary",
-    });
+    appToast("索引任务正在进行中，请稍候。");
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
@@ -1117,7 +1115,7 @@ async function requestRebuildVectorIndex(): Promise<void> {
 async function requestClearAiBookCache(): Promise<void> {
   if (!bookHash.value) return;
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。", { kind: "primary" });
+    appToast("索引任务正在进行中，请稍候。");
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
@@ -1145,7 +1143,7 @@ async function requestClearAiBookCache(): Promise<void> {
   indexError.value = "";
   indexEmbedCurrent.value = 0;
   indexEmbedTotal.value = 0;
-  appToast("已清除本书 AI 缓存。", { kind: "primary" });
+  appToast("已清除本书 AI 缓存。", { kind: "success" });
 }
 
 async function buildIndex(
@@ -1656,7 +1654,7 @@ async function copyAllMarkdown() {
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1679,7 +1677,7 @@ async function copyAllMarkdownWithReasoning() {
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1750,6 +1748,7 @@ async function onChClick(chapterIndexZeroBased: number) {
   else
     appToast(
       `未找到第 ${chapterIndexZeroBased + 1} 章（chapterIndex=${chapterIndexZeroBased}）`,
+      { kind: "danger", showClose: true, duration: 0 },
     );
 }
 

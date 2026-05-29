@@ -254,7 +254,9 @@ src/
 │       │   ├── useAiFoldContentSelectAll.ts # 助手折叠区全选
 │       │   ├── useSecretStorageHint.ts      # 设置页 API 密钥落盘说明文案
 │       │   ├── useCharacterCardTilt.ts      # 角色卡指针倾斜 + 光泽 CSS 变量（弹簧跟手/回正）
-│       │   └── useCharacterCardPopoverZoom.ts # 角色卡原位放大（Teleport、平移/缩放/Y 旋转）
+│       │   ├── useCharacterCardPopoverZoom.ts # 角色卡原位放大（Teleport、平移/缩放/Y 旋转）
+│       │   ├── useCharacterRosterReorder.ts # 角色卡网格 Sortable 拖动排序（飞回动画、翻面过滤）
+│       │   └── useSortableReorder.ts        # 通用列表 Sortable（`.sortableRowHandle` 手柄）
 │       ├── constants/
 │       │   ├── appUi.ts          # UI 常量、存储 key、侧栏与字号边界
 │       │   ├── readerPalette.ts  # 阅读器表面色默认值与合并
@@ -349,6 +351,7 @@ src/
 │       │   ├── aiMarkdownMarkedPrep.ts   # Markdown 预处理
 │       │   ├── aiMarkdownChapterRef.ts    # 章节引用 token 链接化
 │       │   ├── aiToolFoldBody.ts         # 工具折叠区 DOM 辅助
+│       │   ├── characterCardTiltDom.ts   # 角色卡拖动排序 DOM（放大/飞回动画、倾斜回正）
 │       │   ├── characterCardSpring.ts    # 角色卡倾斜弹簧参数（跟手 / 回正）
 │       │   ├── appShellMenuPosition.ts   # 侧栏浮动子菜单定位（含卡片效果 flyout）
 │       │   └── defaultCacheDirs.ts       # 默认 AI 数据/模型/立绘缓存目录（与 preload 对齐）
@@ -481,6 +484,8 @@ src/
 - **`useAiFoldContentSelectAll.ts`**：AI 阅读助手：工具调用 / 思考等折叠区正文的「全选」与键盘选择（与 `AiAssistantDetailsFold` 等配合）。
 - **`useCharacterCardTilt.ts`**：角色卡 **3D 倾斜** 与光泽联动（思路参考 [pokemon-cards-css](https://github.com/simeydotme/pokemon-cards-css)）。**`rotateX` / `rotateY`** 为唯一驱动；每帧由旋转反推 **`--char-pointer-*`**、**`--char-background-*`**、**`--char-card-opacity`** 等 CSS 变量。指针跟手用 **`CARD_SPRING_FOLLOW_ROTATE`**，移出卡片用 **`CARD_SPRING_SNAP_ROTATE`** 回正（带轻微过冲）。**`textureEffect === 'off'`** 或放大过渡未完成时禁用倾斜。
 - **`useCharacterCardPopoverZoom.ts`**：角标「查看大图」：**原位**将同一张卡 **`Teleport` 到 `body`**，**`cardShell`（translater）** 负责 `translate3d` + `scale`，**`card__tilt`（rotator）** 负责 **`--char-popover-rotate-y`**（打开 360°→0°，关闭 0°→360° 后 instant 归 0°）。列表格内留 **`cardShellPlaceholder`** 占位；其它卡半透明且 **`pointer-events: none`**。放大激活约 100ms 后 **`tilt.resetIdle()`** 收掉悬停倾斜（对齐参考实现的 `interactEnd`）。
+- **`useCharacterRosterReorder.ts`**：侧栏角色卡 **网格拖动排序**（依赖 **`sortablejs`**）。`forceFallback` + **`fallbackTolerance: 8`** 区分点击翻面与拖动；**`.cardShell.flipped`** 与角标按钮等经 **`filter`** 排除（背面不可拖，原因见 **「列表拖动排序」→「为何不支持背面拖动排序」**）。拖动层 **`cardGridSlot--ghost` / `--drag`**，松手 **`characterCardTiltDom.playDragReleaseAnimation`** 直线飞回占位；顺序变更经 **`onCommit`** 写回 **`file.meta.characterRoster`**。
+- **`useSortableReorder.ts`**：设置/配色等 **表格行或 div 行** 的通用 Sortable 封装：仅 **`.sortableRowHandle`**（图标 **`icons.move`** / `move.svg`）可发起拖动；`onEnd` 回调 **`fromIndex` / `toIndex`**；弹窗 **`active`**、项数 **`itemCount`** 变化时重建实例。详见 **「列表拖动排序（SortableJS）」**。
 
 ###### `constants/`
 
@@ -726,11 +731,11 @@ src/
 | `SearchPanel.vue`                                    | 侧栏「搜索」：当前文件内搜索、结果列表与命中跳转。<br>**一行内多次匹配各占一条结果**（与 VS Code 一致）；预览仅高亮该条对应的区间。<br>跳转列号经 **`physicalSearchRangeToDisplayColumns`**（只读+行首缩进）或编辑态 1:1 物理列；详见 **「侧栏全文搜索」**                                                                                                                                                                                                                                                                                                                                                           |
 | `FileCategoryFlyoutList.vue`                         | 文件列表分类子菜单：统一渲染右键分类 flyout 与批量分类入口的选项（含计数）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `FontPicker.vue`                                     | 预设字体（跨平台映射，逻辑见 `presetFontDefinitions.ts`）与系统字体列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `ChapterRulePanel.vue` / `ChapterRuleEditDialog.vue` | 章节匹配规则列表与编辑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ChapterRulePanel.vue` / `ChapterRuleEditDialog.vue` | 章节匹配规则列表与编辑。<br>规则按优先级 **拖动排序**（操作列 **移动** 手柄）；表头固定、**仅 tbody 区域滚动**（`ResizeObserver` 同步表头与滚动条占位）；顺序写入 **`colorTxt.ui.settings`** 章节规则字段 |
 | `ColorSchemeTabBar.vue`                              | 配色弹窗内页签：**阅读器** / **高亮色**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `ColorSchemeReaderPanel.vue`                         | 「阅读器」页：表面色字段网格 + 实时预览（与 `ColorSchemePanel` 草稿联动）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `ColorSchemeHighlightPanel.vue`                      | 「高亮色」页：按槽位编辑 `#RRGGBB`（`HexColorPickerField`）、增删行（不少于 `MIN_HIGHLIGHT_COLORS`）、表格内预览条                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `ColorSchemePanel.vue`                               | 配色弹窗容器：`ColorSchemeTabBar` + 上述两面板。<br>确定时分别 `applyReaderPalettes` 与 **`applyHighlightColors`**（亮/暗各一套数组）写回 `App.vue` 并经 `useAppPersistence` 落盘；打开时从 props 同步草稿                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ColorSchemeHighlightPanel.vue`                      | 「高亮色」页：按槽位编辑 `#RRGGBB`（`HexColorPickerField`）、**拖动排序**（**移动** 手柄）、增删行（不少于 `MIN_HIGHLIGHT_COLORS`）、表格内预览条；槽位标签 **「高亮色 N」** 随顺序更新（草稿行 **`{ id, color }`** + **`:key="row.id"`**）                                                                                                                                                                                                                                                                                                                                                                                       |
+| `ColorSchemePanel.vue`                               | 配色弹窗容器：`ColorSchemeTabBar` + 上述两面板。<br>确定时分别 `applyReaderPalettes` 与 **`applyHighlightColors`**（亮/暗各一套颜色数组，不含行 id）写回 `App.vue` 并经 `useAppPersistence` 落盘；打开时从 props 同步草稿                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `HexColorPickerField.vue`                            | 单行十六进制颜色 + HSV 取色浮层（智能上下翻转、视口贴边）；`draftHex` / `draftEnd` 事件供父组件在弹层打开期间做临时预览                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `MoreMenu.vue`                                       | 更多菜单：最近文件、查找、快捷键、设置、**配色**（动作 `openColorScheme`，默认 **F6**）、检查更新、关于、退出等。<br>菜单项右侧快捷键文案来自 **`shortcutBindings`**，经 `shortcutUtils.acceleratorToDisplayText` 与快捷键面板及 `shortcutService` 实际生效绑定同步                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsPanel.vue`                                  | 设置弹窗壳层：**`SettingsTabBar`** + 条件渲染子面板。<br>footer **「重置当前页」** 按当前 tab 将草稿恢复为应用内默认值（AI 页含 **`aiDataCacheDir`** 默认路径；向量页含内置/远程默认等，见 `resetAiDraft` / `resetVectorModelDraft`）。<br>**「确定」** 时：向量维度变更提示；**`aiDataCacheDir`** / **`builtinModelCacheDir`** 变更时确认并调用 **`ai:migrateDataCacheRoot`** / **`ai:migrateBuiltinModelCacheRoot`** 再 **`configSet`**。<br>**「清除缓存」** 见下文「清除缓存」                                                               |
@@ -738,7 +743,7 @@ src/
 | `SettingsGeneralPanel.vue`                           | 「常规」：启动恢复上次文件、同步当前文件、历史条数、电子书转换缓存目录、章节最少字数、**清除缓存**按钮（向父组件 `clearCache`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsReadingPanel.vue`                           | 「阅读」：字号/行高滑块、压缩空行保留一行、引号/括号跨行匹配、Monaco 平滑滚动、全屏正文区宽度。<br>（`monacoCustomHighlight` 来自 props，用于禁用跨行开关提示）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsEditPanel.vue`                              | 「编辑」：**显示行号**（`readerEditShowLineNumbers`）、**启用小地图**（`readerEditMinimap`）、**自动刷新章节列表**（`editAutoRefreshChapterList`；少于 `editAutoRefreshChapterListMaxLines` 行时编辑变更防抖刷新章节，否则侧栏显示「刷新章节」）                                                                                                                                                                                                                                                                                                                                                                                      |
-| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关；**服务商** + **接口地址**；API Key + **`AppConnectionTestButton`**；模型 / 温度等；Token 开关与单价；**`aiDataCacheDir`**；**`AppPullFlashButton`** 拉取聊天模型；**生成思维导图**、**词云图词项上限**（`wordcloudMaxWords`）；快速提问列表（含 **恢复默认**） |
+| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关；**服务商** + **接口地址**；API Key + **`AppConnectionTestButton`**；模型 / 温度等；Token 开关与单价；**`aiDataCacheDir`**；**`AppPullFlashButton`** 拉取聊天模型；**生成思维导图**、**词云图词项上限**（`wordcloudMaxWords`）；**快速提问**列表（**移动** 手柄拖动排序、`quickQuestionRowIds` 稳定 key、**恢复默认**） |
 | `ApiEndpointInput.vue`                               | 设置页接口地址输入（可选建议列表；对话页建议列表常为空，以服务商下拉为主）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `AiTokenUsageBanner.vue`                             | 阅读助手 / 角色检索共用的 Token 实际消耗条（`formatTokenUsageActualLine`、可选花费）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `AiIndexProgressBanner.vue`                          | 建索引 / 向量化进度文案（阅读助手建索引与角色 **AI 检索** 前补索引共用）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -759,7 +764,7 @@ src/
 | `VirtualList.vue`                                    | 虚拟列表（长列表性能）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `AppCustomSelect.vue`                                | 通用自定义下拉（文件列表左侧 **分类筛选** 触发器、「全部 / 未分类 / 各分类 / 分类管理」与分类色块标记等）。<br>（用于侧栏文件列表分类入口）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `CategoryPickerMenu.vue`                             | 浮动菜单：编辑模式下为已选文件批量指定分类；单项与 `FileListPanel` 内分类操作共用选项与计数                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `FileCategoryManageModal.vue`                        | **分类管理**弹窗：增删改分类名称与颜色；重命名/删除时通过 `fileListService` 回写列表项 `category` 字段                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `FileCategoryManageModal.vue`                        | **分类管理**弹窗：增删改分类名称与颜色；**拖动排序**（**移动** 手柄，`:key="row.key"`）；重命名/删除时通过 `fileListService` 回写列表项 `category` 字段                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `PathPickerInput.vue`                                | 设置等场景下的目录绝对路径输入与主进程文件夹选择器（电子书转换输出目录、**角色立绘缓存根目录**等）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `AppDialogHost.vue`                                  | 挂载于 `App.vue`：渲染 `services/appDialog.ts` 队列（`appAlert` / `appConfirm` / `appPrompt`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AppToastHost.vue`                                   | 挂载于 `App.vue`：渲染 `services/appToast.ts` 的顶部 Toast 列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -768,8 +773,8 @@ src/
 | `AiAssistantDetailsFold.vue`                         | 助手详情区折叠容器（与 `directives/aiStickScroll`、**`useAiFoldContentSelectAll`** 配合）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `AiToolFoldBody.vue`                                 | 工具折叠正文；章文压缩进度 **`当前进度：M/N`** 样式（`utils/aiToolFoldBody.ts`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AiMarkdown.vue`                                     | 助手回复 Markdown 渲染入口（内部用 `aiMarkdownMarkedSetup` / `aiMarkdownMarkedPrep`、章节引用 `aiMarkdownChapterRef`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `CharacterSidebarPanel.vue`                          | 侧栏「角色」：角色卡网格、**AI 检索** 抽屉、**角色立绘生成** 弹窗（预览 **2:3**、表单与底对齐操作钮）。<br>立绘弹窗：**画风 / 角色形象**；**SD 系**显示 **负面描述**（云端不显示）；关闭（应用/取消/×）时写入草稿与 **`file.meta`**（`characterBookStyle` + 当前角色 `promptZh`/`negativeZh`）。<br>监听 **`aiConfigSyncNonce`**，设置保存后同步文生图服务商 UI；实际出图仍由主进程 **`configGet`** 读最新配置。<br>检索区 **`AiIndexProgressBanner`**、**`AiTokenUsageBanner`** |
-| `CharacterRosterCard.vue`                            | 单个角色条目卡片（**2:3**）：正反面 3D 翻转、立绘与竖排/背面信息；**`charHoloCard`** + **`data-char-texture`** 驱动闪卡层（**`card__shine` / `card__glare`**）。<br>**`useCharacterCardTilt`** + **`useCharacterCardPopoverZoom`**；列表倾斜幅度约 **40%**，放大后 **100%**。<br>背面长文滚动在顶/底边界 **`preventDefault`** 避免带动外层列表；**`:hover` 时 `z-index` 抬高** 避免倾斜遮挡相邻卡 |
+| `CharacterSidebarPanel.vue`                          | 侧栏「角色」：角色卡网格、**整卡拖动排序**（`useCharacterRosterReorder`，顺序落 **`characterRoster`**）、**AI 检索** 抽屉、**角色立绘生成** 弹窗（预览 **2:3**、表单与底对齐操作钮）。<br>立绘弹窗：**画风 / 角色形象**；**SD 系**显示 **负面描述**（云端不显示）；关闭（应用/取消/×）时写入草稿与 **`file.meta`**（`characterBookStyle` + 当前角色 `promptZh`/`negativeZh`）。<br>监听 **`aiConfigSyncNonce`**，设置保存后同步文生图服务商 UI；实际出图仍由主进程 **`configGet`** 读最新配置。<br>检索区 **`AiIndexProgressBanner`**、**`AiTokenUsageBanner`** |
+| `CharacterRosterCard.vue`                            | 单个角色条目卡片（**2:3**）：正反面 3D 翻转、立绘与竖排/背面信息；**`charHoloCard`** + **`data-char-texture`** 驱动闪卡层（**`card__shine` / `card__glare`**）。<br>**`useCharacterCardTilt`** + **`useCharacterCardPopoverZoom`**；列表倾斜幅度约 **40%**，放大后 **100%**；**`:key="entry.id"`** / **`data-entry-id`** 与 Sortable 联动。<br>背面长文滚动在顶/底边界 **`preventDefault`** 避免带动外层列表；**`:hover` 时 `z-index` 抬高** 避免倾斜遮挡相邻卡 |
 | `ReaderHighlightFloat.vue`                           | 自定义高亮词旁的浮动操作条（依赖 `readerHighlightGeometry.ts` 与 `ReaderMain` 编辑器坐标）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `ReaderImageLightbox.vue`                            | 阅读区内插图的灯箱放大（`ReaderMain` 绑定 `imageLightboxSrc`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -1055,7 +1060,7 @@ src/
 
 - **高亮色（全局、按主题）**：
     - 默认亮/暗两套颜色列表见 `constants/highlightColors.ts`（`DEFAULT_HIGHLIGHT_COLORS_LIGHT` / `DEFAULT_HIGHLIGHT_COLORS_DARK`）。
-    - 在 **`ColorSchemePanel` →「高亮色」** 页编辑；确定后经 **`applyHighlightColors`** 写入 `App.vue`，并持久化到 **`colorTxt.ui.settings`** 的 `highlightColorsLight` / `highlightColorsDark`。
+    - 在 **`ColorSchemePanel` →「高亮色」** 页编辑；可 **拖动「移动」手柄** 调整槽位顺序（确定后数组顺序即 Monaco 高亮槽位索引）；确定后经 **`applyHighlightColors`** 写入 `App.vue`，并持久化到 **`colorTxt.ui.settings`** 的 `highlightColorsLight` / `highlightColorsDark`。
     - 当前 shell 主题为 `vs` 时用亮色表，`vs-dark` 时用暗色表（与阅读器表面色主题一致）。
 - **自定义词（本书 + 已收藏全局）**：
     - **本书**：用户在编辑器中选中文本添加的词保存在该文件 **`colorTxt.file.meta`** 的 **`highlightWordsByIndex`**（键为颜色槽位索引字符串）。与书签类似先改内存，在切书、`rememberCurrentFileLine`、关窗卸载等路径随 `fileMetaStore` 落盘。
@@ -1067,6 +1072,56 @@ src/
     - **`monacoCustomHighlight`** 存于 `colorTxt.ui.settings`。
     - 开启且存在有效词表时，`txtrHighlightMonarch.buildTxtrCustomHighlightMonarchRules` 生成 Monarch 规则，由 `txtrTextMonarch` 注入 `txtr-text`；`readerInlineDecorations` 为对应 token 提供前景色（与槽位索引及 `highlightColors` 对齐）。
     - 关闭开关或无语词时不注入自定义规则。
+
+## 列表拖动排序（SortableJS）
+
+依赖 npm 包 **`sortablejs`**（`package.json`）。渲染侧有两层封装：
+
+| 模块 | 用途 |
+| ---- | ---- |
+| **`composables/useSortableReorder.ts`** | 表格 **`tbody`** 或 **`.quickQRow`** 等：仅 **`.sortableRowHandle`**（**`icons.move`**，资源 **`assets/move.svg`**）可拖动；`onReorder(from, to)` 更新父级数组；导出常量 **`SORTABLE_ROW_HANDLE_CLASS`** |
+| **`composables/useCharacterRosterReorder.ts`** | 侧栏 **角色卡网格**（`.cardGrid` / `.cardGridSlot`）：整卡拖动、占位 ghost、松手飞回；DOM 辅助见 **`utils/characterCardTiltDom.ts`** |
+
+### 已接入的列表
+
+| 入口 | 拖动方式 | 持久化 | `v-for` 的 `:key` |
+| ---- | -------- | ------ | ----------------- |
+| 侧栏 **角色** 网格 | 按住卡片拖动（移动 **8px** 才进入排序；**正面**才可拖，背面须先翻回） | 当前书 **`colorTxt.file.meta`** → **`characterRoster`** 数组顺序 | **`entry.id`** |
+| 配色 → **高亮色** | 操作列 **移动** 手柄 | **`highlightColorsLight` / `highlightColorsDark`**（仅颜色串数组） | 草稿 **`row.id`**（UI 标签「高亮色 N」用 **`rowIdx + 1`**） |
+| **章节匹配规则** | 操作列 **移动** 手柄 | **`colorTxt.ui.settings`** 章节规则列表 | **`item.rule.id`** |
+| 文件列表 → **分类管理** | 操作列 **移动** 手柄 | **`fileCategoryCatalog`** | **`row.key`** |
+| 设置 → **AI 阅读助手** → 快速提问 | 行尾 **移动** 手柄 | **`AIConfig.quickQuestions`**（`string[]`） | 并行 **`quickQuestionRowIds[i]`**（与问题文案数组同序） |
+
+原先各处的 **上移 / 下移** 按钮已统一为 **移动** 图标触发器；仅 **1 项** 时手柄禁用（`enabled` / `:disabled`）。
+
+### 角色卡排序（与其它列表的差异）
+
+- **Sortable 选项**：`forceFallback: true`、`fallbackOnBody: true`、`fallbackTolerance: 8`；`filter` 排除按钮、输入框及 **`.cardShell.flipped`**。
+- **视觉**：进入拖动时 ghost 放大 + 倾斜弹簧回正；松手后克隆层 **`translate` 直线插值** 飞回落位格（约 280ms）。仅 **正面** 可拖动，故不再同步背面 **`.backScroll`** 的 scroll 快照。
+- **列表滚动**：拖动时不对 **`characterMainScroll`** 使用 `overflow: hidden`，避免松手后滚动条异常。
+- **实现文件**：`CharacterSidebarPanel.vue`（网格样式、`cardGrid--reordering`）、`CharacterRosterCard.vue`（`onReorderDragStart` 等）、`useCharacterRosterReorder.ts`、`characterCardTiltDom.ts`。
+
+#### 为何不支持背面拖动排序
+
+角色卡与其它「表格行 + 移动手柄」列表不同：**整卡**在 **`preserve-3d`** 翻转层（**`card__flip` / `rotateY(180deg)`**）内展示正反面，背面还有 **`.backScroll`** 内层滚动。
+
+在 Electron/Chromium 下曾尝试让 **翻面状态** 也能 Sortable，但始终难以同时满足 **3D 翻面** + **拖动排序**，冲突点可能在于 **3D 命中与跟手层**，背面经 **`backface-visibility: hidden`** 与 **`rotateY(180deg)`** 叠在翻转容器内；Sortable 即使用 **`forceFallback`** 把克隆挂到 `body`，指针按下/移动阈值与占位 ghost 的坐标仍易与 **倾斜层（`card__tilt`）**、相邻卡 **`:hover` z-index** 互相干扰。
+
+最终产品策略为：**仅正面可排序，背面须先点击翻回**（`useCharacterRosterReorder` 的 **`isReorderDragFiltered`** 在 slot 内存在 **`.cardShell.flipped`** 时返回 true）。
+
+**用户操作**：在背面查看角色信息时，**先点击卡片翻回正面**，再按住卡片拖动排序（与其它列表的 **移动** 手柄不同，角色卡无单独手柄图标）。
+
+**代码落点**：`useCharacterRosterReorder.ts` → **`isReorderDragFiltered`**（注释：*3D 翻面背面无法可靠触发 Sortable*）；正面 **`card__flip` 的 `@click`** 仍负责翻面，Sortable **`filter` + `preventOnFilter: true`** 避免误触角标按钮。
+
+### 章节规则表：表头与滚动条
+
+**`ChapterRulePanel.vue`** 将 **`<thead>`** 与 **`<tbody>`** 拆成上下两张等宽表（共用 **`colgroup`**）：表头固定，**`.tableBodyScroll`** 单独 **`overflow-y: auto`**，滚动条仅覆盖规则行区域。表头容器经 **`ResizeObserver`** 读取 tbody 滚动条占位宽度，必要时 **`padding-right`** 对齐列宽。
+
+### Vue 与 Sortable 协作注意
+
+- **勿用数组下标作 `:key`**：Sortable 会先改 DOM，下标 key 会导致序号/输入框内容与行错位；须用 **随数据移动的 stable id**（见上表）。
+- **高亮色** 草稿为 **`HighlightColorRow { id, color }`**，排序后调用 **`remountHighlightSortable()`** 重建 Sortable。
+- **快速提问** 持久化仍为 `string[]`，UI 层维护 **`quickQuestionRowIds`**，拖动时与文案同步 **`splice`**。
 
 ## 快捷键
 
@@ -1223,6 +1278,13 @@ cardShellWrap（悬停抬高 z-index）
 - **背面**：`cardBack` 使用 **`background: var(--bg)`** + **`isolation: isolate`**；背面 **`card__shine`** 使用 **`mix-blend-mode: soft-light`** 并降低 opacity，避免在浅底/侧栏上 **`color-dodge`** 发灰发黑。
 - **动效**：`prefers-reduced-motion: reduce` 时取消倾斜 transform 并隐藏 shine/glare 动画。
 
+#### 网格拖动排序
+
+- **入口**：侧栏角色列表内 **按住卡片正面** 拖动；**翻面到背面时不可排序**，须先点击翻回正面。
+- **顺序**：`onCommit` 更新 **`characterRoster`** 并随 **`fileMetaStore`** 落盘（与检索结果、立绘字段同一 roster 条目）。
+- **背面不可拖的原因** 见 **「列表拖动排序（SortableJS）」** → **「为何不支持背面拖动排序」**。
+- **实现细节**（`fallbackTolerance`、飞回动画、filter）：同节 **「角色卡排序」**。
+
 ### 内置向量模型与缓存目录
 
 #### AI 数据缓存目录（`aiDataCacheDir`）
@@ -1346,7 +1408,7 @@ cardShellWrap（悬停抬高 z-index）
 | `ReaderSidebar.vue` | 侧栏容器：活动栏含 **AI 助手**、**角色** 等（`constants/readerSidebarTab.ts`）。<br>挂载 **`AiAssistantPanel`**、**`CharacterSidebarPanel`** 等；**角色 → 更多 → 卡片效果** 子菜单（`CHARACTER_CARD_TEXTURE_EFFECTS`、分隔线、`AppShellMenuTeleport`）；`v-model:character-card-texture-effect` 与 `App.vue` 同步 |
 | `SettingsPanel.vue` | 设置壳层：确定时校验向量维度、**数据/模型缓存目录迁移**、`configSet` 与 `emit('apply')`；「清除缓存」见数据存储章 |
 | `SettingsTabBar.vue` | 页签含 `ai` / `vectorModel` / `txt2img` / `skills`。<br>`showAiExtensionTabs` 为 false 时隐藏向量模型 / 角色卡 / 技能扩展页签 |
-| `SettingsAIPanel.vue` | 「AI 阅读助手」：总开关；服务商 + 地址；API Key + **测试连接**；模型 / 温度；Token 与 **`aiDataCacheDir`**；**生成思维导图**、**词云图词项上限**；快速提问列表（**恢复默认**） |
+| `SettingsAIPanel.vue` | 「AI 阅读助手」：总开关；服务商 + 地址；API Key + **测试连接**；模型 / 温度；Token 与 **`aiDataCacheDir`**；**生成思维导图**、**词云图词项上限**；**快速提问**（**移动** 手柄拖动排序、**恢复默认**） |
 | `AiMindmapView.vue` | 阅读助手思维导图：侧栏预览 + 全屏交互（markmap）；全部收起/展开、章节标题替换、**全展开** SVG 导出 |
 | `AiWordcloudView.vue` | 阅读助手词云：侧栏预览 + 全屏 Canvas（d3-cloud）；字体/角度/配色、重新生成（`layoutSeed`）、PNG 导出 |
 | `ApiEndpointInput.vue` | 接口地址手填输入框 |
@@ -1364,7 +1426,7 @@ cardShellWrap（悬停抬高 z-index）
 | `AiAssistantDetailsFold.vue` | 助手详情折叠（与 `directives/aiStickScroll`、`useAiFoldContentSelectAll` 配合） |
 | `AiToolFoldBody.vue` | 工具折叠正文；超长章压缩进度中 **`当前进度：M/N`** 高亮（`utils/aiToolFoldBody.ts`） |
 | `AiMarkdown.vue` | 助手回复 Markdown（`aiMarkdownMarkedSetup` / `Prep`、`aiMarkdownChapterRef`） |
-| `CharacterSidebarPanel.vue` | 侧栏「角色」：角色卡网格、**`popoverCardId`** 原位放大、**AI 检索**、**立绘生成**弹窗（2:3、底对齐按钮、关闭时保存文案）；下发 **`characterCardTextureEffect`**；**`aiConfigSyncNonce`** 同步文生图 UI |
+| `CharacterSidebarPanel.vue` | 侧栏「角色」：角色卡网格、**拖动排序**、**`popoverCardId`** 原位放大、**AI 检索**、**立绘生成**弹窗（2:3、底对齐按钮、关闭时保存文案）；下发 **`characterCardTextureEffect`**；**`aiConfigSyncNonce`** 同步文生图 UI |
 | `CharacterRosterCard.vue` | 角色卡（2:3、3D 翻转、全息层、倾斜、原位放大）；背面滚动边界不带动外层列表 |
 | `AppShellMenuTeleport.vue` | 侧栏 Teleport 菜单壳（卡片效果 flyout 等） |
 
@@ -1372,7 +1434,7 @@ cardShellWrap（悬停抬高 z-index）
 
 主进程 **`registerAiIpc.ts`** 集中注册 `ai:*` IPC（含 **`ai:embedding:builtin:*`** 列表/状态/下载/清缓存、**`ai:migrateDataCacheRoot`** / **`ai:migrateBuiltinModelCacheRoot`**、**`ai:messageUpdateToolContent`** 更新已落库 tool 消息如词云 **`layoutSeed`**）；**`aiPaths.ts`**、**`aiDataFs.ts`**、**`aiConfig.ts`**、**`aiVectorDb.ts`**、**`aiEmbedding.ts`**、**`embedding/*`**、**`aiChat.ts`**、**`aiAgentChat.ts`**、**`aiChatThinking.ts`**、**`aiMindmapTool.ts`**、**`aiWordcloudTool.ts`** / **`aiSegmentCache.ts`** 等见 **「开发」** 目录树与 **「内置向量模型与缓存目录」** / **「思维导图」** / **「词云图」**；渲染侧 **`ai/buildBookVectorIndex.ts`**、**`ai/embeddingReady.ts`**、**`shared/builtinEmbeddingModels.ts`**。预加载 **`window.colorTxt.ai.*`**（含 **`embeddingBuiltinLoad`**、**`migrateDataCacheRoot`**、**`messageUpdateToolContent`** 等）见 **「`src/preload/index.ts`（预加载）」**。
 
-角色卡倾斜/放大/纹理（无独立 IPC）：**`@shared/characterCardTextureEffects`**、**`composables/useCharacterCardTilt.ts`**、**`composables/useCharacterCardPopoverZoom.ts`**、**`utils/characterCardSpring.ts`**、**`styles/characterCardHolo*.css`**、**`components/CharacterRosterCard.vue`**；见 **「角色卡 3D 倾斜与闪卡纹理」**。
+角色卡倾斜/放大/纹理/排序（无独立 IPC）：**`@shared/characterCardTextureEffects`**、**`composables/useCharacterCardTilt.ts`**、**`composables/useCharacterCardPopoverZoom.ts`**、**`composables/useCharacterRosterReorder.ts`**、**`composables/useSortableReorder.ts`**、**`utils/characterCardSpring.ts`**、**`utils/characterCardTiltDom.ts`**、**`styles/characterCardHolo*.css`**、**`components/CharacterRosterCard.vue`**；见 **「角色卡 3D 倾斜与闪卡纹理」** 与 **「列表拖动排序（SortableJS）」**。
 
 ## 数据存储说明
 
