@@ -82,6 +82,8 @@ function readerChromeThemeColors(
     /** 概览尺 Canvas 透明底，仅绘制光标/装饰标记 */
     "editorOverviewRuler.background": EDITOR_BACKGROUND_TRANSPARENT,
     "editorOverviewRuler.border": READER_OVERVIEW_RULER_BORDER,
+    "menu.background": surfaceBg,
+    "menu.foreground": palette.bodyText,
     ...readerEditorHighlightColors(variant),
   };
   if (variant === "dark") {

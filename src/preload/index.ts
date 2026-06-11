@@ -17,6 +17,11 @@ import type {
   BookStyleInferResult,
   PortraitExtractResult,
 } from "@shared/aiTypes";
+import type {
+  AISmartFormatCleanupResult,
+  AISmartFormatProgressEvent,
+  AISmartFormatSegmentInput,
+} from "@shared/aiSmartFormatTypes";
 import type { BuiltinEmbeddingIpcPayload } from "@shared/builtinEmbeddingIpc";
 import type {
   ColorTxtShowMessageBoxOptions,
@@ -492,6 +497,26 @@ const api = {
       ) as Promise<{ ok: true } | { ok: false; error?: string }>,
     chatAbort: (requestId: number) =>
       ipcRenderer.invoke("ai:chat:abort", requestId) as Promise<{ ok: true }>,
+    textFormatCleanup: (payload: {
+      requestId: number;
+      segment: AISmartFormatSegmentInput;
+      mergeHardWrap: boolean;
+      fixPunctuation: boolean;
+      unifyDialogueQuotes: import("@shared/aiSmartFormatTypes").AiSmartFormatUnifyDialogueQuotes;
+      removePromotionalContent: boolean;
+      removePiracyWatermarks: boolean;
+      restoreGarbledChars: boolean;
+      restoreAsteriskMasks: boolean;
+      skillPrompt?: string;
+    }) =>
+      ipcRenderer.invoke("ai:text-format:cleanup", payload) as Promise<
+        | { ok: true; result: AISmartFormatCleanupResult }
+        | { ok: false; error: string }
+      >,
+    textFormatAbort: (requestId: number) =>
+      ipcRenderer.invoke("ai:text-format:abort", requestId) as Promise<{
+        ok: true;
+      }>,
     modelsList: (draft: {
       baseUrl?: string;
       apiKey?: string;
@@ -747,6 +772,14 @@ const api = {
       const fn = (_: unknown, payload: AIAgentRendererEvent) => cb(payload);
       ipcRenderer.on("ai:agent:event", fn);
       return () => ipcRenderer.off("ai:agent:event", fn);
+    },
+    onTextFormatProgress: (
+      cb: (payload: AISmartFormatProgressEvent) => void,
+    ) => {
+      const fn = (_: unknown, payload: AISmartFormatProgressEvent) =>
+        cb(payload);
+      ipcRenderer.on("ai:text-format:progress", fn);
+      return () => ipcRenderer.off("ai:text-format:progress", fn);
     },
   },
   /** 主进程 ragContext 向阅读器索取章节原文 */

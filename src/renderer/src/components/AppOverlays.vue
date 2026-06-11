@@ -37,6 +37,7 @@ const props = defineProps<{
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: import("@shared/aiSmartFormatTypes").AiSmartFormatSettings;
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
@@ -187,6 +188,7 @@ onBeforeUnmount(() => {
     :reader-edit-show-line-numbers="readerEditShowLineNumbers"
     :reader-edit-minimap="readerEditMinimap"
     :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"
+    :ai-smart-format="aiSmartFormat"
     :compress-blank-keep-one-blank="compressBlankKeepOneBlank"
     :monaco-custom-highlight="monacoCustomHighlight"
     :txtr-delimited-match-cross-line="txtrDelimitedMatchCrossLine"

@@ -7,6 +7,11 @@ import {
 } from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import {
+  defaultAiSmartFormatSettings,
+  mergeAiSmartFormatSettings,
+  type AiSmartFormatSettings,
+} from "@shared/aiSmartFormatTypes";
+import {
   mergeAiCustomSkills,
   mergeAiSkillOverrides,
   mergeAiSkillsEnabled,
@@ -80,6 +85,7 @@ export type SettingsApplyPayload = {
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: AiSmartFormatSettings;
   fontSize: number;
   lineHeightMultiple: number;
   compressBlankKeepOneBlank: boolean;
@@ -106,6 +112,7 @@ const props = defineProps<{
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: AiSmartFormatSettings;
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
@@ -148,6 +155,9 @@ const draftMonacoSmoothScrolling = ref(true);
 const draftReaderEditShowLineNumbers = ref(defaultReaderEditShowLineNumbers);
 const draftReaderEditMinimap = ref(defaultReaderEditMinimap);
 const draftEditAutoRefreshChapterList = ref(defaultEditAutoRefreshChapterList);
+const draftAiSmartFormat = ref<AiSmartFormatSettings>({
+  ...defaultAiSmartFormatSettings,
+});
 const draftCompressBlankKeepOneBlank = ref(false);
 const draftTxtrDelimitedMatchCrossLine = ref(
   defaultTxtrDelimitedMatchCrossLine,
@@ -187,6 +197,7 @@ function syncDraftFromProps() {
   draftReaderEditShowLineNumbers.value = props.readerEditShowLineNumbers;
   draftReaderEditMinimap.value = props.readerEditMinimap;
   draftEditAutoRefreshChapterList.value = props.editAutoRefreshChapterList;
+  draftAiSmartFormat.value = mergeAiSmartFormatSettings(props.aiSmartFormat);
   draftCompressBlankKeepOneBlank.value = props.compressBlankKeepOneBlank;
   draftTxtrDelimitedMatchCrossLine.value = props.txtrDelimitedMatchCrossLine;
   draftEbookConvertOutputDir.value = props.ebookConvertOutputDir;
@@ -288,6 +299,7 @@ function resetEditDraft() {
   draftReaderEditShowLineNumbers.value = defaultReaderEditShowLineNumbers;
   draftReaderEditMinimap.value = defaultReaderEditMinimap;
   draftEditAutoRefreshChapterList.value = defaultEditAutoRefreshChapterList;
+  draftAiSmartFormat.value = { ...defaultAiSmartFormatSettings };
 }
 
 function resetAiDraft() {
@@ -460,6 +472,7 @@ async function onConfirm() {
     readerEditShowLineNumbers: draftReaderEditShowLineNumbers.value,
     readerEditMinimap: draftReaderEditMinimap.value,
     editAutoRefreshChapterList: draftEditAutoRefreshChapterList.value,
+    aiSmartFormat: { ...draftAiSmartFormat.value },
     fontSize: draftFontSize.value,
     lineHeightMultiple: draftLineHeightMultiple.value,
     compressBlankKeepOneBlank: draftCompressBlankKeepOneBlank.value,
@@ -555,6 +568,7 @@ async function onClearCache() {
 
             <SettingsEditPanel
               v-show="activeTab === 'edit'"
+              :ai-features-enabled="showAiExtensionTabs"
               v-model:draft-reader-edit-show-line-numbers="
                 draftReaderEditShowLineNumbers
               "
@@ -562,6 +576,7 @@ async function onClearCache() {
               v-model:draft-edit-auto-refresh-chapter-list="
                 draftEditAutoRefreshChapterList
               "
+              v-model:draft-ai-smart-format="draftAiSmartFormat"
             />
 
             <SettingsVoiceReadPanel

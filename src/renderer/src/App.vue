@@ -140,7 +140,14 @@ import {
   createDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from "./services/shortcutRegistry";
-import { appAlert } from "./services/appDialog";
+import { appAlert, appConfirm } from "./services/appDialog";
+import {
+  defaultAiSmartFormatSettings,
+  aiSmartFormatHasAnyTask,
+  type AiSmartFormatSettings,
+} from "@shared/aiSmartFormatTypes";
+import { useAiSmartFormat } from "./composables/useAiSmartFormat";
+import AiSmartFormatProgressModal from "./components/AiSmartFormatProgressModal.vue";
 import { appToast } from "./services/appToast";
 import { mergeShortcutBindings } from "./services/shortcutUtils";
 import {
@@ -448,6 +455,12 @@ const monacoSmoothScrolling = ref(defaultMonacoSmoothScrolling);
 const readerEditShowLineNumbers = ref(defaultReaderEditShowLineNumbers);
 const readerEditMinimap = ref(defaultReaderEditMinimap);
 const editAutoRefreshChapterList = ref(defaultEditAutoRefreshChapterList);
+const aiSmartFormat = ref<AiSmartFormatSettings>({
+  ...defaultAiSmartFormatSettings,
+});
+const canUseAiSmartFormat = computed(() =>
+  aiSmartFormatHasAnyTask(aiSmartFormat.value),
+);
 /** 全屏时阅读区域宽度（百分比） */
 const fullscreenReaderWidthPercent = ref(defaultFullscreenReaderWidthPercent);
 /** 电子书转换缓存目录；默认 userData/ConvertedTxt；设置里清空则为与源文件同目录 */
@@ -804,6 +817,7 @@ const persistence = useAppPersistence({
   readerEditShowLineNumbers,
   readerEditMinimap,
   editAutoRefreshChapterList,
+  aiSmartFormat,
   fullscreenReaderWidthPercent,
   fileMetaRecords,
   shortcutBindings,
@@ -1391,6 +1405,10 @@ function applyChaptersFromReaderPlainText() {
 }
 
 async function onToggleReaderEdit() {
+  if (readerEditMode.value && aiSmartFormatReviewSession.value) {
+    appToast("排版预览进行中，请先点击「应用」或「放弃」。");
+    return;
+  }
   if (readerEditMode.value) {
     if (readerEditorDirty.value) {
       if (!(await confirmReaderEditDiscardUnsaved())) return;
@@ -1452,6 +1470,12 @@ async function runEditFormatWithChapterSync(
 }
 
 function onFormatEditCompressBlankLines() {
+  if (aiSmartFormatReviewSession.value) {
+    readerRef.value?.applySmartFormatReviewCompressBlankLines?.(
+      compressBlankKeepOneBlank.value,
+    );
+    return;
+  }
   void runEditFormatWithChapterSync(() =>
     readerRef.value?.applyEditFormatCompressBlankLines?.(
       compressBlankKeepOneBlank.value,
@@ -1460,9 +1484,59 @@ function onFormatEditCompressBlankLines() {
 }
 
 function onFormatEditLeadIndentFullWidth() {
+  if (aiSmartFormatReviewSession.value) {
+    readerRef.value?.applySmartFormatReviewLeadIndentFullWidth?.();
+    return;
+  }
   void runEditFormatWithChapterSync(() =>
     readerRef.value?.applyEditFormatLeadIndentFullWidth?.(),
   );
+}
+
+const smartFormatCtl = useAiSmartFormat({
+  readerRef,
+  chapters,
+  aiSmartFormat,
+  aiFeaturesEnabled,
+  aiSkillOverrides,
+  compressBlankKeepOneBlank,
+  runEditFormatWithChapterSync,
+  onReaderEditDirty: () => {
+    onReaderEditContentChange();
+  },
+  resyncMirrorFromReader: () => stream.resyncMirrorFromReader(),
+});
+const {
+  running: aiSmartFormatRunning,
+  progressOpen: aiSmartFormatProgressOpen,
+  progressCurrent: aiSmartFormatProgressCurrent,
+  progressTotal: aiSmartFormatProgressTotal,
+  progressShowTokenUsage: aiSmartFormatProgressShowTokenUsage,
+  progressTokenUsage: aiSmartFormatProgressTokenUsage,
+  progressTokenUsageAvailable: aiSmartFormatProgressTokenUsageAvailable,
+  progressTokenPricePerMillion: aiSmartFormatProgressTokenPricePerMillion,
+  reviewSession: aiSmartFormatReviewSession,
+  runSmartFormat: runAiSmartFormat,
+  stopSmartFormat: stopAiSmartFormat,
+  applySmartFormatReview,
+  discardSmartFormatReview,
+} = smartFormatCtl;
+
+async function confirmAndRunAiSmartFormatFull() {
+  const ok = await appConfirm(
+    "全文排版可能会消耗较多 Token，如果只想对特定选区进行排版，可在编辑器中选中相应文本 → 右键 →「AI 智能排版：选中文本」。",
+    "将进行全文智能排版，是否继续？",
+  );
+  if (!ok) return;
+  void runAiSmartFormat("full");
+}
+
+function onAiSmartFormatFull() {
+  void confirmAndRunAiSmartFormatFull();
+}
+
+function onAiSmartFormatSelection() {
+  void runAiSmartFormat("selection");
 }
 
 async function onFooterSaveFileAsEncoding(codec: "utf8" | "gb2312") {
@@ -2038,6 +2112,7 @@ async function applySettings(payload: SettingsApplyPayload) {
   readerEditShowLineNumbers.value = payload.readerEditShowLineNumbers;
   readerEditMinimap.value = payload.readerEditMinimap;
   editAutoRefreshChapterList.value = payload.editAutoRefreshChapterList;
+  aiSmartFormat.value = { ...payload.aiSmartFormat };
   compressBlankKeepOneBlank.value = payload.compressBlankKeepOneBlank;
   txtrDelimitedMatchCrossLine.value = payload.txtrDelimitedMatchCrossLine;
   restoreSessionOnStartup.value = payload.restoreSessionOnStartup;
@@ -2336,6 +2411,11 @@ useAppShellThemeWatch({
         @quit-app="quitApp"
         @toggle-reader-edit="onToggleReaderEdit"
         @save-reader-file="onSaveReaderFile"
+        :ai-features-enabled="aiFeaturesEnabled"
+        :can-use-ai-smart-format="canUseAiSmartFormat"
+        :ai-smart-format-running="aiSmartFormatRunning"
+        :smart-format-review-active="aiSmartFormatReviewSession != null"
+        @ai-smart-format-full="onAiSmartFormatFull"
         @voice-read-toggle="toggleVoiceReadToolbar"
       />
     </div>
@@ -2531,6 +2611,13 @@ useAppShellThemeWatch({
           :reader-edit-restore-anchor="pendingReaderEditRestoreAnchor"
           :physical-reader-path="physicalReaderPath"
           :file-is-markdown="currentFileIsMarkdown && !readerEditMode"
+          :ai-features-enabled="aiFeaturesEnabled"
+          :can-use-ai-smart-format="canUseAiSmartFormat"
+          :smart-format-review-session="aiSmartFormatReviewSession"
+          @ai-smart-format-full="onAiSmartFormatFull"
+          @ai-smart-format-selection="onAiSmartFormatSelection"
+          @smart-format-review-apply="applySmartFormatReview()"
+          @smart-format-review-discard="discardSmartFormatReview()"
           @probe-line-change="onProbeLineChange"
           @viewport-top-line-change="onViewportTopLineChange"
           @viewport-end-line-change="onViewportEndLineChange"
@@ -2626,6 +2713,16 @@ useAppShellThemeWatch({
 
     <AppDialogHost />
     <AppToastHost />
+    <AiSmartFormatProgressModal
+      v-model="aiSmartFormatProgressOpen"
+      :current="aiSmartFormatProgressCurrent"
+      :total="aiSmartFormatProgressTotal"
+      :show-token-usage="aiSmartFormatProgressShowTokenUsage"
+      :token-usage="aiSmartFormatProgressTokenUsage"
+      :token-usage-available="aiSmartFormatProgressTokenUsageAvailable"
+      :token-price-per-million="aiSmartFormatProgressTokenPricePerMillion"
+      @stop="stopAiSmartFormat()"
+    />
 
     <AppOverlays
       ref="appOverlaysRef"
@@ -2649,6 +2746,7 @@ useAppShellThemeWatch({
       :reader-edit-show-line-numbers="readerEditShowLineNumbers"
       :reader-edit-minimap="readerEditMinimap"
       :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"
+      :ai-smart-format="aiSmartFormat"
       :monaco-custom-highlight="monacoCustomHighlight"
       :txtr-delimited-match-cross-line="txtrDelimitedMatchCrossLine"
       :chapter-rules="chapterRuleState.rules"

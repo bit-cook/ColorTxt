@@ -105,6 +105,7 @@ export function buildReaderEditorSharedCoreOptions(
   | "unusualLineTerminators"
   | "renderControlCharacters"
   | "fixedOverflowWidgets"
+  | "useShadowDOM"
   | "hover"
   | "maxTokenizationLineLength"
   | "stopRenderingLineAfter"
@@ -140,6 +141,8 @@ export function buildReaderEditorSharedCoreOptions(
     renderControlCharacters: false,
     /** 悬停/补全等内容挂件用视口 fixed 定位，避免被阅读区 overflow:hidden 裁切 */
     fixedOverflowWidgets: true,
+    /** 关闭 Shadow DOM，便于统一 context menu 等挂件样式；右键菜单由应用层接管 */
+    useShadowDOM: false,
     /** 长脚注悬停：可移入面板滚动阅读（Monaco 内建 sticky + 按需滚动条） */
     hover: {
       enabled: true,
@@ -214,7 +217,7 @@ export function buildReaderEditorEditModeNativeChromeOptions(): ReaderMonacoConf
     inlineSuggest: { enabled: false },
     tabCompletion: "off",
     wordWrap: "on",
-    contextmenu: true,
+    contextmenu: false,
     links: true,
     padding: { top: 0, bottom: 0 },
   } satisfies ReaderMonacoConfigurableOptions;

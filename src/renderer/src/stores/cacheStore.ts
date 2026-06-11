@@ -72,6 +72,10 @@ export type PersistedSettingsData = {
   readerEditMinimap?: boolean;
   /** 编辑模式下内容变更时是否自动刷新侧栏章节列表（超过行数上限时需手动刷新） */
   editAutoRefreshChapterList?: boolean;
+  /** 编辑模式 AI 智能排版选项 */
+  aiSmartFormat?: Partial<
+    import("@shared/aiSmartFormatTypes").AiSmartFormatSettings
+  >;
   /** 全屏时阅读区宽度（百分比） */
   fullscreenReaderWidthPercent?: number;
   /** 用户自定义快捷键（动作ID -> accelerator） */
@@ -265,6 +269,9 @@ export function loadPersistedSettingsData(
   }
   if (typeof obj.editAutoRefreshChapterList === "boolean") {
     data.editAutoRefreshChapterList = obj.editAutoRefreshChapterList;
+  }
+  if (obj.aiSmartFormat && typeof obj.aiSmartFormat === "object") {
+    data.aiSmartFormat = obj.aiSmartFormat as PersistedSettingsData["aiSmartFormat"];
   }
   if (
     typeof obj.fullscreenReaderWidthPercent === "number" &&

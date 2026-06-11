@@ -65,9 +65,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__electronViteConfigDir, "src/main/index.ts"),
-          "embedding/embeddingWorker": resolve(
+          "ai/rag/embedding/worker": resolve(
             __electronViteConfigDir,
-            "src/main/embedding/embeddingWorker.ts",
+            "src/main/ai/rag/embedding/worker.ts",
           ),
         },
         /**

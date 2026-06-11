@@ -74,7 +74,7 @@ export function useAppChapterNavigation(deps: {
   }
 
   function jumpToChapter(ch: Chapter) {
-    deps.readerRef.value?.jumpToLine(ch.lineNumber);
+    deps.readerRef.value?.scrollToLineNearTop?.(ch.lineNumber);
     const idx = resolveChapterListIndex(ch);
     if (idx !== deps.activeChapterIdx.value) deps.activeChapterIdx.value = idx;
   }

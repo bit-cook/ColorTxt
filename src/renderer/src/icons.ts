@@ -47,6 +47,7 @@ import ascIcon from "./assets/asc.svg?raw";
 import descIcon from "./assets/desc.svg?raw";
 import folderOpenIcon from "./assets/folder_open.svg?raw";
 import aiChatIcon from "./assets/AI_chat.svg?raw";
+import aiComposeIcon from "./assets/AI_compose.svg?raw";
 import brainIcon from "./assets/brain.svg?raw";
 import copyIcon from "./assets/copy.svg?raw";
 import downloadIcon from "./assets/download.svg?raw";
@@ -64,6 +65,10 @@ import stopIcon from "./assets/stop.svg?raw";
 import thinkingPulseIcon from "./assets/thinking_pulse.svg?raw";
 import foldChevronIcon from "./assets/fold_chevron.svg?raw";
 import foldIcon from "./assets/fold.svg?raw";
+import upThinIcon from "./assets/up_thin.svg?raw";
+import downThinIcon from "./assets/down_thin.svg?raw";
+import paragraphIcon from "./assets/paragraph.svg?raw";
+import foldUnchangedIcon from "./assets/fold_unchanged.svg?raw";
 import expandIcon from "./assets/expand.svg?raw";
 import jumpBottomIcon from "./assets/jump_bottom.svg?raw";
 import characterIcon from "./assets/character.svg?raw";
@@ -128,6 +133,7 @@ export const icons = {
   desc: descIcon,
   folderOpen: folderOpenIcon,
   aiChat: aiChatIcon,
+  aiCompose: aiComposeIcon,
   brain: brainIcon,
   copy: copyIcon,
   download: downloadIcon,
@@ -149,6 +155,13 @@ export const icons = {
   foldChevron: foldChevronIcon,
   /** 思维导图「全部收起」 */
   fold: foldIcon,
+  /** Diff 预览：上一个 / 下一个更改 */
+  upThin: upThinIcon,
+  downThin: downThinIcon,
+  /** Diff 预览：显示行首/行尾空白差异 */
+  paragraph: paragraphIcon,
+  /** Diff 预览：折叠未更改区域 */
+  foldUnchanged: foldUnchangedIcon,
   /** 思维导图「全部展开」 */
   expand: expandIcon,
   jumpBottom: jumpBottomIcon,

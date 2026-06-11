@@ -115,6 +115,8 @@ export const defaultEditAutoRefreshChapterList = true;
 /** 自动刷新章节列表的最大行数（含） */
 export const editAutoRefreshChapterListMaxLines = 300_000;
 
+export { defaultAiSmartFormatSettings } from "@shared/aiSmartFormatTypes";
+
 /** 默认「最近打开」条数上限（可被设置覆盖） */
 export const defaultRecentFilesHistoryLimit = 20;
 export const maxRecentFilesHistoryLimit = 1000;

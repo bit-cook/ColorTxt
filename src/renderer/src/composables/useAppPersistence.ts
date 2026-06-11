@@ -15,6 +15,10 @@ import {
   type ChapterMatchRule,
 } from "../chapter";
 import {
+  mergeAiSmartFormatSettings,
+  type AiSmartFormatSettings,
+} from "@shared/aiSmartFormatTypes";
+import {
   loadPersistedSettingsData,
   loadSessionSnapshot,
   loadTxtFileListSnapshot,
@@ -160,6 +164,7 @@ export function useAppPersistence(deps: {
   readerEditShowLineNumbers: Ref<boolean>;
   readerEditMinimap: Ref<boolean>;
   editAutoRefreshChapterList: Ref<boolean>;
+  aiSmartFormat: Ref<AiSmartFormatSettings>;
   fullscreenReaderWidthPercent: Ref<number>;
   fileMetaRecords: Ref<FileMetaRecord[]>;
   shortcutBindings: Ref<ShortcutBindingMap>;
@@ -741,6 +746,7 @@ export function useAppPersistence(deps: {
     if (typeof data.editAutoRefreshChapterList === "boolean") {
       deps.editAutoRefreshChapterList.value = data.editAutoRefreshChapterList;
     }
+    deps.aiSmartFormat.value = mergeAiSmartFormatSettings(data.aiSmartFormat);
     if (
       typeof data.fullscreenReaderWidthPercent === "number" &&
       Number.isFinite(data.fullscreenReaderWidthPercent)
@@ -896,6 +902,7 @@ export function useAppPersistence(deps: {
       readerEditShowLineNumbers: deps.readerEditShowLineNumbers.value,
       readerEditMinimap: deps.readerEditMinimap.value,
       editAutoRefreshChapterList: deps.editAutoRefreshChapterList.value,
+      aiSmartFormat: deps.aiSmartFormat.value,
       fullscreenReaderWidthPercent: deps.fullscreenReaderWidthPercent.value,
       shortcutBindings: deps.shortcutBindings.value,
       readerPaletteOverridesLight:

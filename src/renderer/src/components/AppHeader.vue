@@ -50,6 +50,11 @@ const props = withDefaults(
     shortcutBindings: ShortcutBindingMap;
     /** Markdown 文件：禁用章节正则规则（使用 # 标题） */
     chapterRulesDisabled?: boolean;
+    aiFeaturesEnabled?: boolean;
+    canUseAiSmartFormat?: boolean;
+    aiSmartFormatRunning?: boolean;
+    /** 智能排版 Diff 预览中：禁止退出编辑模式 */
+    smartFormatReviewActive?: boolean;
   }>(),
   {
     inFullscreen: false,
@@ -64,6 +69,10 @@ const props = withDefaults(
     readerEditMode: false,
     canEnterReaderEditMode: false,
     chapterRulesDisabled: false,
+    aiFeaturesEnabled: false,
+    canUseAiSmartFormat: false,
+    aiSmartFormatRunning: false,
+    smartFormatReviewActive: false,
   },
 );
 
@@ -102,6 +111,7 @@ const emit = defineEmits<{
   bookmarkClick: [];
   toggleReaderEdit: [];
   saveReaderFile: [];
+  aiSmartFormatFull: [];
   voiceReadToggle: [];
 }>();
 
@@ -117,9 +127,17 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
       :icon-html="icons.edit"
       :active="readerEditMode"
       :pressed="readerEditMode"
-      title="编辑模式"
+      :title="
+        smartFormatReviewActive
+          ? '排版预览中，请先应用或放弃'
+          : '编辑模式'
+      "
       aria-label="切换编辑模式"
-      :disabled="vrFormatLock || (!readerEditMode && !canEnterReaderEditMode)"
+      :disabled="
+        vrFormatLock ||
+        smartFormatReviewActive ||
+        (!readerEditMode && !canEnterReaderEditMode)
+      "
       @click="emit('toggleReaderEdit')"
     />
     <IconButton
@@ -127,8 +145,21 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
       :icon-html="icons.save"
       title="保存"
       aria-label="保存"
+      :disabled="aiSmartFormatRunning || smartFormatReviewActive"
       @click="emit('saveReaderFile')"
     />
+    <template
+      v-if="readerEditMode && aiFeaturesEnabled && canUseAiSmartFormat"
+    >
+      <span class="toolbarDivider" aria-hidden="true"></span>
+      <IconButton
+        :icon-html="icons.aiCompose"
+        title="AI 智能排版"
+        aria-label="AI 智能排版"
+        :disabled="vrFormatLock || aiSmartFormatRunning"
+        @click="emit('aiSmartFormatFull')"
+      />
+    </template>
     <div class="themePicker">
       <div class="headerQuickRow">
         <IconButton

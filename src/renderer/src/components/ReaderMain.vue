@@ -53,6 +53,12 @@ import {
   leadingWhitespaceColumnCount,
 } from "../chapter";
 import {
+  compressBlankLinesInText,
+  leadIndentFullWidthInText,
+  type SmartFormatPostProcessContext,
+} from "../aiSmartFormat/aiSmartFormatTextPostProcess";
+import { countLinesInText } from "../aiSmartFormat/aiSmartFormatSegments";
+import {
   formatPhysicalPlainTextForReader,
   type ReaderDisplayFormatOptions,
 } from "../reader/readerDisplayPipeline";
@@ -119,11 +125,19 @@ import {
   normalizeRelativeToFsStyle,
 } from "../ebook/pathUtils";
 import { appAlert } from "../services/appDialog";
+import type { SmartFormatReviewSession } from "../aiSmartFormat/aiSmartFormatReviewTypes";
+import {
+  useReaderSmartFormatDiff,
+  type SmartFormatDiffContextMenuRequest,
+} from "../composables/useReaderSmartFormatDiff";
+import IconButton from "./IconButton.vue";
+import { icons } from "../icons";
 
 /** 与 `READER_HL_FLOAT_ROOT_Z_INDEX` 同步；低于 `AppModal` 蒙层（6000） */
 const HL_FLOAT_Z_INDEX = READER_HL_FLOAT_ROOT_Z_INDEX;
 
 const editorEl = ref<HTMLDivElement | null>(null);
+const diffHostEl = ref<HTMLDivElement | null>(null);
 const editorContextMenuOpen = ref(false);
 const editorContextMenuX = ref(0);
 const editorContextMenuY = ref(0);
@@ -131,6 +145,77 @@ const editorContextMenuY = ref(0);
 const editorContextMenuCopyRange = shallowRef<monaco.Range | null>(null);
 
 const EDITOR_CONTEXT_MENU_ITEMS = [{ id: "copy", label: "复制" }] as const;
+
+const editorEditContextMenuOpen = ref(false);
+const editorEditContextMenuX = ref(0);
+const editorEditContextMenuY = ref(0);
+const editorEditContextMenuHasSelection = ref(false);
+
+const diffReviewContextMenuOpen = ref(false);
+const diffReviewContextMenuX = ref(0);
+const diffReviewContextMenuY = ref(0);
+const diffReviewContextMenuSide = ref<SmartFormatDiffContextMenuRequest["side"]>(
+  "modified",
+);
+const diffReviewContextMenuHasSelection = ref(false);
+
+const diffReviewContextMenuItems = computed(() => {
+  if (diffReviewContextMenuSide.value === "original") {
+    return [
+      {
+        id: "copy",
+        label: "复制",
+        disabled: !diffReviewContextMenuHasSelection.value,
+      },
+    ];
+  }
+  return [
+    {
+      id: "cut",
+      label: "剪切",
+      disabled: !diffReviewContextMenuHasSelection.value,
+    },
+    {
+      id: "copy",
+      label: "复制",
+      disabled: !diffReviewContextMenuHasSelection.value,
+    },
+    { id: "paste", label: "粘贴" },
+  ];
+});
+
+const editorEditContextMenuItems = computed(() => {
+  const items: Array<{
+    id: string;
+    label?: string;
+    separator?: boolean;
+    disabled?: boolean;
+    iconHtml?: string;
+  }> = [
+    { id: "cut", label: "剪切" },
+    { id: "copy", label: "复制" },
+    { id: "paste", label: "粘贴" },
+  ];
+  if (
+    props.aiFeaturesEnabled &&
+    props.canUseAiSmartFormat &&
+    !smartFormatReviewActive.value
+  ) {
+    items.push({ id: "sep-ai", separator: true });
+    items.push({
+      id: "ai-format-selection",
+      label: "AI 智能排版：选中文本",
+      iconHtml: icons.aiCompose,
+      disabled: !editorEditContextMenuHasSelection.value,
+    });
+    items.push({
+      id: "ai-format-full",
+      label: "AI 智能排版：全文",
+      iconHtml: icons.aiCompose,
+    });
+  }
+  return items;
+});
 const editor = shallowRef<monaco.editor.IStandaloneCodeEditor | null>(null);
 const model = shallowRef<monaco.editor.ITextModel | null>(null);
 /** 章节标题行内装饰（`buildChapterTitleDecorations` / `inlineClassName` 着色）；与 View Zone 留白无关 */
@@ -197,10 +282,13 @@ const voiceReadScrollLocked = computed(
 let removeHlGlobalListeners: (() => void) | null = null;
 let unsubModalStack: (() => void) | null = null;
 let removeVoiceReadKeyCapture: (() => void) | null = null;
+let removeSmartFormatReviewKeyCapture: (() => void) | null = null;
 const builtInThemes = new Set(["vs", "vs-dark"]);
 /** 行高 = round(fontSize * multiple)，由 App 持久化并同步 */
 let lineHeightMultiple = defaultReaderLineHeightMultiple;
 let currentFontFamily = READER_EDITOR_DEFAULT_FONT_FAMILY;
+/** App 传入的主题名（vs / vs-dark），用于切换语法着色后重设 Monaco 主题 */
+let lastAppThemeName = "vs";
 
 let chaptersSnapshot: ChapterStickyLine[] = [];
 /** `registerChapterStickyScrollProviders` 注入后赋值；`setChapters` 末尾触发折叠失效以刷新粘性条 */
@@ -279,6 +367,12 @@ const props = withDefaults(
     fileIsMarkdown?: boolean;
     /** 全屏阅读：只读时滚动条 `auto` 淡出；窗口模式仍常显 */
     readerFullscreen?: boolean;
+    /** AI 阅读助手已启用（编辑右键智能排版项） */
+    aiFeaturesEnabled?: boolean;
+    /** 至少一项智能排版任务已开启（设置 → 编辑） */
+    canUseAiSmartFormat?: boolean;
+    /** 智能排版 Diff 预览（非 null 时在编辑器区域展示左右对比） */
+    smartFormatReviewSession?: SmartFormatReviewSession | null;
   }>(),
   {
     monacoCustomHighlight: defaultMonacoCustomHighlight,
@@ -306,6 +400,9 @@ const props = withDefaults(
     physicalReaderPath: null,
     chapterMinCharCount: defaultChapterMinCharCount,
     readerFullscreen: false,
+    aiFeaturesEnabled: false,
+    canUseAiSmartFormat: false,
+    smartFormatReviewSession: null,
   },
 );
 
@@ -322,7 +419,74 @@ const emit = defineEmits<{
   readerEditLoadFailed: [];
   readerEditSaveRequest: [];
   voiceReadResume: [];
+  aiSmartFormatFull: [];
+  aiSmartFormatSelection: [];
+  smartFormatReviewApply: [];
+  smartFormatReviewDiscard: [];
 }>();
+
+const smartFormatRunning = ref(false);
+
+const smartFormatReviewActive = computed(
+  () => props.smartFormatReviewSession != null,
+);
+
+const smartFormatReviewScopeLabel = computed(() => {
+  const s = props.smartFormatReviewSession;
+  if (!s) return "";
+  const kind = s.scope === "full" ? "全文" : "选区";
+  return `${kind} · 第 ${s.startLine}–${s.endLine} 行`;
+});
+
+function getDiffEditorOptionsInput(): import("../monaco/readerEditorOptions").ReaderEditorCreateOptionsInput {
+  const e = editor.value;
+  const fontSize =
+    e?.getOption(monaco.editor.EditorOption.fontSize) ??
+    READER_EDITOR_DEFAULT_FONT_SIZE;
+  return {
+    fontSize,
+    lineHeightMultiple,
+    fontFamily: currentFontFamily,
+    theme: lastAppThemeName,
+    smoothScrolling: props.monacoSmoothScrolling,
+    wrappingStrategyAdvanced: props.monacoAdvancedWrapping,
+  };
+}
+
+const {
+  changeCount: smartFormatDiffChangeCount,
+  showWhitespaceDiff: smartFormatDiffShowWhitespace,
+  hideUnchangedRegionsEnabled: smartFormatDiffHideUnchanged,
+  layoutDiffEditor,
+  syncDiffEditorTypography,
+  goToPreviousDiff: smartFormatDiffGoToPrevious,
+  goToNextDiff: smartFormatDiffGoToNext,
+  toggleShowWhitespaceDiff: smartFormatDiffToggleWhitespace,
+  toggleHideUnchangedRegions: smartFormatDiffToggleHideUnchanged,
+  getSmartFormatReviewModifiedText,
+  diffEditor: smartFormatDiffEditor,
+} = useReaderSmartFormatDiff({
+    diffHostEl,
+    session: () => props.smartFormatReviewSession,
+    getCreateOptionsInput: getDiffEditorOptionsInput,
+    onContextMenuRequest: (request) => {
+      closeEditorContextMenu();
+      closeEditorEditContextMenu();
+      diffReviewContextMenuSide.value = request.side;
+      diffReviewContextMenuHasSelection.value = request.hasSelection;
+      diffReviewContextMenuX.value = request.x;
+      diffReviewContextMenuY.value = request.y;
+      diffReviewContextMenuOpen.value = true;
+    },
+  });
+
+function onSmartFormatReviewApply() {
+  emit("smartFormatReviewApply");
+}
+
+function onSmartFormatReviewDiscard() {
+  emit("smartFormatReviewDiscard");
+}
 
 let readerEditSavedSnapshot = "";
 /** 载入编辑正文、恢复视口等程序化写入期间不判 dirty */
@@ -425,6 +589,94 @@ function markReaderEditSaved() {
   sealReaderEditBaseline();
 }
 
+function applyEditLineRangePatch(
+  startLine: number,
+  endLine: number,
+  text: string,
+): boolean {
+  const m = model.value;
+  const e = editor.value;
+  if (!m || !e || !props.readerEditMode) {
+    return false;
+  }
+  const sl = Math.max(1, Math.min(startLine, m.getLineCount()));
+  const el = Math.max(sl, Math.min(endLine, m.getLineCount()));
+  const range = new monaco.Range(
+    sl,
+    1,
+    el,
+    m.getLineMaxColumn(el),
+  );
+  if (text === m.getValueInRange(range)) return false;
+  m.pushEditOperations(
+    e.getSelections(),
+    [{ range, text, forceMoveMarkers: true }],
+    () => null,
+  );
+  return true;
+}
+
+function getSelectionRange(): monaco.Range | null {
+  const e = editor.value;
+  if (!e) return null;
+  const sel = e.getSelection();
+  if (!sel) return null;
+  return monaco.Range.lift(sel);
+}
+
+function revealSmartFormatSegment(startLine: number): void {
+  const e = editor.value;
+  if (!e) return;
+  const ln = Math.max(1, Math.floor(startLine));
+  e.revealLineNearTop(ln, monacoScrollType(false));
+}
+
+/** 排版预览「应用」写回后：选中写回范围，并将末行贴齐视口底 */
+function focusSmartFormatAppliedRange(
+  startLine: number,
+  patchedText: string,
+): void {
+  const m = model.value;
+  const e = editor.value;
+  if (!m || !e || !props.readerEditMode) return;
+
+  const apply = () => {
+    const lineCount = m.getLineCount();
+    if (lineCount < 1) return;
+    const sl = Math.max(1, Math.min(Math.floor(startLine), lineCount));
+    const insertedLines = countLinesInText(patchedText);
+    if (insertedLines < 1) {
+      e.setPosition({ lineNumber: sl, column: 1 });
+      e.focus();
+      return;
+    }
+    const el = Math.max(sl, Math.min(sl + insertedLines - 1, lineCount));
+    const selection = new monaco.Selection(
+      sl,
+      1,
+      el,
+      m.getLineMaxColumn(el),
+    );
+    e.layout();
+    e.setSelection(selection);
+    scrollLineToBottom(el, false);
+    e.setSelection(selection);
+    e.focus();
+  };
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(apply);
+  });
+}
+
+function setSmartFormatRunning(lock: boolean): void {
+  smartFormatRunning.value = lock;
+  const e = editor.value;
+  if (!e || !props.readerEditMode) return;
+  e.updateOptions({ readOnly: lock });
+  if (!lock) applyReaderMonacoModeOptions(true);
+}
+
 /** 编辑模式格式化整篇替换（`setValue` 比 `executeEdits` 更快，但会清空撤销栈，不支持撤销）。 */
 function setModelTextIfChanged(text: string): boolean {
   const m = model.value;
@@ -499,17 +751,26 @@ function readerFileIsMarkdown(): boolean {
   return p ? isMarkdownFilePath(p) : false;
 }
 
+function smartFormatPostProcessContext(): SmartFormatPostProcessContext {
+  const isMarkdown = readerFileIsMarkdown();
+  return {
+    chapterMinCharCount: props.chapterMinCharCount,
+    isMarkdown,
+    preserveMarkdownSourceLines: props.readerEditMode && isMarkdown,
+  };
+}
+
 function readerFormatOptions(
   overrides: Partial<ReaderDisplayFormatOptions> = {},
 ): ReaderDisplayFormatOptions {
-  const isMarkdown = readerFileIsMarkdown();
+  const ctx = smartFormatPostProcessContext();
   return {
     compressBlankLines: false,
     compressBlankKeepOneBlank: false,
     leadIndentFullWidth: false,
-    minCharCount: props.chapterMinCharCount,
-    isMarkdown,
-    preserveMarkdownSourceLines: props.readerEditMode && isMarkdown,
+    minCharCount: ctx.chapterMinCharCount,
+    isMarkdown: ctx.isMarkdown,
+    preserveMarkdownSourceLines: ctx.preserveMarkdownSourceLines,
     ...overrides,
   };
 }
@@ -556,6 +817,82 @@ async function applyEditFormatLeadIndentFullWidth(): Promise<boolean> {
       plain,
       readerFormatOptions({ leadIndentFullWidth: true }),
     ),
+  );
+}
+
+function applySmartFormatReviewFormat(
+  format: (plain: string) => string,
+): boolean {
+  if (!smartFormatReviewActive.value) return false;
+  const modifiedEd = smartFormatDiffEditor.value?.getModifiedEditor();
+  const m = modifiedEd?.getModel();
+  if (!modifiedEd || !m) return false;
+  const plain = m.getValue();
+  const formatted = format(plain);
+  if (formatted === plain) return false;
+  modifiedEd.pushUndoStop();
+  modifiedEd.executeEdits("smartFormatReviewFormat", [
+    {
+      range: m.getFullModelRange(),
+      text: formatted,
+    },
+  ]);
+  return true;
+}
+
+function applySmartFormatReviewCompressBlankLines(
+  keepOneBlank: boolean,
+): boolean {
+  return applySmartFormatReviewFormat((plain) =>
+    compressBlankLinesInText(plain, smartFormatPostProcessContext(), keepOneBlank),
+  );
+}
+
+function applySmartFormatReviewLeadIndentFullWidth(): boolean {
+  return applySmartFormatReviewFormat((plain) =>
+    leadIndentFullWidthInText(plain, smartFormatPostProcessContext()),
+  );
+}
+
+function applyEditFormatInLineRange(
+  startLine: number,
+  endLine: number,
+  format: (plain: string) => string,
+): boolean {
+  const m = model.value;
+  if (!m || !props.readerEditMode) return false;
+  const sl = Math.max(1, Math.min(startLine, m.getLineCount()));
+  const el = Math.max(sl, Math.min(endLine, m.getLineCount()));
+  const parts: string[] = [];
+  for (let ln = sl; ln <= el; ln++) {
+    parts.push(m.getLineContent(ln));
+  }
+  const plain = parts.join("\n");
+  const formatted = format(plain);
+  if (formatted === plain) return false;
+  return applyEditLineRangePatch(sl, el, formatted);
+}
+
+function applyEditFormatCompressBlankLinesInRange(
+  startLine: number,
+  endLine: number,
+  keepOneBlank: boolean,
+): boolean {
+  return applyEditFormatInLineRange(startLine, endLine, (plain) =>
+    compressBlankLinesInText(
+      plain,
+      smartFormatPostProcessContext(),
+      keepOneBlank,
+    ),
+  );
+}
+
+function applyEditFormatLeadIndentFullWidthInRange(
+  startLine: number,
+  endLine: number,
+): boolean {
+  return applyEditFormatInLineRange(startLine, endLine, (plain) =>
+    leadIndentFullWidthInText(plain, smartFormatPostProcessContext()),
   );
 }
 
@@ -912,9 +1249,6 @@ function monacoScrollType(wantSmooth: boolean): monaco.editor.ScrollType {
     ? monaco.editor.ScrollType.Smooth
     : monaco.editor.ScrollType.Immediate;
 }
-
-/** App 传入的主题名（vs / vs-dark），用于切换语法着色后重设 Monaco 主题 */
-let lastAppThemeName = "vs";
 
 /**
  * 读盘按固定字节分块时，CRLF 常被拆成上一块以 \\r 结尾、下一块以 \\n 开头。
@@ -1769,6 +2103,9 @@ function setTheme(themeName: string) {
     monaco.editor.setTheme("vs-dark");
   }
   forceOverviewRulerCanvasRepaint();
+  if (smartFormatReviewActive.value) {
+    requestAnimationFrame(() => layoutDiffEditor());
+  }
 }
 
 /**
@@ -1803,6 +2140,9 @@ function setFontSize(fontSize: number) {
       lineHeightMultiple,
     }),
   );
+  if (smartFormatReviewActive.value) {
+    syncDiffEditorTypography();
+  }
 }
 
 function setLineHeightMultiple(multiple: number) {
@@ -1816,6 +2156,9 @@ function setLineHeightMultiple(multiple: number) {
       lineHeightMultiple,
     }),
   );
+  if (smartFormatReviewActive.value) {
+    syncDiffEditorTypography();
+  }
 }
 
 function setWrappingStrategyAdvanced(advanced: boolean) {
@@ -1830,12 +2173,18 @@ function setFontFamily(fontFamily: string) {
 
   currentFontFamily = fontFamily;
   e.updateOptions({ fontFamily: currentFontFamily });
+  if (smartFormatReviewActive.value) {
+    syncDiffEditorTypography();
+  }
 
   // Ensure KingHwa webfont is loaded before applying to avoid fallback flashes.
   if (currentFontFamily.includes("KingHwa OldSong")) {
     const fontSize = e.getOption(monaco.editor.EditorOption.fontSize);
     void document.fonts?.load(`${fontSize}px "KingHwa OldSong"`).then(() => {
       e.updateOptions({ fontFamily: currentFontFamily });
+      if (smartFormatReviewActive.value) {
+        syncDiffEditorTypography();
+      }
     });
   }
 }
@@ -1873,7 +2222,8 @@ function scrollToDocumentStart(smooth = false) {
   e.focus();
 }
 
-function jumpToLine(lineNumber: number, smooth = true) {
+/** 将目标行顶对齐视口顶；不移动光标、不抢焦点（编辑态章节导航等） */
+function scrollToLineNearTop(lineNumber: number, smooth = true) {
   const e = editor.value;
   const m = model.value;
   if (!e || !m) return;
@@ -1889,6 +2239,17 @@ function jumpToLine(lineNumber: number, smooth = true) {
   const top = e.getTopForLineNumber(line);
   // 勿再减 lineHeight：否则视口顶行会变成 line-1，恢复阅读位置/章节跳转都会「回退一行」
   e.setScrollTop(Math.max(0, top), scrollType);
+}
+
+function jumpToLine(lineNumber: number, smooth = true) {
+  const e = editor.value;
+  const m = model.value;
+  if (!e || !m) return;
+  scrollToLineNearTop(lineNumber, smooth);
+  const line = Math.max(
+    1,
+    Math.min(Math.floor(lineNumber), Math.max(1, m.getLineCount())),
+  );
   e.setPosition({ lineNumber: line, column: 1 });
   e.focus();
 }
@@ -2143,6 +2504,50 @@ function contextMenuTargetInSelection(
   return false;
 }
 
+function monacoPositionAfterPaste(
+  start: monaco.Position,
+  text: string,
+): monaco.Position {
+  const lines = text.replace(/\r\n|\r/g, "\n").split("\n");
+  if (lines.length === 1) {
+    return new monaco.Position(
+      start.lineNumber,
+      start.column + lines[0].length,
+    );
+  }
+  return new monaco.Position(
+    start.lineNumber + lines.length - 1,
+    lines[lines.length - 1].length + 1,
+  );
+}
+
+/** 菜单粘贴：Electron 下 `trigger(clipboardPasteAction)` 常无效，改读剪贴板后 executeEdits */
+async function pasteClipboardIntoMonacoEditor(
+  e: monaco.editor.ICodeEditor,
+): Promise<void> {
+  await nextTick();
+  e.focus();
+  let text: string;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    return;
+  }
+  if (!text) return;
+  const m = e.getModel();
+  const sel = e.getSelection();
+  if (!m || !sel) return;
+  const anchor = sel.getStartPosition();
+  e.pushUndoStop();
+  const ok = e.executeEdits("colortxt-context-paste", [
+    { range: sel, text, forceMoveMarkers: true },
+  ]);
+  if (!ok) return;
+  e.pushUndoStop();
+  const end = monacoPositionAfterPaste(anchor, text);
+  e.setSelection(monaco.Selection.fromPositions(end, end));
+}
+
 function closeEditorContextMenu() {
   editorContextMenuOpen.value = false;
   editorContextMenuCopyRange.value = null;
@@ -2157,6 +2562,65 @@ function onEditorContextMenuSelect(id: string) {
   const text = m.getValueInRange(range);
   if (!text) return;
   void navigator.clipboard.writeText(text);
+}
+
+function closeEditorEditContextMenu() {
+  editorEditContextMenuOpen.value = false;
+}
+
+function closeDiffReviewContextMenu() {
+  diffReviewContextMenuOpen.value = false;
+}
+
+function onDiffReviewContextMenuSelect(id: string) {
+  closeDiffReviewContextMenu();
+  const diff = smartFormatDiffEditor.value;
+  if (!diff) return;
+  const e =
+    diffReviewContextMenuSide.value === "original"
+      ? diff.getOriginalEditor()
+      : diff.getModifiedEditor();
+  if (id === "cut") {
+    e.focus();
+    e.trigger("keyboard", "editor.action.clipboardCutAction", null);
+    return;
+  }
+  if (id === "copy") {
+    e.focus();
+    e.trigger("keyboard", "editor.action.clipboardCopyAction", null);
+    return;
+  }
+  if (id === "paste") {
+    void pasteClipboardIntoMonacoEditor(e);
+  }
+}
+
+function onEditorEditContextMenuSelect(id: string) {
+  closeEditorEditContextMenu();
+  if (smartFormatReviewActive.value) return;
+  const e = editor.value;
+  if (!e || smartFormatRunning.value) return;
+  if (id === "cut") {
+    e.focus();
+    e.trigger("keyboard", "editor.action.clipboardCutAction", null);
+    return;
+  }
+  if (id === "copy") {
+    e.focus();
+    e.trigger("keyboard", "editor.action.clipboardCopyAction", null);
+    return;
+  }
+  if (id === "paste") {
+    void pasteClipboardIntoMonacoEditor(e);
+    return;
+  }
+  if (id === "ai-format-selection") {
+    emit("aiSmartFormatSelection");
+    return;
+  }
+  if (id === "ai-format-full") {
+    emit("aiSmartFormatFull");
+  }
 }
 
 const FIND_CONTROLLER_ID = "editor.contrib.findController";
@@ -2489,6 +2953,7 @@ defineExpose({
   resetToTop,
   scrollToDocumentStart,
   jumpToLine,
+  scrollToLineNearTop,
   jumpToLineCentered,
   scrollModelLineBlockToViewportCenter,
   getModelLineAtViewportCenter,
@@ -2511,12 +2976,23 @@ defineExpose({
   getViewportLineSpan,
   getAllText,
   applyEditFormatCompressBlankLines,
+  applyEditFormatCompressBlankLinesInRange,
   applyEditFormatLeadIndentFullWidth,
+  applyEditFormatLeadIndentFullWidthInRange,
+  applySmartFormatReviewCompressBlankLines,
+  applySmartFormatReviewLeadIndentFullWidth,
   markReaderEditSaved,
   sealReaderEditBaseline,
   getEditorLineContent,
   getModelLineCount,
   getSelectedText,
+  getSelectionRange,
+  applyEditLineRangePatch,
+  getSmartFormatPostProcessContext: smartFormatPostProcessContext,
+  getSmartFormatReviewModifiedText,
+  focusSmartFormatAppliedRange,
+  revealSmartFormatSegment,
+  setSmartFormatRunning,
   toggleFindWidget,
   closeFindWidgetIfRevealed,
   openFindWithSearchString,
@@ -2674,10 +3150,30 @@ onMounted(() => {
         !props.readerEditMode && !props.voiceReadScrollLocked,
     });
     const d4 = e.onContextMenu((mouseEv) => {
-      // 编辑模式使用 Monaco 自带右键菜单，避免与自定义「复制」菜单重叠
-      if (props.readerEditMode) return;
       const m = model.value;
       if (!m) return;
+      if (smartFormatReviewActive.value) {
+        mouseEv.event.preventDefault();
+        mouseEv.event.stopPropagation();
+        return;
+      }
+      if (props.readerEditMode) {
+        if (smartFormatRunning.value) {
+          mouseEv.event.preventDefault();
+          mouseEv.event.stopPropagation();
+          return;
+        }
+        mouseEv.event.preventDefault();
+        mouseEv.event.stopPropagation();
+        const sel = e.getSelection();
+        editorEditContextMenuHasSelection.value = Boolean(
+          sel && !sel.isEmpty(),
+        );
+        editorEditContextMenuX.value = mouseEv.event.browserEvent.clientX;
+        editorEditContextMenuY.value = mouseEv.event.browserEvent.clientY;
+        editorEditContextMenuOpen.value = true;
+        return;
+      }
       const sel = e.getSelection();
       if (!sel || sel.isEmpty()) return;
       if (!contextMenuTargetInSelection(mouseEv, sel)) return;
@@ -2776,6 +3272,8 @@ onBeforeUnmount(() => {
   unsubModalStack = null;
   removeVoiceReadKeyCapture?.();
   removeVoiceReadKeyCapture = null;
+  removeSmartFormatReviewKeyCapture?.();
+  removeSmartFormatReviewKeyCapture = null;
   editor.value?.dispose();
   model.value?.dispose();
   for (const d of providersDisposables) d.dispose();
@@ -2857,6 +3355,32 @@ onMounted(() => {
     }
   });
 });
+
+watch(smartFormatReviewActive, (active) => {
+  removeSmartFormatReviewKeyCapture?.();
+  removeSmartFormatReviewKeyCapture = null;
+  if (!active) {
+    closeDiffReviewContextMenu();
+    requestAnimationFrame(() => editor.value?.layout());
+    return;
+  }
+  const onKey = (ev: KeyboardEvent) => {
+    if (!ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+    if (smartFormatDiffChangeCount.value === 0) return;
+    if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      smartFormatDiffGoToPrevious();
+    } else if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      smartFormatDiffGoToNext();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  removeSmartFormatReviewKeyCapture = () =>
+    document.removeEventListener("keydown", onKey, true);
+});
 </script>
 
 <template>
@@ -2867,8 +3391,83 @@ onMounted(() => {
       'content--readerEditMinimap': readerEditMode && readerEditMinimap,
     }"
   >
-    <div class="editorShell">
-      <div ref="editorEl" class="editorHost"></div>
+    <div
+      class="editorShell"
+      :class="{ 'editorShell--smartFormatReview': smartFormatReviewActive }"
+    >
+      <div v-if="smartFormatReviewActive" class="smartFormatReviewBar">
+        <div class="smartFormatReviewBarMain">
+          <span class="smartFormatReviewBarTitle">排版预览</span>
+          <span class="smartFormatReviewBarMeta">{{
+            smartFormatReviewScopeLabel
+          }}</span>
+        </div>
+        <div class="smartFormatReviewBarActions">
+          <div class="smartFormatReviewBarTools">
+            <span
+              v-if="smartFormatDiffChangeCount > 0"
+              class="smartFormatReviewBarChanges"
+            >
+              {{ smartFormatDiffChangeCount }} 处差异
+            </span>
+            <IconButton
+              :icon-html="icons.upThin"
+              title="上一个更改 (Ctrl+↑)"
+              aria-label="上一个更改"
+              :disabled="smartFormatDiffChangeCount === 0"
+              @click="smartFormatDiffGoToPrevious"
+            />
+            <IconButton
+              :icon-html="icons.downThin"
+              title="下一个更改 (Ctrl+↓)"
+              aria-label="下一个更改"
+              :disabled="smartFormatDiffChangeCount === 0"
+              @click="smartFormatDiffGoToNext"
+            />
+            <IconButton
+              :icon-html="icons.paragraph"
+              title="显示行首/行尾空白差异"
+              aria-label="显示行首/行尾空白差异"
+              :active="smartFormatDiffShowWhitespace"
+              :pressed="smartFormatDiffShowWhitespace"
+              @click="smartFormatDiffToggleWhitespace"
+            />
+            <IconButton
+              :icon-html="icons.foldUnchanged"
+              title="折叠未更改区域"
+              aria-label="折叠未更改区域"
+              :active="smartFormatDiffHideUnchanged"
+              :pressed="smartFormatDiffHideUnchanged"
+              @click="smartFormatDiffToggleHideUnchanged"
+            />
+          </div>
+          <span class="smartFormatReviewBarDivider" aria-hidden="true" />
+          <button
+            type="button"
+            class="btn warning"
+            @click="onSmartFormatReviewDiscard"
+          >
+            放弃
+          </button>
+          <button
+            type="button"
+            class="btn primary"
+            @click="onSmartFormatReviewApply"
+          >
+            应用
+          </button>
+        </div>
+      </div>
+      <div
+        ref="editorEl"
+        class="editorHost"
+        :class="{ 'editorHost--hidden': smartFormatReviewActive }"
+      ></div>
+      <div
+        ref="diffHostEl"
+        class="editorHost editorHost--diff"
+        :class="{ 'editorHost--hidden': !smartFormatReviewActive }"
+      ></div>
       <div
         v-if="voiceReadScrollLocked"
         class="voiceReadScrollBlocker"
@@ -2912,6 +3511,24 @@ onMounted(() => {
       @close="closeEditorContextMenu"
       @select="onEditorContextMenuSelect"
     />
+    <AppContextMenu
+      :open="editorEditContextMenuOpen"
+      :x="editorEditContextMenuX"
+      :y="editorEditContextMenuY"
+      :items="editorEditContextMenuItems"
+      :min-width="200"
+      @close="closeEditorEditContextMenu"
+      @select="onEditorEditContextMenuSelect"
+    />
+    <AppContextMenu
+      :open="diffReviewContextMenuOpen"
+      :x="diffReviewContextMenuX"
+      :y="diffReviewContextMenuY"
+      :items="diffReviewContextMenuItems"
+      :min-width="200"
+      @close="closeDiffReviewContextMenu"
+      @select="onDiffReviewContextMenuSelect"
+    />
     <ReaderImageLightbox v-model="imageLightboxSrc" />
   </main>
 </template>
@@ -2930,6 +3547,128 @@ onMounted(() => {
   height: 100%;
   width: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editorShell--smartFormatReview .editorHost--diff {
+  flex: 1;
+  min-height: 0;
+}
+
+.smartFormatReviewBar {
+  --sf-review-control-h: 28px;
+  container-type: inline-size;
+  container-name: smart-format-review-bar;
+  box-sizing: border-box;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+  height: calc(var(--sf-review-control-h) + 16px);
+  overflow: hidden;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg, var(--reader-bg));
+}
+
+.smartFormatReviewBarMain {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.smartFormatReviewBarTitle {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.smartFormatReviewBarMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.smartFormatReviewBarChanges {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.smartFormatReviewBarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.smartFormatReviewBarActions .btn {
+  box-sizing: border-box;
+  height: var(--sf-review-control-h);
+  padding-block: 0;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.smartFormatReviewBarTools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  height: var(--sf-review-control-h);
+}
+
+.smartFormatReviewBarTools :deep(.iconBtn) {
+  width: var(--sf-review-control-h);
+  height: var(--sf-review-control-h);
+}
+
+.smartFormatReviewBarDivider {
+  width: 1px;
+  height: calc(var(--sf-review-control-h) - 6px);
+  margin: 0 4px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* 渐窄：先藏范围标签，再藏差异计数/工具按钮，保底标题 + 放弃/应用 */
+@container smart-format-review-bar (max-width: 620px) {
+  .smartFormatReviewBarMeta {
+    display: none;
+  }
+}
+
+@container smart-format-review-bar (max-width: 460px) {
+  .smartFormatReviewBarTools,
+  .smartFormatReviewBarDivider {
+    display: none;
+  }
+}
+
+.editorHost--hidden {
+  display: none !important;
+}
+
+.editorHost--diff :deep(.monaco-diff-editor),
+.editorHost--diff :deep(.monaco-editor) {
+  height: 100%;
 }
 
 .voiceReadScrollBlocker {
@@ -2940,7 +3679,8 @@ onMounted(() => {
 }
 
 .editorHost {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   width: 100%;
   overflow: hidden;
   user-select: text;

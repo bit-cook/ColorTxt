@@ -19,24 +19,24 @@ import {
   loadAiConfig,
   mergeAiConfigWithDefaults,
   saveAiConfig,
-} from "./aiConfig";
-import { embedTexts, probeEmbeddingDimension } from "./aiEmbedding";
-import { fetchOpenAiCompatModelIds } from "./openAiCompatModelList";
+} from "./ai/infra/config";
+import { embedTexts, probeEmbeddingDimension } from "./ai/rag/embedding";
+import { fetchOpenAiCompatModelIds } from "./ai/infra/openAiCompatModelList";
 import { normalizeChatPresetBaseUrl } from "@shared/apiEndpointPresets";
 import {
   migrateAiDataCacheRoot,
   migrateBuiltinModelCacheRoot,
   openPathInShell,
   upgradeLegacyAiDataLayoutIfNeeded,
-} from "./aiDataFs";
+} from "./ai/infra/dataFs";
 import {
   getDefaultAiDataCacheDirSync,
   getDefaultBuiltinModelCacheDirSync,
-} from "./aiConfig";
+} from "./ai/infra/config";
 import {
   resolveAiDataCacheRoot,
   resolveBuiltinModelCacheRoot,
-} from "./aiPaths";
+} from "./ai/infra/paths";
 import {
   BUILTIN_EMBEDDING_MODELS,
   getBuiltinEmbeddingModel,
@@ -51,20 +51,22 @@ import {
   getLoadedBuiltinModelId,
   isBuiltinModelDownloaded,
   loadBuiltinEmbeddingModel,
-} from "./embedding/localEmbeddingBackend";
-import { reopenAiVectorDb } from "./aiVectorDb";
-import { runAgentChat } from "./aiAgentChat";
-import { abortChatRequest, streamChatCompletion } from "./aiChat";
+} from "./ai/rag/embedding/localBackend";
+import { reopenAiVectorDb } from "./ai/rag/vectorDb";
+import { runAgentChat } from "./ai/chat/agentChat";
+import { abortChatRequest, streamChatCompletion } from "./ai/chat/chat";
+import { runSmartFormatCleanupSegment } from "./ai/chat/textFormatCleanup";
+import type { AISmartFormatSegmentInput } from "@shared/aiSmartFormatTypes";
 import {
   runBookStyleInference,
   runCharacterPortraitExtract,
   runPortraitPromptZhToEn,
   runTxt2ImgToAbsolutePath,
-} from "./aiCharacterPortrait";
-import { deleteBookSegmentCache } from "./aiSegmentCache";
-import { adaptPortraitPromptForBackend } from "./aiTxt2ImgPromptAdapt";
-import { testTxt2ImgConnection } from "./aiTxt2ImgTestConnection";
-import { mergeTxt2ImgZhGeneralBeforeSpecific } from "./txt2imgMergeZh";
+} from "./ai/tools/characterPortrait";
+import { deleteBookSegmentCache } from "./ai/rag/segmentCache";
+import { adaptPortraitPromptForBackend } from "./ai/txt2img/promptAdapt";
+import { testTxt2ImgConnection } from "./ai/txt2img/testConnection";
+import { mergeTxt2ImgZhGeneralBeforeSpecific } from "./ai/txt2img/mergeZh";
 import { isTxt2ImgBackend, txt2ImgRequiresApiKey } from "@shared/txt2ImgBackend";
 import {
   appendMessage,
@@ -81,13 +83,15 @@ import {
   resetEmbeddingDimension,
   searchChunks,
   updateToolMessageContent,
-} from "./aiVectorDb";
+} from "./ai/rag/vectorDb";
 
 /** 角色「AI 检索」：同一会话的 extract + infer 共用 AbortSignal（renderer 传 retrieveSessionId） */
 const portraitRetrieveSessionAbortById = new Map<number, AbortController>();
 
 /** 侧栏「生成立绘」：单次 txt2imgToPath 会话，可由 renderer 调用 abort 中断 */
 let portraitTxt2ImgSessionAc: AbortController | null = null;
+
+const smartFormatAbortByRequestId = new Map<number, AbortController>();
 
 function portraitRetrieveSessionAc(sid: number): AbortController {
   let ac = portraitRetrieveSessionAbortById.get(sid);
@@ -654,6 +658,90 @@ export function registerAiIpcHandlers(): void {
 
   ipcMain.handle("ai:chat:abort", (_evt, requestId: unknown) => {
     if (typeof requestId === "number") abortChatRequest(requestId);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(
+    "ai:text-format:cleanup",
+    async (evt, payloadRaw: unknown) => {
+      if (!isRecord(payloadRaw)) {
+        return { ok: false as const, error: "无效 payload" };
+      }
+      const requestId = payloadRaw.requestId;
+      if (typeof requestId !== "number" || !Number.isFinite(requestId)) {
+        return { ok: false as const, error: "无效 requestId" };
+      }
+      const segRaw = payloadRaw.segment;
+      if (!isRecord(segRaw) || typeof segRaw.id !== "string") {
+        return { ok: false as const, error: "无效 segment" };
+      }
+      if (typeof segRaw.text !== "string") {
+        return { ok: false as const, error: "无效 segment.text" };
+      }
+      const segment: AISmartFormatSegmentInput = {
+        id: segRaw.id,
+        text: segRaw.text,
+        ...(typeof segRaw.contextBefore === "string"
+          ? { contextBefore: segRaw.contextBefore }
+          : {}),
+        ...(typeof segRaw.contextAfter === "string"
+          ? { contextAfter: segRaw.contextAfter }
+          : {}),
+      };
+      const mergeHardWrap = payloadRaw.mergeHardWrap === true;
+      const fixPunctuation =
+        payloadRaw.fixPunctuation === true ||
+        payloadRaw.fixQuotes === true;
+      const restoreGarbledChars = payloadRaw.restoreGarbledChars === true;
+      const unifyDialogueQuotes =
+        payloadRaw.unifyDialogueQuotes === "none" ||
+        payloadRaw.unifyDialogueQuotes === "double" ||
+        payloadRaw.unifyDialogueQuotes === "corner"
+          ? payloadRaw.unifyDialogueQuotes
+          : "double";
+      const removePromotionalContent =
+        payloadRaw.removePromotionalContent === true;
+      const removePiracyWatermarks =
+        payloadRaw.removePiracyWatermarks === true;
+      const restoreAsteriskMasks = payloadRaw.restoreAsteriskMasks === true;
+      const skillPrompt =
+        typeof payloadRaw.skillPrompt === "string"
+          ? payloadRaw.skillPrompt
+          : undefined;
+
+      let ac = smartFormatAbortByRequestId.get(requestId);
+      if (!ac) {
+        ac = new AbortController();
+        smartFormatAbortByRequestId.set(requestId, ac);
+      }
+
+      const c = await cfg();
+      const result = await runSmartFormatCleanupSegment({
+        payload: {
+          requestId,
+          segment,
+          mergeHardWrap,
+          fixPunctuation,
+          unifyDialogueQuotes,
+          removePromotionalContent,
+          removePiracyWatermarks,
+          restoreGarbledChars,
+          restoreAsteriskMasks,
+          ...(skillPrompt !== undefined ? { skillPrompt } : {}),
+        },
+        config: c,
+        webContents: evt.sender,
+        signal: ac.signal,
+      });
+      return { ok: true as const, result };
+    },
+  );
+
+  ipcMain.handle("ai:text-format:abort", (_evt, requestId: unknown) => {
+    if (typeof requestId !== "number") return { ok: true as const };
+    const ac = smartFormatAbortByRequestId.get(requestId);
+    ac?.abort();
+    smartFormatAbortByRequestId.delete(requestId);
     return { ok: true as const };
   });
 

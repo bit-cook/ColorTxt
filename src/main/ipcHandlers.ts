@@ -49,7 +49,7 @@ import { registerSecretsIpcHandlers } from "./registerSecretsIpc";
 import {
   copyImageToAbsolutePath,
   migrateCharacterPortraitCacheRoot,
-} from "./characterPortraitFs";
+} from "./ai/tools/characterPortraitFs";
 import { synthesizeEdgeTtsMp3 } from "./voiceReadEdgeTts";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
 

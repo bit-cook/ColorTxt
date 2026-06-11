@@ -7,6 +7,8 @@ type ContextMenuItem = {
   type?: "primary" | "success" | "warning" | "danger";
   separator?: boolean;
   disabled?: boolean;
+  /** 与 `icons.*` 一致，渲染在标签左侧 */
+  iconHtml?: string;
 };
 
 const props = withDefaults(
@@ -163,6 +165,12 @@ onBeforeUnmount(() => {
         :disabled="item.disabled"
         @click="onMenuItemClick(item)"
       >
+        <span
+          v-if="item.iconHtml"
+          class="appShellMenuItemPrefix"
+          aria-hidden="true"
+          v-html="item.iconHtml"
+        />
         {{ item.label }}
       </button>
     </template>
@@ -173,5 +181,9 @@ onBeforeUnmount(() => {
 .contextMenu {
   position: fixed;
   z-index: 7000;
+}
+
+.contextMenu :deep(.appShellMenuItemPrefix svg path) {
+  fill: currentColor;
 }
 </style>

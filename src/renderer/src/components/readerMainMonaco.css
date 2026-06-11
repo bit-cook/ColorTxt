@@ -1,4 +1,49 @@
 /*
+ * Monaco 右键菜单（兜底：个别路径仍可能弹出内建菜单；与 AppContextMenu / --panel 对齐）。
+ */
+.context-view.monaco-menu-container,
+.monaco-menu-container {
+  background-color: var(
+    --vscode-menu-background,
+    var(--panel, var(--bg))
+  ) !important;
+  border: 1px solid
+    var(--vscode-menu-border, var(--border)) !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fg) 12%, transparent) !important;
+  overflow: hidden;
+}
+
+.monaco-menu,
+.monaco-menu .monaco-action-bar.vertical {
+  background-color: var(
+    --vscode-menu-background,
+    var(--panel, var(--bg))
+  ) !important;
+}
+
+.monaco-menu .action-item {
+  color: var(--vscode-menu-foreground, var(--fg)) !important;
+}
+
+.monaco-menu .action-item.focused,
+.monaco-menu .action-item:hover {
+  background: var(
+    --vscode-menu-selectionBackground,
+    var(--list-item-bg-hover)
+  ) !important;
+  color: var(
+    --vscode-menu-selectionForeground,
+    var(--list-item-fg-active)
+  ) !important;
+}
+
+.monaco-menu .action-label.separator {
+  background-color: var(--vscode-menu-separatorBackground, var(--border)) !important;
+  opacity: 1 !important;
+}
+
+/*
  * ReaderMain：Monaco 全局覆盖（非 scoped，需命中编辑器内部 DOM）。
  * `lines-content` 内顺序为 overlays → view-zones → view-lines；抬高 view-zones 便于插图命中。
  */
@@ -255,4 +300,86 @@ body > .overflowingContentWidgets
 
 .monaco-editor .monaco-scrollable-element > .scrollbar > .slider.active {
   background: var(--vscode-scrollbarSlider-activeBackground) !important;
+}
+
+/*
+ * 智能排版 Diff 预览：Monaco 中间 .gutter 工具栏（非左右编辑器边框）。
+ * 背景与 AppHeader 顶栏一致（--bg）；差异块范围竖线为 .gutterItem > .background；
+ * 「还原原文」按钮对齐 IconButton（圆角 4px、常态有底、hover 加深）。
+ */
+.editorHost--diff .monaco-diff-editor .gutter {
+  background-color: var(--bg, var(--reader-bg)) !important;
+}
+
+.editorHost--diff .monaco-diff-editor .gutter .gutterItem {
+  opacity: 1 !important;
+}
+
+.editorHost--diff .monaco-diff-editor .gutter .gutterItem .background {
+  border-left: 2px solid var(--border) !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .monaco-action-bar {
+  line-height: 1 !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .monaco-action-bar
+  .actions-container {
+  width: fit-content !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-item {
+  border-radius: 4px !important;
+  width: fit-content !important;
+  height: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: color-mix(
+    in srgb,
+    var(--icon-btn-bg-active) 90%,
+    var(--fg) 10%
+  ) !important;
+  transition: background 0.16s ease;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-item:hover {
+  background: var(--icon-btn-bg-hover) !important;
+}
+
+.editorHost--diff
+  .monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .action-label {
+  cursor: pointer;
+  color: var(--icon-btn-fg) !important;
+  width: auto !important;
+  height: auto !important;
+  display: inline-block !important;
+  box-sizing: border-box;
 }
