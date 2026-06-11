@@ -69,6 +69,7 @@
     "appId": "com.ssnangua.colortxt",
     "productName": "彩读",
     "beforePack": "scripts/electron-before-pack.mjs",
+    "onNodeModuleFile": "scripts/electron-on-node-module-file.mjs",
     "directories": {
       "output": "release"
     },

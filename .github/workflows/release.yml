@@ -51,6 +51,8 @@ jobs:
     env:
       # 未配置签名证书时跳过自动签名探测，避免 CI 失败
       CSC_IDENTITY_AUTO_DISCOVERY: false
+      COLORTXT_PRUNE_PLATFORM: ${{ matrix.prune_platform }}
+      COLORTXT_PRUNE_ARCH: ${{ matrix.arch }}
 
     steps:
       - name: Checkout
@@ -94,6 +96,13 @@ jobs:
 
       - name: Prune pack dependencies
         run: node scripts/prune-pack-deps.mjs --platform ${{ matrix.prune_platform }} --arch ${{ matrix.arch }}
+
+      - name: Log node_modules size after prune
+        if: matrix.name == 'Linux-x64'
+        run: |
+          du -sh node_modules
+          find node_modules -maxdepth 1 -name 'sqlite-vec-*' | xargs du -sh 2>/dev/null || true
+          du -sh node_modules/onnxruntime-node/bin/napi-v3/* 2>/dev/null || true
 
       - name: Package
         run: npx electron-builder --publish never --${{ matrix.builder_target }} --${{ matrix.arch }}
