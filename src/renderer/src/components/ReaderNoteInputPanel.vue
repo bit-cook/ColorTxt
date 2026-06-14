@@ -85,12 +85,13 @@ async function focusInput() {
 </script>
 
 <template>
-  <div
-    v-show="open"
-    class="notePanelRoot"
-    :style="{ zIndex: panelZIndex }"
-  >
-    <div class="notePanel" role="dialog" aria-label="记笔记">
+  <Transition name="notePanel">
+    <div
+      v-if="open"
+      class="notePanelRoot"
+      :style="{ zIndex: panelZIndex }"
+    >
+      <div class="notePanel" role="dialog" aria-label="记笔记">
       <div
         v-if="displaySourceText"
         class="notePanelQuote"
@@ -139,8 +140,9 @@ async function focusInput() {
           </button>
         </div>
       </div>
+      </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -285,5 +287,32 @@ async function focusInput() {
   justify-content: flex-end;
   flex-shrink: 0;
   margin-left: auto;
+}
+
+.notePanel-enter-active,
+.notePanel-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.notePanel-enter-active .notePanel,
+.notePanel-leave-active .notePanel {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+}
+
+.notePanel-enter-from,
+.notePanel-leave-to {
+  opacity: 0;
+}
+
+.notePanel-enter-from .notePanel,
+.notePanel-leave-to .notePanel {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.notePanel-leave-active .notePanel {
+  pointer-events: none;
 }
 </style>
