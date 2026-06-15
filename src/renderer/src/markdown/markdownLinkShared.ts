@@ -256,8 +256,9 @@ function tryLexLinkAt(line: string, open: number): Tokens.Link | null {
   const tokens = Lexer.lexInline(sub);
   const first = tokens[0];
   if (!first || first.type !== "link") return null;
-  if (!sub.startsWith(first.raw)) return null;
-  return first;
+  const link = first as Tokens.Link;
+  if (!sub.startsWith(link.raw)) return null;
+  return link;
 }
 
 function parsedFromMarkedLink(

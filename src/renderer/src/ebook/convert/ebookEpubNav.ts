@@ -48,7 +48,7 @@ function directChildElements(parent: Element, localName: string): Element[] {
   );
 }
 
-function childGetter(doc: Document, ns: string) {
+function childGetter(ns: string) {
   const $ = (parent: Element | Document, local: string) => {
     const list = (parent as Element).getElementsByTagNameNS?.(ns, local);
     if (list && list.length > 0) return list[0] as Element;
@@ -74,7 +74,7 @@ function parseNavDocument(
   doc: Document,
   resolve: (url: string) => string,
 ): FoliateTocNode[] | null {
-  const { $, $$, $$$ } = childGetter(doc, XHTML_NS);
+  const { $, $$$ } = childGetter(XHTML_NS);
   const resolveHref = (href: string | null | undefined) =>
     href ? decodeURI(resolve(href)) : null;
 
@@ -120,7 +120,7 @@ function parseNcxDocument(
   doc: Document,
   resolve: (url: string) => string,
 ): FoliateTocNode[] | null {
-  const { $, $$ } = childGetter(doc, NCX_NS);
+  const { $ } = childGetter(NCX_NS);
   const resolveHref = (href: string | null | undefined) =>
     href ? decodeURI(resolve(href)) : null;
 

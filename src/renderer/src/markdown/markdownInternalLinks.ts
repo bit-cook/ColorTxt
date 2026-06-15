@@ -122,10 +122,10 @@ function replaceMdLinksOnLine(
   while (searchFrom < line.length) {
     const hit = nextMdLinkMatch(line, searchFrom);
     if (!hit) break;
-    const parsed = hit.link;
-    const index = parsed.index;
 
     if (hit.kind === "internal") {
+      const parsed = hit.link;
+      const index = parsed.index;
       if (!isInternalFragmentTarget(`#${parsed.fragment}`)) {
         searchFrom = index + Math.max(1, parsed.full.length);
         continue;
@@ -157,6 +157,8 @@ function replaceMdLinksOnLine(
       continue;
     }
 
+    const parsed = hit.link;
+    const index = parsed.index;
     result += line.slice(last, index);
     const iconRel = parsed.iconRel;
     const label = iconRel ? parsed.iconAlt || "链" : parsed.textLabel;
