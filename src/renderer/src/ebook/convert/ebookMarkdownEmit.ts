@@ -60,10 +60,9 @@ function truncateHint(s: string, max = MD_LINK_HINT_MAX): string {
 }
 
 export function formatMdLinkTitleAttr(title?: string, alt?: string): string {
-  const t = truncateHint(title ?? "");
-  const a = truncateHint(alt ?? "");
-  if (!t && !a) return "";
-  return ` "${escapeMdLinkTitle(`${t}/${a}`)}"`;
+  const hint = truncateHint(title ?? "") || truncateHint(alt ?? "");
+  if (!hint) return "";
+  return ` "${escapeMdLinkTitle(hint)}"`;
 }
 
 export type MdInternalLinkParams = {
@@ -94,7 +93,7 @@ export function formatMdInternalLink(params: MdInternalLinkParams): string {
 }
 
 function escapeMdLabel(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+  return s;
 }
 
 function escapeMdUrl(s: string): string {

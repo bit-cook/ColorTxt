@@ -202,12 +202,10 @@ function walkFb2Inline(
               );
               const label = resolveLinkIconVisibleLabel(child, anchor);
               const hoverTip = resolveLinkIconHoverTip(child, anchor);
-              const slash = hoverTip.indexOf("/");
               appendFb2MdLink(acc, ctx, tid, {
                 label,
                 iconRel: rel ?? undefined,
-                title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-                alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+                title: hoverTip,
               });
               continue;
             }
@@ -239,12 +237,10 @@ function walkFb2Inline(
           );
           const label = resolveLinkIconVisibleLabel(onlyImage, child);
           const hoverTip = resolveLinkIconHoverTip(onlyImage, child);
-          const slash = hoverTip.indexOf("/");
           appendFb2MdLink(acc, ctx, tid, {
             label,
             iconRel: rel ?? undefined,
-            title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-            alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+            title: hoverTip,
           });
           continue;
         }

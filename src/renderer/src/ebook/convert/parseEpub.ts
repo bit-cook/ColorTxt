@@ -23,7 +23,6 @@ import {
 } from "./ebookLinkIconHeuristics";
 import { extractEpubEmbeddedTocEntries } from "./ebookEpubNav";
 import { collectEpubTocAnchorMutations } from "./ebookTocAnchorInjection";
-import { injectStemOnlyMdLinkAnchors } from "./ebookStemOnlyMdLinks";
 import {
   compactFootnoteLinkFragment,
   footnoteRefLogicalTargetFromBody,
@@ -358,16 +357,12 @@ async function appendInlineLinkIconToAcc(
   if (iconRel && !ctx.footnoteIconRel) {
     ctx.footnoteIconRel = iconRel;
   }
-  const slash = hoverTip.indexOf("/");
-  const title = slash >= 0 ? hoverTip.slice(0, slash) : hoverTip;
-  const alt = slash >= 0 ? hoverTip.slice(slash + 1) : undefined;
   const anchorKey = anchorKeyOf(anchorEl);
   appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, targetId);
   appendMdLinkToAcc(acc, ctx, targetId, {
     label,
     iconRel,
-    title,
-    alt,
+    title: hoverTip,
   });
   appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, anchorEl, targetId);
 }
@@ -674,7 +669,6 @@ async function walkInlineNodes(
         if (tid) {
           appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, tid);
           const hover = resolveLinkIconHoverTip(el, el);
-          const slash = hover.indexOf("/");
           appendMdLinkToAcc(acc, ctx, tid, {
             label,
             iconRel:
@@ -684,8 +678,7 @@ async function walkInlineNodes(
               (isInsideNoterefContext(el) || epubTypeHas(el, "noteref"))
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, el, tid);
         } else if (label) {
@@ -827,7 +820,6 @@ async function paragraphToLines(
         if (tid) {
           appendAnchorIdMarkBeforeIfNeeded(acc, ctx, anchorKey, tid);
           const hover = resolveLinkIconHoverTip(el, el);
-          const slash = hover.indexOf("/");
           appendMdLinkToAcc(acc, ctx, tid, {
             label,
             iconRel:
@@ -837,8 +829,7 @@ async function paragraphToLines(
               (isInsideNoterefContext(el) || epubTypeHas(el, "noteref"))
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(acc, ctx, el, tid);
         } else if (label) {

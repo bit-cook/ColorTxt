@@ -4,6 +4,7 @@
 
 import { chapterTitleForDisplay } from "../../chapter";
 import { plainTextForEbookTitleMatch } from "../ebookTitleMatch";
+import { scanMdInternalLinkAt } from "../../markdown/markdownLinkShared";
 
 export type EpubSpineSectionRange = {
   stem: string;
@@ -27,11 +28,11 @@ export function fragmentFromEbookTargetId(targetId: string): string | null {
   return hash >= 0 ? targetId.slice(hash + 1) : null;
 }
 
-const RE_MD_LINK_ONLY_LINE =
-  /^\s*\[[^\]]*\]\(#[^)\s"]+(?:\s+"[^"]*")?\)\s*$/;
-
 function isMdInternalLinkOnlyLine(line: string): boolean {
-  return RE_MD_LINK_ONLY_LINE.test(line);
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("[")) return false;
+  const link = scanMdInternalLinkAt(trimmed, 0);
+  return link != null && link.index === 0 && link.index + link.full.length === trimmed.length;
 }
 
 /** 在节内按 `targetId` 的 fragment 查找已注入的 `<span id="…">` 行 */

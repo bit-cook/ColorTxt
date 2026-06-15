@@ -159,7 +159,8 @@ function resolveUrl(baseHref: string, url: string): string {
 
 function resolveEpubTocHrefToTargetId(
   href: string,
-  navDirInZip: string,
+  /** OPF 所在目录（ZIP 内）；nav/NCX 经 resolveUrl 后的 href 均相对 OPF 包根 */
+  opfDirInZip: string,
   zipPathToLinkStem: ReadonlyMap<string, string>,
 ): string | null {
   const h = href.trim();
@@ -175,7 +176,7 @@ function resolveEpubTocHrefToTargetId(
     return null;
   }
 
-  const zipPath = resolveInZip(navDirInZip, pathPart);
+  const zipPath = resolveInZip(opfDirInZip, pathPart);
   const stem =
     zipPathToLinkStem.get(zipPathCompareKey(zipPath)) ??
     epubLinkKeyFromZipPath(zipPath);
@@ -241,13 +242,9 @@ export async function extractEpubEmbeddedTocEntries(params: {
   const { navPath, ncxPath } = getOpfNavAndNcxPaths(params.opfDoc);
 
   let tree: FoliateTocNode[] | null = null;
-  let navDir = opfDir;
 
   if (navPath) {
     const fullNav = resolveInZip(opfDir, navPath);
-    navDir = fullNav.includes("/")
-      ? fullNav.slice(0, fullNav.lastIndexOf("/"))
-      : "";
     const xml = await readZipUtf8(params.zip, fullNav, params.findZipFile);
     if (xml) {
       const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -258,9 +255,6 @@ export async function extractEpubEmbeddedTocEntries(params: {
 
   if (!tree?.length && ncxPath) {
     const fullNcx = resolveInZip(opfDir, ncxPath);
-    navDir = fullNcx.includes("/")
-      ? fullNcx.slice(0, fullNcx.lastIndexOf("/"))
-      : "";
     const xml = await readZipUtf8(params.zip, fullNcx, params.findZipFile);
     if (xml) {
       const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -271,8 +265,9 @@ export async function extractEpubEmbeddedTocEntries(params: {
 
   if (!tree?.length) return [];
 
+  /** parseNav/parseNCX 内 resolveUrl 产出 OPF 相对路径，勿再用 nav 文件目录二次 resolve */
   const resolveHref = (href: string) =>
-    resolveEpubTocHrefToTargetId(href, navDir, params.zipPathToLinkStem);
+    resolveEpubTocHrefToTargetId(href, opfDir, params.zipPathToLinkStem);
 
   return dedupeEmbeddedTocEntries(
     flattenFoliateStyleTocTree(tree, resolveHref),

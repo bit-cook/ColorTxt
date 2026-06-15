@@ -525,14 +525,12 @@ async function appendInlineLinkIconToMobiAcc(
   if (iconRel && !ctx.footnoteIconRel) {
     ctx.footnoteIconRel = iconRel;
   }
-  const slash = hoverTip.indexOf("/");
   const anchorKey = anchorKeyOf(anchorEl);
   appendAnchorIdMarkBeforeIfNeeded(acc, ctx, sectionStem, anchorKey, targetId);
   appendMobiMdLink(acc, ctx, targetId, {
     label,
     iconRel,
-    title: slash >= 0 ? hoverTip.slice(0, slash) : hoverTip,
-    alt: slash >= 0 ? hoverTip.slice(slash + 1) : undefined,
+    title: hoverTip,
   });
   appendNoterefBackAnchorAfterLinkIfNeeded(
     acc,
@@ -798,7 +796,6 @@ async function walkMobiBlock(
             tid,
           );
           const hover = resolveLinkIconHoverTip(child, child);
-          const slash = hover.indexOf("/");
           appendMobiMdLink(acc, ctx, tid, {
             label,
             iconRel:
@@ -808,8 +805,7 @@ async function walkMobiBlock(
               isInsideNoterefContext(child)
                 ? ctx.footnoteIconRel
                 : undefined,
-            title: slash >= 0 ? hover.slice(0, slash) : hover,
-            alt: slash >= 0 ? hover.slice(slash + 1) : undefined,
+            title: hover,
           });
           appendNoterefBackAnchorAfterLinkIfNeeded(
             acc,

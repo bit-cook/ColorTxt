@@ -11,6 +11,11 @@ import {
   mdInternalLinkForLogicalTarget,
 } from "./ebookMarkdownEmit";
 import {
+  type ParsedMdInternalLink,
+  parseMdLinkTitleAttr,
+  scanMdInternalLinksOnLine,
+} from "../../markdown/markdownLinkShared";
+import {
   applyLineMutations,
   findEmbeddedTocSpanLineForTitle,
   findTitleLineInSpineSection,
@@ -20,8 +25,6 @@ import {
 } from "./ebookSpineLineMatch";
 
 const STEM_ONLY_FRAG_RE = /^(?:epub|mobi)-\d{4}$/i;
-const RE_MD_INTERNAL_LINK =
-  /\[([^\]]*)\]\((#[^)\s"]+)(?:\s+"((?:\\.|[^"\\])*)")?\)/g;
 
 type ParsedMdLink = {
   start: number;
@@ -31,20 +34,21 @@ type ParsedMdLink = {
   titleAttr?: string;
 };
 
+function parsedStemMdLink(link: ParsedMdInternalLink): ParsedMdLink {
+  const label = link.iconRel
+    ? link.iconAlt || link.textLabel
+    : link.textLabel;
+  return {
+    start: link.index,
+    end: link.index + link.full.length,
+    label,
+    fragment: link.fragment,
+    titleAttr: link.titleAttr,
+  };
+}
+
 function parseMdLinksOnLine(line: string): ParsedMdLink[] {
-  const out: ParsedMdLink[] = [];
-  let m: RegExpExecArray | null;
-  RE_MD_INTERNAL_LINK.lastIndex = 0;
-  while ((m = RE_MD_INTERNAL_LINK.exec(line)) !== null) {
-    out.push({
-      start: m.index,
-      end: m.index + m[0]!.length,
-      label: m[1] ?? "",
-      fragment: (m[2] ?? "").replace(/^#/, ""),
-      titleAttr: m[3],
-    });
-  }
-  return out;
+  return scanMdInternalLinksOnLine(line).map(parsedStemMdLink);
 }
 
 function unescapeMdTitleAttr(s: string): string {
@@ -57,12 +61,10 @@ function replaceMdLinkFragment(
   logicalTargetId: string,
   registry: EbookMarkdownFragmentRegistry,
 ): string {
-  const titleAlt = link.titleAttr
+  const titleAttr = link.titleAttr
     ? unescapeMdTitleAttr(link.titleAttr)
     : undefined;
-  const slash = titleAlt?.indexOf("/") ?? -1;
-  const title = slash >= 0 ? titleAlt!.slice(0, slash) : titleAlt;
-  const alt = slash >= 0 ? titleAlt!.slice(slash + 1) : undefined;
+  const { title } = parseMdLinkTitleAttr(titleAttr);
   const preferredFrag = logicalTargetId.slice(
     logicalTargetId.lastIndexOf("#") + 1,
   );
@@ -72,7 +74,6 @@ function replaceMdLinkFragment(
     {
       label: link.label,
       title,
-      alt,
       preferredFrag,
     },
   );
@@ -84,17 +85,14 @@ function replaceMdLinkWithKnownFragment(
   link: ParsedMdLink,
   fragment: string,
 ): string {
-  const titleAlt = link.titleAttr
+  const titleAttr = link.titleAttr
     ? unescapeMdTitleAttr(link.titleAttr)
     : undefined;
-  const slash = titleAlt?.indexOf("/") ?? -1;
-  const title = slash >= 0 ? titleAlt!.slice(0, slash) : titleAlt;
-  const alt = slash >= 0 ? titleAlt!.slice(slash + 1) : undefined;
+  const { title } = parseMdLinkTitleAttr(titleAttr);
   const replacement = formatMdInternalLink({
     label: link.label,
     fragment,
     title,
-    alt,
   });
   return line.slice(0, link.start) + replacement + line.slice(link.end);
 }

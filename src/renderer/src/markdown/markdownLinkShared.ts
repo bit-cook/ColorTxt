@@ -1,6 +1,9 @@
 /**
  * Markdown 内链 sidecar 与 Monaco 装饰共用类型。
+ * 链接/图标链解析基于 marked `Lexer.lexInline`（与 AI 助手同一套 Markdown 规则）。
  */
+
+import { Lexer, type Tokens } from "marked";
 
 export const MD_FOOTNOTE_HOVER_MAX_CHARS = 600;
 
@@ -170,32 +173,117 @@ export function shiftMdInternalLinkSidecarDisplayLines(
   sidecar.leadingMdLinkLabelsByDisplayLine = newLeading;
 }
 
-/** 解析 `"title/alt"` title 属性 */
+/** 解析链接 `"title"` 属性 */
 export function parseMdLinkTitleAttr(raw: string | undefined): {
   title?: string;
-  alt?: string;
 } {
   const t = raw?.trim();
-  if (!t) return {};
-  const slash = t.indexOf("/");
-  if (slash < 0) return { title: t };
-  return {
-    title: t.slice(0, slash).trim() || undefined,
-    alt: t.slice(slash + 1).trim() || undefined,
-  };
+  return t ? { title: t } : {};
 }
 
 export const MD_LINK_EMPTY_PLACEHOLDER = "\u200b";
 
-/**
- * 内部 MD 链接：`[文案](#frag)` 或 `[![](path)](#frag)`（label 内可含 `![alt](url)`）。
- */
-export const RE_MD_INTERNAL_LINK =
-  /\[(?:!\[([^\]]*)\]\(([^)]+)\)|([^\]]*))\]\((#[^)\s"]+)(?:\s+"((?:\\.|[^"\\])*)")?\)/g;
+/** 还原 label 内 `\[`、`\]`、`\\` 等转义（仅处理反斜杠转义） */
+export function unescapeMdLabel(s: string): string {
+  return s.replace(/\\(.)/g, "$1");
+}
 
-/** 外链：`[文案](https://…)` / `[文案](mailto:…)`，label 内可含 `![alt](url)` 图标 */
-export const RE_MD_EXTERNAL_LINK =
-  /\[(?:!\[([^\]]*)\]\(([^)]+)\)|([^\]]*))\]\((https?:\/\/[^)\s"]+|mailto:[^)\s"]+)(?:\s+"((?:\\.|[^"\\])*)")?\)/g;
+/** marked `helpers.ts` — 匹配成对 `[]` / `()`，支持 `\` 转义 */
+function findClosingBracket(str: string, brackets: string): number {
+  if (str.indexOf(brackets[1]!) === -1) return -1;
+  let level = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === "\\") {
+      i++;
+    } else if (str[i] === brackets[0]) {
+      level++;
+    } else if (str[i] === brackets[1]) {
+      level--;
+      if (level < 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** 从 `![` 后第一个 `[` 起找匹配的 `]`（alt 内可嵌套 `[…]`） */
+function findMdBracketCloseIndex(s: string, openBracket: number): number {
+  if (s[openBracket] !== "[") return -1;
+  let i = openBracket + 1;
+  let depth = 0;
+  while (i < s.length) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      i += 2;
+      continue;
+    }
+    if (s[i] === "[") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (s[i] === "]") {
+      if (depth === 0) return i;
+      depth--;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/** marked 将 label 内 `![alt](href)` 留在 link.text；href 用 findClosingBracket(`()`) */
+function parseInlineImageFromLinkText(
+  text: string,
+): { alt: string; href: string } | null {
+  const src = text.trim();
+  if (!src.startsWith("![")) return null;
+  const altOpen = 1;
+  if (src[altOpen] !== "[") return null;
+  const altClose = findMdBracketCloseIndex(src, altOpen);
+  if (altClose < 0) return null;
+  const alt = src.slice(altOpen + 1, altClose);
+  if (src[altClose + 1] !== "(") return null;
+  const hrefSrc = src.slice(altClose + 2);
+  const parenClose = findClosingBracket(hrefSrc, "()");
+  if (parenClose < 0) return null;
+  const href = hrefSrc.slice(0, parenClose).trim();
+  return href ? { alt, href } : null;
+}
+
+function tryLexLinkAt(line: string, open: number): Tokens.Link | null {
+  const sub = line.slice(open);
+  if (!sub.startsWith("[")) return null;
+  const tokens = Lexer.lexInline(sub);
+  const first = tokens[0];
+  if (!first || first.type !== "link") return null;
+  if (!sub.startsWith(first.raw)) return null;
+  return first;
+}
+
+function parsedFromMarkedLink(
+  tok: Tokens.Link,
+  index: number,
+): ParsedMdInternalLink | ParsedMdExternalLink | null {
+  const href = tok.href.trim();
+  const icon = parseInlineImageFromLinkText(tok.text);
+  const common = {
+    full: tok.raw,
+    index,
+    textLabel: icon ? "" : unescapeMdLabel(tok.text),
+    iconAlt: icon ? unescapeMdLabel(icon.alt) : "",
+    iconRel: icon?.href ? unescapeMdLabel(icon.href) : undefined,
+    titleAttr: tok.title?.trim() || undefined,
+  };
+  if (href.startsWith("#")) {
+    const fragment = href.slice(1).trim();
+    if (!fragment || /^#https?:/i.test(href)) return null;
+    return { ...common, fragment };
+  }
+  if (isAllowedMdExternalUrl(href)) {
+    return { ...common, url: href };
+  }
+  return null;
+}
 
 export type ParsedMdInternalLink = {
   full: string;
@@ -207,22 +295,17 @@ export type ParsedMdInternalLink = {
   titleAttr?: string;
 };
 
-export function parseMdInternalLinkFromMatch(
-  m: RegExpExecArray,
+export function scanMdInternalLinkAt(
+  line: string,
+  from: number,
 ): ParsedMdInternalLink | null {
-  const fragment = (m[4] ?? "").replace(/^#/, "").trim();
-  if (!fragment) return null;
-  const iconRel = m[2]?.trim();
-  const hasIcon = Boolean(iconRel && m[0]!.includes("!["));
-  return {
-    full: m[0]!,
-    index: m.index!,
-    textLabel: (m[3] ?? "").trim(),
-    iconAlt: (m[1] ?? "").trim(),
-    iconRel: hasIcon ? iconRel : undefined,
-    fragment,
-    titleAttr: m[5],
-  };
+  const open = line.indexOf("[", from);
+  if (open < 0) return null;
+  const tok = tryLexLinkAt(line, open);
+  if (!tok) return null;
+  const parsed = parsedFromMarkedLink(tok, open);
+  if (!parsed || !("fragment" in parsed)) return null;
+  return parsed;
 }
 
 export type ParsedMdExternalLink = {
@@ -235,22 +318,76 @@ export type ParsedMdExternalLink = {
   titleAttr?: string;
 };
 
-export function parseMdExternalLinkFromMatch(
-  m: RegExpExecArray,
+export function scanMdExternalLinkAt(
+  line: string,
+  from: number,
 ): ParsedMdExternalLink | null {
-  const url = (m[4] ?? "").trim();
-  if (!url || !isAllowedMdExternalUrl(url)) return null;
-  const iconRel = m[2]?.trim();
-  const hasIcon = Boolean(iconRel && m[0]!.includes("!["));
-  return {
-    full: m[0]!,
-    index: m.index!,
-    textLabel: (m[3] ?? "").trim(),
-    iconAlt: (m[1] ?? "").trim(),
-    iconRel: hasIcon ? iconRel : undefined,
-    url,
-    titleAttr: m[5],
-  };
+  const open = line.indexOf("[", from);
+  if (open < 0) return null;
+  const tok = tryLexLinkAt(line, open);
+  if (!tok) return null;
+  const parsed = parsedFromMarkedLink(tok, open);
+  if (!parsed || !("url" in parsed)) return null;
+  return parsed;
+}
+
+export type NextMdLinkScan =
+  | { kind: "internal"; link: ParsedMdInternalLink }
+  | { kind: "external"; link: ParsedMdExternalLink };
+
+export function scanNextMdLinkAt(
+  line: string,
+  from: number,
+): NextMdLinkScan | null {
+  let pos = from;
+  while (pos < line.length) {
+    const open = line.indexOf("[", pos);
+    if (open < 0) return null;
+    const tok = tryLexLinkAt(line, open);
+    if (tok) {
+      const parsed = parsedFromMarkedLink(tok, open);
+      if (parsed) {
+        return "fragment" in parsed
+          ? { kind: "internal", link: parsed }
+          : { kind: "external", link: parsed };
+      }
+    }
+    pos = open + 1;
+  }
+  return null;
+}
+
+export function scanMdInternalLinksOnLine(
+  line: string,
+): ParsedMdInternalLink[] {
+  const out: ParsedMdInternalLink[] = [];
+  let from = 0;
+  while (from < line.length) {
+    const link = scanMdInternalLinkAt(line, from);
+    if (!link) {
+      from += 1;
+      continue;
+    }
+    out.push(link);
+    from = link.index + link.full.length;
+  }
+  return out;
+}
+
+export function stripMdLinksFromLine(line: string): string {
+  let result = "";
+  let last = 0;
+  let from = 0;
+  while (from < line.length) {
+    const hit = scanNextMdLinkAt(line, from);
+    if (!hit) break;
+    const { link } = hit;
+    result += line.slice(last, link.index);
+    last = link.index + link.full.length;
+    from = last;
+  }
+  result += line.slice(last);
+  return result;
 }
 
 export function visibleTextForMdLinkLabel(

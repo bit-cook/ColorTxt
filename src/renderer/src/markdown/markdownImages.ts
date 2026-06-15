@@ -16,18 +16,35 @@ function isAbsolutePathUrl(url: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(u) || u.startsWith("/");
 }
 
+/** 将相对 `md` 的路径解析为插图绝对路径（支持路径段内 `[]` 等字符） */
+export function resolveMarkdownAssetAbsPath(
+  relativePath: string,
+  mdFileAbsPath: string,
+): string {
+  const trimmed = relativePath.trim();
+  if (isRemoteImageUrl(trimmed)) return trimmed;
+  if (isAbsolutePathUrl(trimmed)) {
+    return trimmed.replace(/\\/g, "/");
+  }
+  const mdNorm = mdFileAbsPath.replace(/\\/g, "/");
+  const baseDir = dirnameFs(mdNorm);
+  let abs = baseDir;
+  for (const seg of trimmed.replace(/\\/g, "/").split("/").filter(Boolean)) {
+    abs = joinFs(abs, seg);
+  }
+  return abs;
+}
+
 /** 块级 `![alt](url)` 的 url → 插图绝对路径或 https URL */
 export function resolveMarkdownBlockImageAbsPath(
   url: string,
   mdFileAbsPath: string,
 ): string {
-  const trimmed = url.trim();
-  if (isRemoteImageUrl(trimmed)) return trimmed;
-  if (isAbsolutePathUrl(trimmed)) {
-    return trimmed.replace(/\\/g, "/");
+  const abs = resolveMarkdownAssetAbsPath(url, mdFileAbsPath);
+  if (isRemoteImageUrl(abs) || isAbsolutePathUrl(abs)) {
+    return abs.replace(/\\/g, "/");
   }
-  const baseDir = dirnameFs(mdFileAbsPath.replace(/\\/g, "/"));
-  return joinFs(baseDir, trimmed.replace(/\\/g, "/")).replace(/\\/g, "/");
+  return abs;
 }
 
 /** 行内脚注图标链：`[![](icon)](#frag)` 不当作块级图 */

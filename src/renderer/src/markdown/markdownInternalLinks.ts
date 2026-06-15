@@ -5,12 +5,12 @@
 import { yieldToUi } from "../ebook/yieldToUi";
 import {
   type MdInternalLinkOccurrence,
+  type ParsedMdExternalLink,
+  type ParsedMdInternalLink,
   lineContainsMdStripLink,
-  parseMdExternalLinkFromMatch,
-  parseMdInternalLinkFromMatch,
   parseMdLinkTitleAttr,
-  RE_MD_EXTERNAL_LINK,
-  RE_MD_INTERNAL_LINK,
+  scanMdInternalLinkAt,
+  scanNextMdLinkAt,
   visibleTextForMdLinkLabel,
   MD_LINK_EMPTY_PLACEHOLDER,
 } from "./markdownLinkShared";
@@ -58,17 +58,14 @@ function collectLeadingMdLinkLabelsFromLine(rawLine: string): string[] {
   let linkPart = s.slice(pos).replace(RE_SPAN_ID, "").trimStart();
 
   while (linkPart.length > 0) {
-    const re = new RegExp(RE_MD_INTERNAL_LINK.source);
-    const m = re.exec(linkPart);
-    if (!m) break;
-    const parsed = parseMdInternalLinkFromMatch(m);
+    const parsed = scanMdInternalLinkAt(linkPart, 0);
     if (!parsed || !isInternalFragmentTarget(`#${parsed.fragment}`)) break;
     if (parsed.iconRel) {
       labels.push(parsed.iconAlt || "注");
     } else {
       labels.push(parsed.textLabel || "注");
     }
-    linkPart = linkPart.slice(m[0]!.length);
+    linkPart = linkPart.slice(parsed.full.length);
     const next = linkPart.match(/^\s*/);
     linkPart = linkPart.slice(next?.[0]?.length ?? 0);
   }
@@ -76,22 +73,15 @@ function collectLeadingMdLinkLabelsFromLine(rawLine: string): string[] {
 }
 
 type NextMdLinkMatch =
-  | { kind: "internal"; m: RegExpExecArray }
-  | { kind: "external"; m: RegExpExecArray };
+  | { kind: "internal"; link: ParsedMdInternalLink }
+  | { kind: "external"; link: ParsedMdExternalLink };
 
 function nextMdLinkMatch(line: string, from: number): NextMdLinkMatch | null {
-  const iRe = new RegExp(RE_MD_INTERNAL_LINK.source, "g");
-  iRe.lastIndex = from;
-  const im = iRe.exec(line);
-  const eRe = new RegExp(RE_MD_EXTERNAL_LINK.source, "g");
-  eRe.lastIndex = from;
-  const em = eRe.exec(line);
-  if (!im && !em) return null;
-  if (!im) return { kind: "external", m: em! };
-  if (!em) return { kind: "internal", m: im };
-  return (im.index ?? 0) <= (em.index ?? 0)
-    ? { kind: "internal", m: im }
-    : { kind: "external", m: em };
+  const hit = scanNextMdLinkAt(line, from);
+  if (!hit) return null;
+  return hit.kind === "internal"
+    ? { kind: "internal", link: hit.link }
+    : { kind: "external", link: hit.link };
 }
 
 function pushMdLinkOccurrence(
@@ -132,13 +122,12 @@ function replaceMdLinksOnLine(
   while (searchFrom < line.length) {
     const hit = nextMdLinkMatch(line, searchFrom);
     if (!hit) break;
-    const m = hit.m;
-    const index = m.index ?? 0;
+    const parsed = hit.link;
+    const index = parsed.index;
 
     if (hit.kind === "internal") {
-      const parsed = parseMdInternalLinkFromMatch(m);
-      if (!parsed || !isInternalFragmentTarget(`#${parsed.fragment}`)) {
-        searchFrom = index + Math.max(1, m[0]?.length ?? 1);
+      if (!isInternalFragmentTarget(`#${parsed.fragment}`)) {
+        searchFrom = index + Math.max(1, parsed.full.length);
         continue;
       }
       result += line.slice(last, index);
@@ -151,10 +140,10 @@ function replaceMdLinksOnLine(
         builtinLinkIcon,
       );
       const colStart = result.length + 1;
-      const titleAlt = parseMdLinkTitleAttr(
+      const titleAttr = parseMdLinkTitleAttr(
         parsed.titleAttr?.replace(/\\"/g, '"').replace(/\\\\/g, "\\"),
       );
-      const hoverTip = [titleAlt.title, titleAlt.alt].filter(Boolean).join("/");
+      const hoverTip = titleAttr.title;
       pushMdLinkOccurrence(out, physicalLine, colStart, visible, {
         targetId: `#${parsed.fragment}`,
         label: label || "注",
@@ -168,21 +157,16 @@ function replaceMdLinksOnLine(
       continue;
     }
 
-    const parsed = parseMdExternalLinkFromMatch(m);
-    if (!parsed) {
-      searchFrom = index + Math.max(1, m[0]?.length ?? 1);
-      continue;
-    }
     result += line.slice(last, index);
     const iconRel = parsed.iconRel;
     const label = iconRel ? parsed.iconAlt || "链" : parsed.textLabel;
     const builtinLinkIcon = !iconRel && label.length === 0;
     const visible = visibleTextForMdLinkLabel(label, iconRel, builtinLinkIcon);
     const colStart = result.length + 1;
-    const titleAlt = parseMdLinkTitleAttr(
+    const titleAttr = parseMdLinkTitleAttr(
       parsed.titleAttr?.replace(/\\"/g, '"').replace(/\\\\/g, "\\"),
     );
-    const hoverTip = [titleAlt.title, titleAlt.alt].filter(Boolean).join("/");
+    const hoverTip = titleAttr.title;
     pushMdLinkOccurrence(out, physicalLine, colStart, visible, {
       targetId: parsed.url,
       label: label || parsed.url,

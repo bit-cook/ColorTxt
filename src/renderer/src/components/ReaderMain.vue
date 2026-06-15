@@ -138,12 +138,8 @@ import {
   type MdInternalLinkSidecar,
 } from "../markdown/markdownLinkShared";
 import { stripMdInternalLinksFromText } from "../markdown/markdownInternalLinks";
+import { resolveMarkdownAssetAbsPath } from "../markdown/markdownImages";
 import { yieldToUi } from "../ebook/yieldToUi";
-import {
-  dirnameFs,
-  joinFs,
-  normalizeRelativeToFsStyle,
-} from "../ebook/pathUtils";
 import { appAlert } from "../services/appDialog";
 import type { SmartFormatReviewSession } from "../aiSmartFormat/aiSmartFormatReviewTypes";
 import {
@@ -1386,15 +1382,10 @@ async function applyEbookLinkIconStyles(
   convertedTxtAbsPath: string,
 ): Promise<Map<string, string>> {
   const relToClass = new Map<string, string>();
-  const baseDir = dirnameFs(convertedTxtAbsPath);
   const rules: string[] = [];
   const unique = [...new Set(iconRels.filter((r) => r.trim().length > 0))];
   for (const iconRel of unique) {
-    const fsRel = normalizeRelativeToFsStyle(
-      baseDir,
-      iconRel.replace(/\\/g, "/"),
-    );
-    const absPath = joinFs(baseDir, fsRel);
+    const absPath = resolveMarkdownAssetAbsPath(iconRel, convertedTxtAbsPath);
     const url = await window.colorTxt.pathToReadableLocalUrl(absPath);
     if (!url) continue;
     const hash = hashIconRelForCssClass(iconRel);
@@ -1490,11 +1481,16 @@ function buildEbookLinkDecorationsForViewport(
           iconRel && relToClass.has(iconRel)
             ? relToClass.get(iconRel)
             : undefined;
-        inlineClassName = iconHash
-          ? `readerEbookLinkIcon readerEbookLinkIcon--${iconHash}`
-          : h.externalUrl?.trim()
-            ? "readerEbookExternalLink"
-            : "readerEbookInternalLink";
+        if (iconRel && iconHash) {
+          inlineClassName = `readerEbookLinkIcon readerEbookLinkIcon--${iconHash}`;
+        } else if (iconRel) {
+          inlineClassName =
+            "readerEbookLinkIcon readerEbookLinkIcon--builtin-link";
+        } else if (h.externalUrl?.trim()) {
+          inlineClassName = "readerEbookExternalLink";
+        } else {
+          inlineClassName = "readerEbookInternalLink";
+        }
       }
       decs.push({
         range: new monaco.Range(
