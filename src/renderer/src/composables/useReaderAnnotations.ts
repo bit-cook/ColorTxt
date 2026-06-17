@@ -118,6 +118,10 @@ export function useReaderAnnotations(opts: {
   /** 选区滚出视口时暂隐工具条，保留 draft 以便滚回后恢复 */
   let toolbarScrollHidden = false;
 
+  function isFindWidgetTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest(".find-widget");
+  }
+
   function clearSelectionPointerUpListener() {
     if (selectionPointerUpListener) {
       window.removeEventListener("pointerup", selectionPointerUpListener, true);
@@ -125,7 +129,10 @@ export function useReaderAnnotations(opts: {
     }
   }
 
-  function finishSelectionPointerInteraction(clientX: number, clientY: number) {
+  function finishSelectionPointerInteraction(
+    clientX: number,
+    clientY: number,
+  ) {
     if (!selectionPointerActive) return;
     selectionPointerActive = false;
     clearSelectionPointerUpListener();
@@ -144,7 +151,8 @@ export function useReaderAnnotations(opts: {
     });
   }
 
-  function beginSelectionPointerInteraction() {
+  function beginSelectionPointerInteraction(startTarget?: EventTarget | null) {
+    if (isFindWidgetTarget(startTarget ?? null)) return;
     selectionPointerActive = true;
     if (selectionPointerUpListener) return;
     selectionPointerUpListener = (ev: PointerEvent) => {

@@ -260,7 +260,9 @@ export function useTxt2ImgProfileDraft(modelValue: Ref<AIConfig>) {
     );
     if (idx < 0) return;
     const prev = modelValue.value.txt2imgProfiles[idx]!;
+    const prevEnabled = modelValue.value.txt2img.enabled;
     const txt2img = defaultTxt2ImgProfileResetConfig();
+    txt2img.enabled = prevEnabled;
     modelValue.value.txt2imgProfiles[idx] = {
       ...prev,
       txt2img,

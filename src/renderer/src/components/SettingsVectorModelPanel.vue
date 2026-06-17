@@ -818,14 +818,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
   color: var(--muted);
 }
 
-.aiMasterHint code,
-.settingsHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
-}
-
 .aiSectionTitle {
   margin: 0;
   font-size: 14px;

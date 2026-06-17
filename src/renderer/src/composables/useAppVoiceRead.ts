@@ -1,29 +1,33 @@
 import { computed, nextTick, ref, watch, type Ref } from "vue";
+import type { CharacterRosterEntry } from "@shared/characterTypes";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
   clampVoiceReadPitch,
   clampVoiceReadRate,
   mergeVoiceReadSettings,
-  type VoiceReadEngineId,
+  voiceReadAiSpeakerRecognitionActive,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
-import { VoiceReadLinePlayer } from "../services/voiceRead/voiceReadLinePlayer";
 import {
-  hasVoiceReadSpeakableText,
-  splitVoiceReadChunks,
-  VOICE_READ_CHUNK_UNITS_DEFAULT,
-  VOICE_READ_CHUNK_UNITS_EDGE,
-} from "../services/voiceRead/voiceReadTextChunks";
+  VoiceReadLinePlayer,
+  type VoiceReadSpeakChunk,
+} from "../services/voiceRead/voiceReadLinePlayer";
+import { hasVoiceReadSpeakableText } from "../services/voiceRead/voiceReadTextChunks";
+import { buildLineSpeakChunks } from "../services/voiceRead/voiceReadLineBuild";
+import type { VoiceReadQuoteCarry } from "../services/voiceRead/voiceReadSegments";
+import {
+  attributeDialogueQuotes,
+  bumpVoiceReadSpeakerRosterVersion,
+  clearVoiceReadSpeakerCache,
+  invalidateCachedQuoteAttributions,
+  voiceReadSpeakerCacheKey,
+} from "../services/voiceRead/voiceReadSpeakerCache";
 
 export type VoiceReadMode = "off" | "playing" | "paused";
+export type VoiceReadSynthesizingPhase = "ai" | "tts";
 
 /** 多行一次会话，Edge 在同一条时间线上跨行缓冲 fetch */
 const VOICE_READ_BATCH_LINES = 28;
-
-function chunkUnitsForEngine(engine: VoiceReadEngineId): number {
-  if (engine === "edge") return VOICE_READ_CHUNK_UNITS_EDGE;
-  return VOICE_READ_CHUNK_UNITS_DEFAULT;
-}
 
 export function useAppVoiceRead(deps: {
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>;
@@ -32,14 +36,50 @@ export function useAppVoiceRead(deps: {
   loading: Ref<boolean>;
   readerEditMode: Ref<boolean>;
   monacoSmoothScrolling: Ref<boolean>;
+  aiFeaturesEnabled: Ref<boolean>;
+  characterRoster: Ref<readonly CharacterRosterEntry[]>;
 }) {
   const mode = ref<VoiceReadMode>("off");
   const isSynthesizing = ref(false);
+  const synthesizingPhase = ref<VoiceReadSynthesizingPhase | null>(null);
   const toolbarRate = ref(1);
   const toolbarPitch = ref(1);
   const player = new VoiceReadLinePlayer();
+  /** 批次构建（含 AI 引号分类）进行中的深度 */
+  let prepareSynthesisDepth = 0;
+  let playerSynthesisActive = false;
+
+  function syncSynthesizingState() {
+    const busy = prepareSynthesisDepth > 0 || playerSynthesisActive;
+    isSynthesizing.value = busy;
+    if (!busy) {
+      synthesizingPhase.value = null;
+      return;
+    }
+    synthesizingPhase.value =
+      prepareSynthesisDepth > 0 ? "ai" : "tts";
+  }
+
+  function beginPrepareSynthesis() {
+    prepareSynthesisDepth += 1;
+    syncSynthesizingState();
+  }
+
+  function endPrepareSynthesis() {
+    prepareSynthesisDepth = Math.max(0, prepareSynthesisDepth - 1);
+    syncSynthesizingState();
+  }
+
+  function resetSynthesizingState() {
+    prepareSynthesisDepth = 0;
+    playerSynthesisActive = false;
+    isSynthesizing.value = false;
+    synthesizingPhase.value = null;
+  }
+
   player.onSynthesizingChange = (active) => {
-    isSynthesizing.value = active;
+    playerSynthesisActive = active;
+    syncSynthesizingState();
   };
   let currentLine = 1;
   /** 当前批次内正在播的段索引 */
@@ -55,7 +95,7 @@ export function useAppVoiceRead(deps: {
 
   /** 当前批次（供行内 jumpToChunk） */
   let activeBatchEnd = 0;
-  let activeChunks: string[] = [];
+  let activeChunks: VoiceReadSpeakChunk[] = [];
   let activeChunkToLine: number[] = [];
 
   watch(mode, (m) => {
@@ -80,6 +120,103 @@ export function useAppVoiceRead(deps: {
   /** 朗读模式中（含暂停）：顶栏排版/编辑相关控件不可用 */
   const isVoiceReadHeaderLocked = computed(() => mode.value !== "off");
 
+  async function buildLineSpeakChunksWithSpeakers(
+    settings: VoiceReadSettings,
+    lineNo: number,
+    rawLine: string,
+    carry: VoiceReadQuoteCarry,
+  ) {
+    const roster = deps.characterRoster.value;
+    const aiOn = voiceReadAiSpeakerRecognitionActive(
+      settings,
+      deps.aiFeaturesEnabled.value,
+    );
+    const first = buildLineSpeakChunks(settings, rawLine, roster, {
+      carry,
+      aiFeaturesEnabled: aiOn,
+    });
+    if (!aiOn || first.dialogueSegments.length === 0) {
+      return first;
+    }
+    const dialogueTexts = first.dialogueSegments.map((d) => d.text);
+    const bookPath = deps.currentFile.value?.trim() ?? "";
+    const cacheKey = voiceReadSpeakerCacheKey(
+      bookPath,
+      lineNo,
+      rawLine,
+      dialogueTexts,
+      roster,
+    );
+    const quotes = await attributeDialogueQuotes(
+      rawLine,
+      dialogueTexts,
+      roster,
+      cacheKey,
+    );
+    return buildLineSpeakChunks(settings, rawLine, roster, {
+      carry,
+      quoteAttributions: quotes,
+      aiFeaturesEnabled: aiOn,
+    });
+  }
+
+  function invalidateAiQuoteCacheForLine(lineNo: number, rawLine: string): void {
+    const settings = deps.voiceReadSettings.value;
+    if (
+      !voiceReadAiSpeakerRecognitionActive(
+        settings,
+        deps.aiFeaturesEnabled.value,
+      )
+    ) {
+      return;
+    }
+    const roster = deps.characterRoster.value;
+    const first = buildLineSpeakChunks(settings, rawLine, roster, {
+      aiFeaturesEnabled: true,
+    });
+    if (first.dialogueSegments.length === 0) return;
+    const dialogueTexts = first.dialogueSegments.map((d) => d.text);
+    const bookPath = deps.currentFile.value?.trim() ?? "";
+    invalidateCachedQuoteAttributions(
+      voiceReadSpeakerCacheKey(
+        bookPath,
+        lineNo,
+        rawLine,
+        dialogueTexts,
+        roster,
+      ),
+    );
+  }
+
+  async function buildBatchSpeakChunks(
+    settings: VoiceReadSettings,
+    reader: InstanceType<typeof ReaderMain>,
+    fromLine: number,
+    toLine: number,
+    initialCarry: VoiceReadQuoteCarry = null,
+  ) {
+    const chunks: VoiceReadSpeakChunk[] = [];
+    const chunkToModelLine: number[] = [];
+    let carry = initialCarry;
+    for (let L = fromLine; L <= toLine; L++) {
+      const rawL = reader.getEditorLineContent?.(L) ?? "";
+      const t = rawL.replace(/\s+/g, " ").trim();
+      if (!hasVoiceReadSpeakableText(t)) continue;
+      const built = await buildLineSpeakChunksWithSpeakers(
+        settings,
+        L,
+        rawL,
+        carry,
+      );
+      carry = built.carry;
+      for (const c of built.chunks) {
+        chunks.push(c);
+        chunkToModelLine.push(L);
+      }
+    }
+    return { chunks, chunkToModelLine, carry };
+  }
+
   function effectiveSettingsForSpeak(): VoiceReadSettings {
     const base = deps.voiceReadSettings.value;
     return mergeVoiceReadSettings({
@@ -99,7 +236,7 @@ export function useAppVoiceRead(deps: {
   function exitVoiceRead() {
     playbackLoopGen += 1;
     player.onChunkChange = undefined;
-    isSynthesizing.value = false;
+    resetSynthesizingState();
     player.stop();
     clearActiveBatch();
     lastCompletedBatchEndLine = 0;
@@ -189,17 +326,28 @@ export function useAppVoiceRead(deps: {
   function prefetchLineAfterBatch(
     batchEnd: number,
     settings: VoiceReadSettings,
+    quoteCarry: VoiceReadQuoteCarry,
   ) {
     const reader = deps.readerRef.value;
     const mCount = reader?.getModelLineCount?.() ?? 0;
     if (!reader || batchEnd >= mCount) return;
-    for (let L = batchEnd + 1; L <= mCount; L++) {
-      const rawAfter = reader.getEditorLineContent?.(L) ?? "";
-      const t = rawAfter.replace(/\s+/g, " ").trim();
-      if (!hasVoiceReadSpeakableText(t)) continue;
-      player.startPrefetch(settings, t);
-      return;
-    }
+    void (async () => {
+      for (let L = batchEnd + 1; L <= mCount; L++) {
+        const rawAfter = reader.getEditorLineContent?.(L) ?? "";
+        const t = rawAfter.replace(/\s+/g, " ").trim();
+        if (!hasVoiceReadSpeakableText(t)) continue;
+        const built = await buildLineSpeakChunksWithSpeakers(
+          settings,
+          L,
+          rawAfter,
+          quoteCarry,
+        );
+        if (built.chunks.length > 0) {
+          player.startPrefetch(settings, built.chunks);
+          return;
+        }
+      }
+    })();
   }
 
   function warmLineText(line: number, settings: VoiceReadSettings) {
@@ -208,7 +356,13 @@ export function useAppVoiceRead(deps: {
     const raw = reader.getEditorLineContent?.(line) ?? "";
     const t = raw.replace(/\s+/g, " ").trim();
     if (!hasVoiceReadSpeakableText(t)) return;
-    player.warmLine(settings, raw);
+    void buildLineSpeakChunksWithSpeakers(settings, line, raw, null).then(
+      (built) => {
+        if (built.chunks.length > 0) {
+          player.warmSpeakChunks(settings, built.chunks);
+        }
+      },
+    );
   }
 
   /** 预生成锚点行上下各一行，手动上一行/下一行命中缓存 */
@@ -247,19 +401,23 @@ export function useAppVoiceRead(deps: {
 
       const batchEnd = Math.min(mCount, ln + VOICE_READ_BATCH_LINES - 1);
       const settings = effectiveSettingsForSpeak();
-      const units = chunkUnitsForEngine(settings.engine);
-      const chunks: string[] = [];
-      const chunkToModelLine: number[] = [];
-      for (let L = ln; L <= batchEnd; L++) {
-        const rawL = reader.getEditorLineContent?.(L) ?? "";
-        const t = rawL.replace(/\s+/g, " ").trim();
-        if (!hasVoiceReadSpeakableText(t)) continue;
-        const parts = splitVoiceReadChunks(t, units);
-        for (const p of parts) {
-          chunks.push(p);
-          chunkToModelLine.push(L);
-        }
+
+      scrollAndHighlightLine(ln);
+
+      let batchBuilt;
+      beginPrepareSynthesis();
+      try {
+        batchBuilt = await buildBatchSpeakChunks(
+          settings,
+          reader,
+          ln,
+          batchEnd,
+        );
+      } finally {
+        endPrepareSynthesis();
       }
+      const chunks = batchBuilt.chunks;
+      const chunkToModelLine = batchBuilt.chunkToModelLine;
 
       activeBatchEnd = batchEnd;
       activeChunks = chunks;
@@ -279,7 +437,7 @@ export function useAppVoiceRead(deps: {
       const anchorLn = chunkToModelLine[0] ?? ln;
       currentLine = anchorLn;
       scrollAndHighlightLine(anchorLn);
-      prefetchLineAfterBatch(batchEnd, settings);
+      prefetchLineAfterBatch(batchEnd, settings, batchBuilt.carry);
       syncPlaybackChunkAnchor(0, chunkToModelLine, anchorLn);
       warmAdjacentSpeakableLines(anchorLn);
       bindChunkHighlight(gen, chunkToModelLine, anchorLn, 0);
@@ -442,7 +600,7 @@ export function useAppVoiceRead(deps: {
     syncPlaybackChunkAnchor(targetChunkIndex, chunkToLine, ln);
     warmAdjacentSpeakableLines(ln);
     bindChunkHighlight(gen, chunkToLine, ln, targetChunkIndex);
-    prefetchLineAfterBatch(batchEnd, settings);
+    prefetchLineAfterBatch(batchEnd, settings, null);
 
     void player
       .jumpToChunk(settings, chunks, targetChunkIndex)
@@ -524,7 +682,12 @@ export function useAppVoiceRead(deps: {
     const ln = getPlaybackAnchorLine();
     const settings = effectiveSettingsForSpeak();
     const raw = reader.getEditorLineContent?.(ln) ?? "";
-    player.invalidateLineSynthesis(settings, raw);
+    invalidateAiQuoteCacheForLine(ln, raw);
+    void buildLineSpeakChunksWithSpeakers(settings, ln, raw, null).then(
+      (built) => {
+        player.invalidateLineSynthesis(settings, raw, built.chunks);
+      },
+    );
     if (mode.value === "paused") mode.value = "playing";
     restartPlaybackFromLine(ln);
   }
@@ -568,13 +731,12 @@ export function useAppVoiceRead(deps: {
     if (mode.value === "playing") {
       playbackLoopGen += 1;
       player.onChunkChange = undefined;
-      isSynthesizing.value = false;
+      resetSynthesizingState();
       player.pausePlayback();
       mode.value = "paused";
       return;
     }
     mode.value = "playing";
-    isSynthesizing.value = false;
     void nextTick(() => {
       if (mode.value !== "playing") return;
       resumeFromPause();
@@ -591,12 +753,23 @@ export function useAppVoiceRead(deps: {
 
   watch(deps.currentFile, () => {
     player.clearSynthesisCache();
+    clearVoiceReadSpeakerCache();
     exitVoiceRead();
   });
 
   watch(
     () => deps.voiceReadSettings.value,
     () => {
+      player.clearSynthesisCache();
+      clearVoiceReadSpeakerCache();
+    },
+    { deep: true },
+  );
+
+  watch(
+    () => deps.characterRoster.value,
+    () => {
+      bumpVoiceReadSpeakerRosterVersion();
       player.clearSynthesisCache();
     },
     { deep: true },
@@ -616,6 +789,7 @@ export function useAppVoiceRead(deps: {
   return {
     mode,
     isSynthesizing,
+    synthesizingPhase,
     toolbarRate,
     toolbarPitch,
     canStartVoiceRead,

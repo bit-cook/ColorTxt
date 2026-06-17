@@ -45,6 +45,10 @@ import {
 import { icons } from "../icons";
 import type { ReaderSidebarTab } from "../constants/readerSidebarTab";
 import {
+  defaultVoiceReadSettings,
+  type VoiceReadSettings,
+} from "../constants/voiceRead";
+import {
   characterPortraitBookDirAbs,
   sanitizeBookFolderSegment,
 } from "@shared/characterPortraitPaths";
@@ -141,6 +145,8 @@ const props = withDefaults(
     characterBookStyle?: CharacterBookStylePersisted;
     /** 设置「确定」保存 AI 配置后由 App 递增，用于阅读助手刷新快速提问等 */
     aiAssistantConfigSyncNonce?: number;
+    /** 全局语音朗读设置（角色卡专属朗读语音） */
+    voiceReadSettings?: VoiceReadSettings;
     /** 编辑态章节面板是否显示「刷新章节」（仅手动刷新场景） */
     showEditChapterRefreshButton?: boolean;
   }>(),
@@ -179,6 +185,7 @@ const props = withDefaults(
     characterRoster: () => [],
     characterBookStyle: undefined,
     aiAssistantConfigSyncNonce: 0,
+    voiceReadSettings: () => ({ ...defaultVoiceReadSettings }),
     showEditChapterRefreshButton: false,
   },
 );
@@ -937,6 +944,7 @@ defineExpose({
           :character-roster="characterRoster"
           :character-book-style="characterBookStyle"
           :ai-config-sync-nonce="aiAssistantConfigSyncNonce"
+          :voice-read-settings="voiceReadSettings"
           @character-file-meta-patch="emit('characterFileMetaPatch', $event)"
           @update:fullscreen-character-drawer-open="
             emit('update:fullscreenCharacterDrawerOpen', $event)

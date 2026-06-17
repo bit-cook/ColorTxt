@@ -22,6 +22,7 @@ const props = defineProps<{
   visible: boolean;
   mode: "off" | "playing" | "paused";
   synthesizing?: boolean;
+  synthesizingPhase?: "ai" | "tts" | null;
   toolbarRate: number;
   toolbarPitch: number;
   engine: VoiceReadEngineId;
@@ -55,7 +56,9 @@ const playIcon = computed(() => {
   return props.mode === "playing" ? pauseSvg : playSvg;
 });
 const playLabel = computed(() => {
-  if (props.synthesizing) return "合成中";
+  if (props.synthesizing) {
+    return props.synthesizingPhase === "ai" ? "AI 识别中" : "合成中";
+  }
   return props.mode === "playing" ? "暂停" : "播放";
 });
 

@@ -160,6 +160,12 @@ import {
 } from "@shared/textConvertTypes";
 import { applyTextDisplayConverts } from "./services/textConvertApply";
 import { mergeVoiceReadSettings, type VoiceReadSettings } from "./constants/voiceRead";
+import { migrateVoiceReadFromPersisted, cloneVoiceReadProfiles } from "./services/voiceRead/voiceReadProfileState";
+import {
+  voiceReadAiSpeakerTokenUsage,
+  voiceReadAiSpeakerTokenUsageAvailable,
+} from "./services/voiceRead/voiceReadAiSpeakerTokenUsage";
+import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
 import {
   DEFAULT_HIGHLIGHT_COLORS_DARK,
   DEFAULT_HIGHLIGHT_COLORS_LIGHT,
@@ -326,6 +332,12 @@ const wordcloudAngleMode = ref<WordcloudAngleMode>(WORDCLOUD_DEFAULT_ANGLE_MODE)
 const wordcloudPaletteId = ref<WordcloudPaletteId>(WORDCLOUD_DEFAULT_PALETTE_ID);
 const voiceReadSettings = ref<VoiceReadSettings>(
   mergeVoiceReadSettings(undefined),
+);
+const voiceReadProfiles = ref<VoiceReadProfile[]>(
+  migrateVoiceReadFromPersisted(undefined).profiles,
+);
+const activeVoiceReadProfileId = ref(
+  migrateVoiceReadFromPersisted(undefined).activeProfileId,
 );
 const initialWindowLoadIntent: InitialWindowLoadIntent =
   typeof window !== "undefined" && window.colorTxt?.getInitialWindowLoadIntent
@@ -1091,6 +1103,8 @@ const persistence = useAppPersistence({
   wordcloudAngleMode,
   wordcloudPaletteId,
   voiceReadSettings,
+  voiceReadProfiles,
+  activeVoiceReadProfileId,
 });
 const {
   persistSettings,
@@ -1126,6 +1140,18 @@ watch(
   () => persistSettings(),
   { deep: true },
 );
+watch(
+  voiceReadProfiles,
+  () => persistSettings(),
+  { deep: true },
+);
+watch(activeVoiceReadProfileId, () => persistSettings());
+watch(
+  voiceReadAiSpeakerTokenUsage,
+  () => persistSettings(),
+  { deep: true },
+);
+watch(voiceReadAiSpeakerTokenUsageAvailable, () => persistSettings());
 
 /** 加载期底栏/侧栏：当前文件的存档进度仅来自 file.meta */
 const archivedProgressForCurrentFile = computed(() => {
@@ -1606,6 +1632,7 @@ const {
 const {
   mode: voiceReadMode,
   isSynthesizing: voiceReadSynthesizing,
+  synthesizingPhase: voiceReadSynthesizingPhase,
   toolbarRate: voiceReadToolbarRate,
   toolbarPitch: voiceReadToolbarPitch,
   canStartVoiceRead: canVoiceRead,
@@ -1629,6 +1656,8 @@ const {
   loading,
   readerEditMode,
   monacoSmoothScrolling,
+  aiFeaturesEnabled,
+  characterRoster: currentFileCharacterRoster,
 });
 
 function scheduleVoiceReadResumeAfterJump() {
@@ -2756,6 +2785,8 @@ async function applySettings(payload: SettingsApplyPayload) {
     aiCustomSkills.value.map((s) => s.id),
   );
   voiceReadSettings.value = mergeVoiceReadSettings(payload.voiceRead);
+  voiceReadProfiles.value = cloneVoiceReadProfiles(payload.voiceReadProfiles);
+  activeVoiceReadProfileId.value = payload.activeVoiceReadProfileId.trim();
   aiAssistantConfigSyncNonce.value += 1;
   persistSettings();
   if (!payload.restoreSessionOnStartup) {
@@ -3073,6 +3104,7 @@ useAppShellThemeWatch({
           v-model:character-card-texture-effect="characterCardTextureEffect"
           :character-roster="currentFileCharacterRoster"
           :character-book-style="currentFileCharacterBookStyle"
+          :voice-read-settings="voiceReadSettings"
           v-model:deep-thinking="aiAssistantDeepThinking"
           v-model:spoiler-safe="aiAssistantSpoilerSafe"
           :ai-skills-enabled="aiSkillsEnabled"
@@ -3245,6 +3277,7 @@ useAppShellThemeWatch({
           :visible="isVoiceReadActive"
           :mode="voiceReadMode"
           :synthesizing="voiceReadSynthesizing"
+          :synthesizing-phase="voiceReadSynthesizingPhase"
           :toolbar-rate="voiceReadToolbarRate"
           :toolbar-pitch="voiceReadToolbarPitch"
           :engine="voiceReadSettings.engine"
@@ -3383,6 +3416,9 @@ useAppShellThemeWatch({
       :ebook-convert-output-dir="ebookConvertOutputDir"
       :character-portrait-cache-dir="characterPortraitCacheDir"
       :voice-read-settings="voiceReadSettings"
+      :voice-read-profiles="voiceReadProfiles"
+      :active-voice-read-profile-id="activeVoiceReadProfileId"
+      :character-roster="currentFileCharacterRoster"
       :ai-skills-enabled="aiSkillsEnabled"
       :ai-skill-overrides="aiSkillOverrides"
       :ai-custom-skills="aiCustomSkills"

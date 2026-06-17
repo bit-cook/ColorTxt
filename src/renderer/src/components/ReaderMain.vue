@@ -3227,7 +3227,7 @@ onMounted(() => {
         ev.stopImmediatePropagation();
         return;
       }
-      readerAnn.beginSelectionPointerInteraction();
+      readerAnn.beginSelectionPointerInteraction(ev.target);
       if (imageViewZoneIds.value.length === 0) return;
       const t = ev.target;
       if (!(t instanceof Element)) return;
@@ -3731,6 +3731,22 @@ watch(smartFormatReviewActive, (active) => {
 :deep(.monaco-editor),
 :deep(.monaco-editor *) {
   user-select: text;
+}
+
+/* 查找栏计数/按钮不可拖选；搜索框仍可选中（须高于上一则 universal 选择器） */
+:deep(.monaco-editor .find-widget),
+:deep(.monaco-editor .find-widget *) {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:deep(.monaco-editor .find-widget input),
+:deep(.monaco-editor .find-widget textarea),
+:deep(.monaco-editor .find-widget .monaco-inputbox),
+:deep(.monaco-editor .find-widget .monaco-inputbox .input),
+:deep(.monaco-editor .find-widget .monaco-findInput .input) {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 仅只读：隐藏文本光标（与 cursorWidth:0 配合）；编辑模式交给 Monaco 默认绘制 */

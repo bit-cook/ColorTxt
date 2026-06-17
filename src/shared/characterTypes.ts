@@ -28,4 +28,12 @@ export type CharacterRosterEntry = {
   negativeZh: string;
   /** 检索折叠区持久化正文 */
   retrieveThinkingText: string;
+  /** 朗读语音（当前引擎 voiceId；空=使用全局对白默认音色） */
+  voiceReadVoiceId?: string;
+  /** 音色试听：当前展示的台词（与检索列表独立，可手改） */
+  voiceReadSampleLine?: string;
+  /** AI 检索到的经典台词列表（只读缓存，供「换一句」覆盖当前台词） */
+  voiceReadSampleQuotes?: string[];
+  /** 「换一句」轮换进度（指向 voiceReadSampleQuotes） */
+  voiceReadSampleQuoteIndex?: number;
 };

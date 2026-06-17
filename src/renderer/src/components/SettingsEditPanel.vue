@@ -358,11 +358,4 @@ function updateSmart<K extends keyof AiSmartFormatSettings>(
   line-height: 1.45;
   color: var(--muted);
 }
-
-.settingsHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
-}
 </style>

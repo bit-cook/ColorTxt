@@ -114,6 +114,22 @@ import {
   mergeVoiceReadSettings,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
+import {
+  collectVoiceReadProfileApiKeys,
+  hydrateVoiceReadProfilesApiKeys,
+  stripVoiceReadProfileApiKeysForDisk,
+  type VoiceReadProfile,
+} from "@shared/voiceReadProfiles";
+import { parseProfileKeysBlob, serializeProfileKeysBlob } from "@shared/aiEndpointProfiles";
+import {
+  migrateVoiceReadFromPersisted,
+  normalizeVoiceReadProfilesForSave,
+  type PersistedVoiceReadRaw,
+} from "../services/voiceRead/voiceReadProfileState";
+import {
+  hydrateVoiceReadAiSpeakerTokenUsage,
+  voiceReadAiSpeakerTokenUsagePersistPayload,
+} from "../services/voiceRead/voiceReadAiSpeakerTokenUsage";
 import type { WordcloudAngleMode } from "../constants/wordcloudUi";
 import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import {
@@ -221,6 +237,8 @@ export function useAppPersistence(deps: {
   wordcloudAngleMode: Ref<WordcloudAngleMode>;
   wordcloudPaletteId: Ref<WordcloudPaletteId>;
   voiceReadSettings: Ref<VoiceReadSettings>;
+  voiceReadProfiles: Ref<VoiceReadProfile[]>;
+  activeVoiceReadProfileId: Ref<string>;
 }) {
   const settingsLoaded = ref(false);
   let storageSyncBound = false;
@@ -624,26 +642,71 @@ export function useAppPersistence(deps: {
     persistRecentFiles();
   }
 
-  async function hydrateVoiceReadSecretFromVault(): Promise<boolean> {
+  async function hydrateVoiceReadSecretsFromVault(): Promise<boolean> {
+    let migrated = false;
     try {
-      const r = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
-      const vaultKey = r.apiKey.trim();
-      const legacyKey = deps.voiceReadSettings.value.dashscopeApiKey.trim();
-      if (vaultKey) {
+      const profileKeysRes =
+        await window.colorTxt.secrets.getVoiceReadProfileKeys();
+      const profileKeys = parseProfileKeysBlob(profileKeysRes.keys ?? "");
+      hydrateVoiceReadProfilesApiKeys(deps.voiceReadProfiles.value, profileKeys);
+
+      const legacyRes = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
+      const legacyKey = legacyRes.apiKey.trim();
+      const activeId = deps.activeVoiceReadProfileId.value.trim();
+      const activeProfile = deps.voiceReadProfiles.value.find(
+        (p) => p.id === activeId,
+      );
+      if (
+        legacyKey &&
+        activeProfile &&
+        !activeProfile.settings.dashscopeApiKey.trim()
+      ) {
+        activeProfile.settings.dashscopeApiKey = legacyKey;
+        migrated = true;
+      }
+
+      const activeKey =
+        activeProfile?.settings.dashscopeApiKey.trim() ?? legacyKey;
+      if (activeKey) {
         deps.voiceReadSettings.value = mergeVoiceReadSettings({
           ...deps.voiceReadSettings.value,
-          dashscopeApiKey: vaultKey,
+          dashscopeApiKey: activeKey,
         });
-        return legacyKey !== "" && legacyKey !== vaultKey;
       }
-      if (legacyKey) {
-        await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(legacyKey);
-        return true;
+
+      const flatLegacyKey = deps.voiceReadSettings.value.dashscopeApiKey.trim();
+      if (!legacyKey && flatLegacyKey) {
+        await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(flatLegacyKey);
+        migrated = true;
+      }
+      if (Object.keys(profileKeys).length === 0 && deps.voiceReadProfiles.value.length > 0) {
+        const collected = collectVoiceReadProfileApiKeys(
+          deps.voiceReadProfiles.value,
+        );
+        if (Object.keys(collected).length > 0) {
+          await window.colorTxt.secrets.setVoiceReadProfileKeys(
+            serializeProfileKeysBlob(collected),
+          );
+          migrated = true;
+        }
       }
     } catch {
       // ignore
     }
-    return false;
+    return migrated;
+  }
+
+  async function persistVoiceReadSecretsToVault() {
+    const profiles = normalizeVoiceReadProfilesForSave(
+      deps.voiceReadProfiles.value,
+    );
+    const profileKeys = collectVoiceReadProfileApiKeys(profiles);
+    const activeId = deps.activeVoiceReadProfileId.value.trim();
+    const activeKey = profileKeys[activeId]?.trim() ?? "";
+    await window.colorTxt.secrets.setVoiceReadProfileKeys(
+      serializeProfileKeysBlob(profileKeys),
+    );
+    await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(activeKey);
   }
 
   function loadPersistedSettings(): {
@@ -914,7 +977,26 @@ export function useAppPersistence(deps: {
       deps.wordcloudPaletteId.value = data.wordcloudPaletteId;
     }
 
-    deps.voiceReadSettings.value = mergeVoiceReadSettings(data.voiceRead);
+    const voiceReadBundle = migrateVoiceReadFromPersisted(
+      data.voiceRead as PersistedVoiceReadRaw | undefined,
+    );
+    deps.voiceReadProfiles.value = voiceReadBundle.profiles;
+    deps.activeVoiceReadProfileId.value = voiceReadBundle.activeProfileId;
+    deps.voiceReadSettings.value = mergeVoiceReadSettings(
+      voiceReadBundle.activeSettings,
+    );
+    const vrRaw = data.voiceRead as PersistedVoiceReadRaw | undefined;
+    hydrateVoiceReadAiSpeakerTokenUsage({
+      usage:
+        vrRaw && typeof vrRaw === "object"
+          ? (vrRaw as Record<string, unknown>).aiSpeakerTokenUsage
+          : undefined,
+      available:
+        vrRaw && typeof vrRaw === "object"
+          ? (vrRaw as Record<string, unknown>).aiSpeakerTokenUsageAvailable ===
+            true
+          : false,
+    });
 
     return {
       ebookConvertOutputDirKeyPresent,
@@ -935,9 +1017,11 @@ export function useAppPersistence(deps: {
       // ignore
     }
     const voiceReadMerged = mergeVoiceReadSettings(deps.voiceReadSettings.value);
-    void window.colorTxt.secrets.setVoiceReadDashScopeApiKey(
-      voiceReadMerged.dashscopeApiKey,
+    const profilesForDisk = stripVoiceReadProfileApiKeysForDisk(
+      normalizeVoiceReadProfilesForSave(deps.voiceReadProfiles.value),
     );
+    void persistVoiceReadSecretsToVault();
+    const voiceReadTokenPayload = voiceReadAiSpeakerTokenUsagePersistPayload();
     persistSettingsData(window.localStorage, persistKey, {
       theme: deps.currentTheme.value === "vs" ? "vs" : "vs-dark",
       sidebarWidth: deps.sidebarWidth.value,
@@ -1026,8 +1110,12 @@ export function useAppPersistence(deps: {
       wordcloudAngleMode: deps.wordcloudAngleMode.value,
       wordcloudPaletteId: deps.wordcloudPaletteId.value,
       voiceRead: {
+        activeProfileId: deps.activeVoiceReadProfileId.value.trim(),
+        profiles: profilesForDisk,
         ...voiceReadMerged,
         dashscopeApiKey: "",
+        aiSpeakerTokenUsage: voiceReadTokenPayload.usage,
+        aiSpeakerTokenUsageAvailable: voiceReadTokenPayload.available,
       },
     });
   }
@@ -1084,7 +1172,7 @@ export function useAppPersistence(deps: {
       ebookConvertOutputDirKeyPresent,
       characterPortraitCacheDirKeyPresent,
     } = loadPersistedSettings();
-    const migratedVoiceSecret = await hydrateVoiceReadSecretFromVault();
+    const migratedVoiceSecret = await hydrateVoiceReadSecretsFromVault();
     settingsLoaded.value = true;
     let needDefaultSettingsPersist = false;
     if (!ebookConvertOutputDirKeyPresent) {

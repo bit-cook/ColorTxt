@@ -15,6 +15,7 @@ import type {
   AIConfig,
   AIIndexSearchHit,
   BookStyleInferResult,
+  CharacterGoldenQuotesResult,
   PortraitExtractResult,
 } from "@shared/aiTypes";
 import type {
@@ -38,6 +39,11 @@ import type {
   AiTxt2ImgInvokeResult,
 } from "@shared/aiTxt2ImgIpc";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import type {
+  VoiceReadAttributeSpeakersRequest,
+  VoiceReadAttributeSpeakersResult,
+} from "@shared/voiceReadSpeakerIpc";
+import { SECRET_SLOT_VOICE_READ_PROFILE_KEYS } from "@shared/secretSlots";
 
 /** sandbox 下 preload 不可 require('path')，与 renderer 的 joinFs 行为对齐 */
 function joinUserDataSubdir(userData: string, segment: string): string {
@@ -158,6 +164,11 @@ const api = {
     ipcRenderer.invoke("voiceRead:edgeTts", payload) as Promise<
       { ok: true; mp3: ArrayBuffer } | { ok: false; error: string }
     >,
+  voiceReadAttributeSpeakers: (payload: VoiceReadAttributeSpeakersRequest) =>
+    ipcRenderer.invoke(
+      "voiceRead:attributeSpeakers",
+      payload,
+    ) as Promise<VoiceReadAttributeSpeakersResult>,
   listTxtFilesInDirectory: (dirPath: string) =>
     ipcRenderer.invoke("dir:listTxtFiles", dirPath) as Promise<{
       dirPath: string;
@@ -218,6 +229,21 @@ const api = {
         "secrets:setVoiceReadDashScopeApiKey",
         apiKey,
       ) as Promise<{ ok: true }>,
+    getVoiceReadProfileKeys: () =>
+      ipcRenderer
+        .invoke("secrets:get", SECRET_SLOT_VOICE_READ_PROFILE_KEYS)
+        .then(
+          (res: { ok: boolean; value?: string }) =>
+            ({
+              ok: true as const,
+              keys: res.ok ? (res.value ?? "") : "",
+            }) as const,
+        ),
+    setVoiceReadProfileKeys: (keysBlob: string) =>
+      ipcRenderer.invoke("secrets:set", {
+        slot: SECRET_SLOT_VOICE_READ_PROFILE_KEYS,
+        value: keysBlob,
+      }) as Promise<{ ok: true }>,
   },
   pathToFileUrl: (filePath: string) =>
     ipcRenderer.invoke("path:toFileUrl", filePath) as Promise<string | null>,
@@ -706,6 +732,17 @@ const api = {
     }) =>
       ipcRenderer.invoke("ai:portrait:extract", payload) as Promise<
         PortraitExtractResult | { error: string }
+      >,
+    portraitGoldenQuotes: (payload: {
+      bookHash: string;
+      characterName: string;
+      characterAliases?: string;
+      spoilerSafe?: boolean;
+      activeChapterIdx?: number;
+      retrieveSessionId?: number;
+    }) =>
+      ipcRenderer.invoke("ai:portrait:goldenQuotes", payload) as Promise<
+        CharacterGoldenQuotesResult | { error: string }
       >,
     portraitTranslateSdPrompt: (payload: {
       styleZh?: string;

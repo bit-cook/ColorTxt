@@ -9,6 +9,7 @@ import {
   type AIConfig,
   type BookStyleInferResult,
   type PortraitExtractResult,
+  type CharacterGoldenQuotesResult,
 } from "@shared/aiTypes";
 import type { AiTxt2ImgInvokeResult } from "@shared/aiTxt2ImgIpc";
 import {
@@ -61,6 +62,7 @@ import { runSmartFormatCleanupSegment } from "./ai/chat/textFormatCleanup";
 import type { AISmartFormatSegmentInput } from "@shared/aiSmartFormatTypes";
 import {
   runBookStyleInference,
+  runCharacterGoldenQuotesRetrieve,
   runCharacterPortraitExtract,
   runPortraitPromptZhToEn,
   runTxt2ImgToAbsolutePath,
@@ -1188,6 +1190,46 @@ export function registerAiIpcHandlers(): void {
           ? portraitRetrieveSessionAc(retrieveSessionId).signal
           : undefined;
       return runCharacterPortraitExtract(c, {
+        bookHash,
+        characterName,
+        characterAliases,
+        spoilerSafe,
+        activeChapterIdx: ch,
+        signal,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    "ai:portrait:goldenQuotes",
+    async (
+      _evt,
+      payloadRaw: unknown,
+    ): Promise<CharacterGoldenQuotesResult | { error: string }> => {
+      const c = await cfg();
+      openOrRecreateAiVectorDb(c.embedding.dimension);
+      if (!isRecord(payloadRaw)) return { error: "无效参数" };
+      const bookHash = payloadRaw.bookHash;
+      const characterName = payloadRaw.characterName;
+      const characterAliases =
+        typeof payloadRaw.characterAliases === "string"
+          ? payloadRaw.characterAliases
+          : undefined;
+      const spoilerSafe = payloadRaw.spoilerSafe === true;
+      const activeChapterIdx = payloadRaw.activeChapterIdx;
+      if (typeof bookHash !== "string" || typeof characterName !== "string") {
+        return { error: "无效 bookHash 或角色名" };
+      }
+      const ch =
+        typeof activeChapterIdx === "number" && Number.isFinite(activeChapterIdx)
+          ? Math.trunc(activeChapterIdx)
+          : -1;
+      const retrieveSessionId = parseRetrieveSessionId(payloadRaw);
+      const signal =
+        retrieveSessionId != null
+          ? portraitRetrieveSessionAc(retrieveSessionId).signal
+          : undefined;
+      return runCharacterGoldenQuotesRetrieve(c, {
         bookHash,
         characterName,
         characterAliases,

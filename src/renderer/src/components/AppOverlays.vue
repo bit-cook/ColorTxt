@@ -10,6 +10,8 @@ import {
 import type { ChapterMatchRule } from "../chapter";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
+import type { CharacterRosterEntry } from "@shared/characterTypes";
 import { bookmarkNoteInputRefKey } from "../injectionKeys";
 import type { FileBookmarkItem } from "../stores/fileMetaStore";
 import AboutPanel from "./AboutPanel.vue";
@@ -71,6 +73,9 @@ const props = defineProps<{
   aiSkillOverrides: Record<string, AiSkillUserOverride>;
   aiCustomSkills: AiCustomSkill[];
   voiceReadSettings: VoiceReadSettings;
+  voiceReadProfiles: VoiceReadProfile[];
+  activeVoiceReadProfileId: string;
+  characterRoster: CharacterRosterEntry[];
 }>();
 
 const emit = defineEmits<{
@@ -201,6 +206,9 @@ onBeforeUnmount(() => {
     :ai-skill-overrides="aiSkillOverrides"
     :ai-custom-skills="aiCustomSkills"
     :voice-read-settings="voiceReadSettings"
+    :voice-read-profiles="voiceReadProfiles"
+    :active-voice-read-profile-id="activeVoiceReadProfileId"
+    :character-roster="characterRoster"
     @apply="emit('applySettings', $event)"
   />
   <ChapterRulePanel

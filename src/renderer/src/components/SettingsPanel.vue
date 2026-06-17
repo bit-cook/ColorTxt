@@ -59,11 +59,19 @@ import {
   resolveEffectiveBuiltinModelCacheDir,
 } from "../utils/defaultCacheDirs";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import type { CharacterRosterEntry } from "@shared/characterTypes";
 import {
-  defaultVoiceReadSettings,
   mergeVoiceReadSettings,
   voiceReadDashScopeRequiresApiKey,
 } from "../constants/voiceRead";
+import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
+import { migrateVoiceReadFromPersisted, cloneVoiceReadProfiles } from "../services/voiceRead/voiceReadProfileState";
+
+type SettingsVoiceReadPanelExpose = {
+  finalizeVoiceReadProfiles?: () => void;
+  initVoiceReadProfiles?: () => void;
+  resetCurrentVoiceReadProfile?: () => void;
+};
 
 type SettingsAIPanelExpose = {
   finalizeChatProfiles?: () => void;
@@ -98,6 +106,8 @@ export type SettingsApplyPayload = {
   aiSkillOverrides: Record<string, AiSkillUserOverride>;
   aiCustomSkills: AiCustomSkill[];
   voiceRead: VoiceReadSettings;
+  voiceReadProfiles: VoiceReadProfile[];
+  activeVoiceReadProfileId: string;
 };
 
 const modelValue = defineModel<boolean>({ default: false });
@@ -124,6 +134,9 @@ const props = defineProps<{
   aiSkillOverrides: Record<string, AiSkillUserOverride>;
   aiCustomSkills: AiCustomSkill[];
   voiceReadSettings: VoiceReadSettings;
+  voiceReadProfiles: VoiceReadProfile[];
+  activeVoiceReadProfileId: string;
+  characterRoster: CharacterRosterEntry[];
 }>();
 
 const emit = defineEmits<{
@@ -141,6 +154,8 @@ const skillsPanelRef =
 const aiPanelRef = useTemplateRef<SettingsAIPanelExpose>("aiPanelRef");
 const txt2imgPanelRef =
   useTemplateRef<SettingsTxt2ImgPanelExpose>("txt2imgPanelRef");
+const voiceReadPanelRef =
+  useTemplateRef<SettingsVoiceReadPanelExpose>("voiceReadPanelRef");
 
 function onAddSkillClick() {
   skillsPanelRef.value?.openCreateSkill();
@@ -183,6 +198,12 @@ const draftAiCustomSkills = ref<AiCustomSkill[]>([]);
 const draftVoiceRead = ref<VoiceReadSettings>(
   mergeVoiceReadSettings(undefined),
 );
+const draftVoiceReadProfiles = ref<VoiceReadProfile[]>(
+  migrateVoiceReadFromPersisted(undefined).profiles,
+);
+const draftActiveVoiceReadProfileId = ref(
+  migrateVoiceReadFromPersisted(undefined).activeProfileId,
+);
 
 function syncDraftFromProps() {
   draftRestore.value = props.restoreSessionOnStartup;
@@ -211,6 +232,8 @@ function syncDraftFromProps() {
     draftAiCustomSkills.value.map((s) => s.id),
   );
   draftVoiceRead.value = mergeVoiceReadSettings(props.voiceReadSettings);
+  draftVoiceReadProfiles.value = cloneVoiceReadProfiles(props.voiceReadProfiles);
+  draftActiveVoiceReadProfileId.value = props.activeVoiceReadProfileId;
 }
 
 async function syncAiFromMain() {
@@ -237,6 +260,7 @@ async function syncAiFromMain() {
   await nextTick();
   aiPanelRef.value?.initChatProfiles?.();
   txt2imgPanelRef.value?.initTxt2ImgProfiles?.();
+  voiceReadPanelRef.value?.initVoiceReadProfiles?.();
 }
 
 watch(modelValue, (open) => {
@@ -311,9 +335,10 @@ function resetAiDraft() {
 
 function resetVectorModelDraft() {
   const def = defaultAIConfig;
+  const prevEmbeddingEnabled = draftAi.value.embeddingEnabled;
   draftAi.value = {
     ...draftAi.value,
-    embeddingEnabled: def.embeddingEnabled,
+    embeddingEnabled: prevEmbeddingEnabled,
     embedding: {
       ...structuredClone(def.embedding),
       builtinModelCacheDir: resolveDefaultBuiltinModelCacheDirSync(),
@@ -333,9 +358,7 @@ function resetSkillsDraft() {
 }
 
 function resetVoiceReadDraft() {
-  draftVoiceRead.value = mergeVoiceReadSettings({
-    ...defaultVoiceReadSettings,
-  });
+  voiceReadPanelRef.value?.resetCurrentVoiceReadProfile?.();
 }
 
 function onResetCurrentTab() {
@@ -446,6 +469,7 @@ async function onConfirm() {
 
   aiPanelRef.value?.finalizeChatProfiles?.();
   txt2imgPanelRef.value?.finalizeTxt2ImgProfiles?.();
+  voiceReadPanelRef.value?.finalizeVoiceReadProfiles?.();
   applyAllActiveProfilesToConfig(draftAi.value);
 
   const aiPayload = JSON.parse(
@@ -489,6 +513,8 @@ async function onConfirm() {
     aiSkillOverrides: mergeAiSkillOverrides(draftAiSkillOverrides.value),
     aiCustomSkills: mergeAiCustomSkills(draftAiCustomSkills.value),
     voiceRead: mergeVoiceReadSettings(draftVoiceRead.value),
+    voiceReadProfiles: cloneVoiceReadProfiles(draftVoiceReadProfiles.value),
+    activeVoiceReadProfileId: draftActiveVoiceReadProfileId.value.trim(),
   });
 }
 
@@ -583,8 +609,13 @@ async function onClearCache() {
             />
 
             <SettingsVoiceReadPanel
+              ref="voiceReadPanelRef"
               v-show="activeTab === 'voiceRead'"
               v-model="draftVoiceRead"
+              v-model:profiles="draftVoiceReadProfiles"
+              v-model:active-profile-id="draftActiveVoiceReadProfileId"
+              :ai-enabled="draftAi.aiEnabled"
+              :character-roster="characterRoster"
             />
 
             <SettingsAIPanel

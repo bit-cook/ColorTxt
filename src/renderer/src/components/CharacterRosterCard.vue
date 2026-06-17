@@ -35,6 +35,10 @@ const props = withDefaults(
     reorderDragging?: boolean;
     /** 点击翻面时同步检测，避免排序松手后 Vue 尚未 patch 就触发翻转 */
     suppressFlipCheck?: () => boolean;
+    /** 多音色 + AI 识别 + 已设台词：显示「语音」按钮 */
+    showSpeakButton?: boolean;
+    /** 语音按钮图标（播放中可动画帧） */
+    speakIconHtml?: string;
   }>(),
   {
     nameZoom: 1,
@@ -42,6 +46,8 @@ const props = withDefaults(
     popoverOpen: false,
     tiltEnabled: true,
     reorderDragging: false,
+    showSpeakButton: false,
+    speakIconHtml: "",
   },
 );
 
@@ -50,6 +56,7 @@ const popoverOpenRef = toRef(props, "popoverOpen");
 const emit = defineEmits<{
   toggleFlip: [];
   edit: [];
+  speak: [];
   viewPortrait: [];
 }>();
 
@@ -272,6 +279,14 @@ onBeforeUnmount(() => {
               :aria-label="`编辑 ${entry.displayName}`"
               class="cardCornerAction"
               @click="emit('edit')"
+            />
+            <IconButton
+              v-if="showSpeakButton"
+              :icon-html="speakIconHtml"
+              title="语音"
+              :aria-label="`播放 ${entry.displayName} 台词`"
+              class="cardCornerAction"
+              @click="emit('speak')"
             />
             <IconButton
               :icon-html="zoomInSvg"

@@ -6,6 +6,7 @@ import type {
   AIIndexSearchHit,
   AITxt2ImgConfig,
   BookStyleInferResult,
+  CharacterGoldenQuotesResult,
   PortraitCharacterGender,
   PortraitExtractExcerpt,
   PortraitExtractResult,
@@ -26,6 +27,7 @@ import {
   mergeCharacterAliases,
   normalizeAliasCandidates,
 } from "@shared/characterAliases";
+import { BUILTIN_AI_SKILLS, effectiveBuiltinSkill } from "@shared/aiSkills";
 
 /** 与「文生图接口」报错区分，便于侧栏立绘生成排障 */
 const PORTRAIT_TRANSLATE_ERR_PREFIX = "提示词译英（对话模型）";
@@ -984,6 +986,245 @@ export async function runCharacterPortraitExtract(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { error: msg || "生成摘录与 prompt 失败" };
+  }
+}
+
+const GOLDEN_QUOTES_SKILL_ID = "golden-quotes";
+
+function portraitQuoteSearchQueries(
+  characterName: string,
+  aliases: readonly string[],
+): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const addName = (raw: string) => {
+    const n = raw.trim();
+    if (!n) return;
+    const key = n.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(n);
+  };
+  addName(characterName);
+  for (const a of aliases) addName(a);
+  return names.flatMap((n) => [
+    `${n} 说`,
+    `${n} 道`,
+    `${n} 台词`,
+    `${n} 名言`,
+    `${n} 经典台词`,
+    `${n} 语录`,
+    n,
+  ]);
+}
+
+function normalizeQuoteLineForTts(raw: string): string {
+  let s = raw.trim();
+  s = s.replace(/^\[[^\]]+\]\s*/, "");
+  s = s.replace(
+    /^[「『“"'\u201C]+|[」』”"'\u201D]+$/g,
+    "",
+  );
+  return s.trim();
+}
+
+function normalizeGoldenQuotesFromParsed(parsed: unknown): string[] {
+  if (!parsed || typeof parsed !== "object") return [];
+  const o = parsed as Record<string, unknown>;
+  const raw = o.quotes;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    let t = "";
+    if (typeof item === "string") {
+      t = normalizeQuoteLineForTts(item);
+    } else if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      t = normalizeQuoteLineForTts(
+        String(rec.text ?? rec.quote ?? rec.content ?? rec.line ?? ""),
+      );
+    }
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function goldenQuotesSkillPrompt(): string {
+  const def = BUILTIN_AI_SKILLS.find((s) => s.id === GOLDEN_QUOTES_SKILL_ID);
+  if (!def) return "";
+  return effectiveBuiltinSkill(def).prompt.trim();
+}
+
+function attachGoldenQuotesTokenUsage(
+  result: CharacterGoldenQuotesResult,
+  acc: { usage: AITokenUsageTotals; available: boolean },
+): CharacterGoldenQuotesResult {
+  if (!acc.available && acc.usage.totalTokens <= 0) return result;
+  return {
+    ...result,
+    tokenUsage: acc.usage,
+    tokenUsageAvailable: acc.available,
+  };
+}
+
+async function callCharacterGoldenQuotesLlm(opts: {
+  chat: AIChatEndpoint;
+  characterName: string;
+  aliases: string[];
+  retrievalContext: string;
+  systemPromptExtra?: string;
+  signal?: AbortSignal;
+}): Promise<CharacterGoldenQuotesResult> {
+  const skillRef = goldenQuotesSkillPrompt();
+  const system = appendChatSystemPromptExtra(
+    `你是中文小说角色台词摘录助手。
+用户指定某一角色，并给出本书向量检索片段。请从片段中找出该角色在原文中说过的、适合朗读试听的经典台词。
+你必须只依据检索片段，不得编造；每条须为完整句子，不可断章取义。
+输出必须是单一 JSON 对象，不要 Markdown、不要代码围栏：
+{ "quotes": [ string, ... ] }
+quotes 按推荐程度排序，最多 8 条；每条为可在 TTS 中直接朗读的纯文本（尽量只保留对白本身，不含引语动词与引号外的叙述）；若无合适台词则 quotes 为空数组。${
+      skillRef
+        ? `\n\n## 参考：金句鉴赏技能\n${skillRef}`
+        : ""
+    }`,
+    opts.systemPromptExtra,
+  );
+
+  const aliasLine =
+    opts.aliases.length > 0
+      ? `\n别名（与角色名指同一人）：${opts.aliases.map((a) => `「${a}」`).join("、")}`
+      : "";
+
+  const user = `角色名：「${opts.characterName}」${aliasLine}
+
+以下是本书向量检索得到的片段（可能不完整或含有噪声）：
+
+---
+${opts.retrievalContext || "（无检索结果）"}
+---
+
+请输出 JSON。`;
+
+  const usageAcc = { usage: ZERO_TOKEN_USAGE, available: false };
+
+  const { text: raw, usage: usage1 } = await chatCompletionOnce({
+    chat: opts.chat,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    maxTokens: Math.min(opts.chat.maxTokens, 2048),
+    temperature: Math.min(opts.chat.temperature, 0.55),
+    signal: opts.signal,
+  });
+  absorbChatUsage(usageAcc, usage1);
+
+  const stripped = stripJsonFence(raw.trim());
+  try {
+    return attachGoldenQuotesTokenUsage(
+      { quotes: normalizeGoldenQuotesFromParsed(JSON.parse(stripped)) },
+      usageAcc,
+    );
+  } catch {
+    const { text: raw2, usage: usage2 } = await chatCompletionOnce({
+      chat: opts.chat,
+      messages: [
+        { role: "system", content: system },
+        {
+          role: "user",
+          content: `下列应为 JSON 但解析失败，请只输出修正后的合法 JSON：\n\n${stripped.slice(0, 8000)}`,
+        },
+      ],
+      maxTokens: Math.min(opts.chat.maxTokens, 2048),
+      temperature: 0.2,
+      signal: opts.signal,
+    });
+    absorbChatUsage(usageAcc, usage2);
+    const s2 = stripJsonFence(raw2.trim());
+    try {
+      return attachGoldenQuotesTokenUsage(
+        { quotes: normalizeGoldenQuotesFromParsed(JSON.parse(s2)) },
+        usageAcc,
+      );
+    } catch {
+      return attachGoldenQuotesTokenUsage({ quotes: [] }, usageAcc);
+    }
+  }
+}
+
+export type CharacterGoldenQuotesArgs = PortraitExtractArgs;
+
+/**
+ * RAG + LLM：检索指定角色在正文中的经典台词（供角色卡音色试听）。
+ */
+export async function runCharacterGoldenQuotesRetrieve(
+  cfg: AIConfig,
+  args: CharacterGoldenQuotesArgs,
+): Promise<CharacterGoldenQuotesResult | { error: string }> {
+  const name = args.characterName.trim();
+  if (!name) return { error: "请输入角色名" };
+  if (!args.bookHash.trim()) {
+    return { error: "当前书籍未就绪（缺少 bookHash）" };
+  }
+  if (!cfg.embeddingEnabled) {
+    return { error: "请先在「向量模型」中启用向量索引并构建本书索引。" };
+  }
+
+  const spoilerMaxChapterIndex =
+    args.spoilerSafe && args.activeChapterIdx >= 0
+      ? args.activeChapterIdx
+      : null;
+
+  const mergedAliases = mergeCharacterAliases({
+    displayName: name,
+    userInput: args.characterAliases?.trim() ?? "",
+  });
+
+  const queries = portraitQuoteSearchQueries(name, mergedAliases);
+  if (queries.length === 0) return { quotes: [] };
+
+  let hits: AIIndexSearchHit[];
+  try {
+    hits = await mergedRagHitsForPortrait({
+      bookHash: args.bookHash.trim(),
+      aiConfig: cfg,
+      queries,
+      topKPerQuery: cfg.ragTopK,
+      spoilerMaxChapterIndex,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { error: msg || "向量检索失败" };
+  }
+
+  const retrievalContext = buildRetrievalContext(hits);
+  if (!retrievalContext && spoilerMaxChapterIndex != null) {
+    return {
+      error:
+        "防剧透：检索到的片段均在当前阅读章节之后，已全部过滤，请关闭防剧透或推进阅读进度后再试。",
+    };
+  }
+  if (!retrievalContext) {
+    return { quotes: [] };
+  }
+
+  try {
+    const chat = readActiveChatEndpoint(cfg);
+    return await callCharacterGoldenQuotesLlm({
+      chat,
+      characterName: name,
+      aliases: mergedAliases,
+      retrievalContext,
+      systemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
+      signal: args.signal,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { error: msg || "检索经典台词失败" };
   }
 }
 

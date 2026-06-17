@@ -272,10 +272,11 @@ defineExpose({
 .settingsBody--skills {
   padding-left: 10px;
   padding-right: 10px;
+  gap: 12px;
 }
 
 .skillsHeader {
-  margin-bottom: 16px;
+  margin-bottom: 4px;
 }
 
 .skillsTips {

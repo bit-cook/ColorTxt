@@ -7,12 +7,15 @@
 
 import type { VoiceReadSettings } from "../../constants/voiceRead";
 import { toVoiceReadEdgeTtsRequest } from "../../constants/voiceRead";
+import type { VoiceReadSpeakChunk } from "./voiceReadVoiceResolve";
 import {
   hasVoiceReadSpeakableText,
   splitVoiceReadChunks,
   VOICE_READ_CHUNK_UNITS_DEFAULT,
   VOICE_READ_CHUNK_UNITS_EDGE,
 } from "./voiceReadTextChunks";
+
+export type { VoiceReadSpeakChunk } from "./voiceReadVoiceResolve";
 
 const DASH_PCM_SAMPLE_RATE = 24000;
 /** 已合成段保留在内存，跳转不重拉 */
@@ -42,11 +45,15 @@ function normalizeLineText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function lineCacheKey(settings: VoiceReadSettings, text: string): string {
-  const t = normalizeLineText(text);
+function chunkCacheKey(
+  settings: VoiceReadSettings,
+  chunkText: string,
+  voiceId: string,
+): string {
+  const t = normalizeLineText(chunkText);
   return [
     settings.engine,
-    settings.voiceId.trim(),
+    voiceId.trim(),
     settings.rate,
     settings.pitch,
     settings.dashscopeApiKey.trim(),
@@ -54,8 +61,23 @@ function lineCacheKey(settings: VoiceReadSettings, text: string): string {
   ].join("\u0001");
 }
 
-function chunkCacheKey(settings: VoiceReadSettings, chunkText: string): string {
-  return lineCacheKey(settings, chunkText);
+function lineCacheKey(
+  settings: VoiceReadSettings,
+  text: string,
+  voiceId?: string,
+): string {
+  return chunkCacheKey(settings, text, voiceId ?? settings.voiceId);
+}
+
+function normalizeSpeakChunks(
+  chunks: VoiceReadSpeakChunk[],
+): VoiceReadSpeakChunk[] {
+  return chunks
+    .map((c) => ({
+      text: normalizeLineText(c.text),
+      voiceId: c.voiceId.trim() || "",
+    }))
+    .filter((c) => c.text.length > 0 && hasVoiceReadSpeakableText(c.text));
 }
 
 type PreparedDashLine = {
@@ -141,7 +163,7 @@ export class VoiceReadLinePlayer {
    * 供后续从 `chunks.slice(fromIndex)` 重播剩余段，对齐 session segments。
    */
   getEdgeSpeakContext(): {
-    chunks: readonly string[];
+    chunks: readonly VoiceReadSpeakChunk[];
     settings: VoiceReadSettings;
   } | null {
     if (!this.edgeChunks.length || !this.edgeSettings) return null;
@@ -171,7 +193,7 @@ export class VoiceReadLinePlayer {
   private edgeFetchBuffer = new Map<number, Promise<ArrayBuffer>>();
   private edgeProducerIndex = 0;
   private edgeProducerWake: (() => void) | null = null;
-  private edgeChunks: string[] = [];
+  private edgeChunks: VoiceReadSpeakChunk[] = [];
   private edgeSettings: VoiceReadSettings | null = null;
   private edgeAudioCtx: AudioContext | null = null;
   private edgeGain: GainNode | null = null;
@@ -350,8 +372,9 @@ export class VoiceReadLinePlayer {
   private invalidateEdgeChunkCache(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
   ): void {
-    const k = chunkCacheKey(settings, text);
+    const k = chunkCacheKey(settings, text, voiceId);
     this.edgeMp3Cache.delete(k);
     this.edgeMp3Inflight.delete(k);
   }
@@ -359,9 +382,9 @@ export class VoiceReadLinePlayer {
   /** 预取队列用：挂上 rejection 处理，避免 producer 先于 consumer await 时 Uncaught */
   private enqueueEdgeMp3Fetch(
     settings: VoiceReadSettings,
-    text: string,
+    chunk: VoiceReadSpeakChunk,
   ): Promise<ArrayBuffer> {
-    const p = this.getEdgeMp3(settings, text);
+    const p = this.getEdgeMp3(settings, chunk.text, chunk.voiceId);
     void p.catch(() => {});
     return p;
   }
@@ -369,11 +392,12 @@ export class VoiceReadLinePlayer {
   private async getEdgeMp3(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
   ): Promise<ArrayBuffer> {
     if (!hasVoiceReadSpeakableText(text)) {
       return Promise.reject(new Error("无可朗读内容"));
     }
-    const k = chunkCacheKey(settings, text);
+    const k = chunkCacheKey(settings, text, voiceId);
     const cached = this.edgeMp3Cache.get(k);
     if (cached) {
       if (!isEdgeMp3PayloadValid(cached)) {
@@ -386,7 +410,7 @@ export class VoiceReadLinePlayer {
     const inflight = this.edgeMp3Inflight.get(k);
     if (inflight) return this.cloneArrayBuffer(await inflight);
 
-    const request = this.fetchEdgeMp3(settings, text)
+    const request = this.fetchEdgeMp3(settings, text, voiceId)
       .then((data) => {
         if (!isEdgeMp3PayloadValid(data)) {
           throw new Error("Edge TTS 返回无效音频");
@@ -407,12 +431,13 @@ export class VoiceReadLinePlayer {
   private async getDashChunkPrepared(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
     signal: AbortSignal,
   ): Promise<PreparedDashLine> {
     if (!hasVoiceReadSpeakableText(text)) {
       return Promise.reject(new Error("无可朗读内容"));
     }
-    const k = chunkCacheKey(settings, text);
+    const k = chunkCacheKey(settings, text, voiceId);
     const cached = this.dashPcmCache.get(k);
     if (cached) {
       this.touchDashPcmCache(k, cached);
@@ -421,7 +446,7 @@ export class VoiceReadLinePlayer {
     const inflight = this.dashPcmInflight.get(k);
     if (inflight) return this.cloneDashPrepared(await inflight);
 
-    const request = this.fetchDashScopePcm(settings, text, signal)
+    const request = this.fetchDashScopePcm(settings, text, voiceId, signal)
       .then((pcm) => {
         const prep: PreparedDashLine = {
           engine: "dashscope",
@@ -467,20 +492,33 @@ export class VoiceReadLinePlayer {
    * 作废当前行各切段缓存（「重新生成」用当前 effective 设置强制重拉 TTS）。
    * 在途请求返回时不会写回缓存。
    */
-  invalidateLineSynthesis(settings: VoiceReadSettings, text: string): void {
+  invalidateLineSynthesis(
+    settings: VoiceReadSettings,
+    text: string,
+    speakChunks?: VoiceReadSpeakChunk[],
+  ): void {
     if (settings.engine === "system") return;
-    const t = normalizeLineText(text);
-    if (!t) return;
-
-    const units =
-      settings.engine === "edge"
-        ? VOICE_READ_CHUNK_UNITS_EDGE
-        : VOICE_READ_CHUNK_UNITS_DEFAULT;
-    const chunks = splitVoiceReadChunks(t, units);
-    const use = chunks.length > 0 ? chunks : [t];
+    const use =
+      speakChunks && speakChunks.length > 0
+        ? normalizeSpeakChunks(speakChunks)
+        : (() => {
+            const t = normalizeLineText(text);
+            if (!t) return [];
+            const units =
+              settings.engine === "edge"
+                ? VOICE_READ_CHUNK_UNITS_EDGE
+                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const parts = splitVoiceReadChunks(t, units);
+            const texts = parts.length > 0 ? parts : [t];
+            return texts.map((part) => ({
+              text: part,
+              voiceId: settings.voiceId,
+            }));
+          })();
+    if (use.length === 0) return;
 
     for (const c of use) {
-      const k = chunkCacheKey(settings, c);
+      const k = chunkCacheKey(settings, c.text, c.voiceId);
       this.edgeMp3Cache.delete(k);
       this.edgeMp3Inflight.delete(k);
       this.edgeSkipCacheKeys.add(k);
@@ -489,69 +527,100 @@ export class VoiceReadLinePlayer {
       this.dashSkipCacheKeys.add(k);
     }
 
-    const lineKey = lineCacheKey(settings, text);
-    this.dashPcmCache.delete(lineKey);
-    this.dashPcmInflight.delete(lineKey);
-    this.dashSkipCacheKeys.add(lineKey);
-    if (this.prefetchKey === lineKey) {
+    if (use.length === 1) {
+      const lineKey = lineCacheKey(settings, text, use[0]!.voiceId);
+      this.dashPcmCache.delete(lineKey);
+      this.dashPcmInflight.delete(lineKey);
+      this.dashSkipCacheKeys.add(lineKey);
+      if (this.prefetchKey === lineKey) {
+        this.discardDashPrefetchOnly();
+      }
+    } else {
       this.discardDashPrefetchOnly();
     }
   }
 
-  /** 预生成一行全部 Edge 段或 DashScope 段（供上一行/下一行跳转前 warm） */
-  warmLine(settings: VoiceReadSettings, text: string): void {
+  /** 预生成 speak chunks（供上一行/下一行跳转前 warm） */
+  warmSpeakChunks(
+    settings: VoiceReadSettings,
+    chunks: VoiceReadSpeakChunk[],
+  ): void {
     if (settings.engine === "system") return;
-    const t = normalizeLineText(text);
-    if (!t || !hasVoiceReadSpeakableText(t)) return;
+    const use = normalizeSpeakChunks(chunks);
+    if (use.length === 0) return;
     if (settings.engine === "dashscope") {
-      const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT);
-      for (const c of chunks.length > 0 ? chunks : [t]) {
-        if (this.dashPcmCache.has(chunkCacheKey(settings, c))) continue;
-        if (this.dashPcmInflight.has(chunkCacheKey(settings, c))) continue;
+      for (const c of use) {
+        const k = chunkCacheKey(settings, c.text, c.voiceId);
+        if (this.dashPcmCache.has(k) || this.dashPcmInflight.has(k)) continue;
         const ac = new AbortController();
-        void this.getDashChunkPrepared(settings, c, ac.signal).catch(() => {});
+        void this.getDashChunkPrepared(
+          settings,
+          c.text,
+          c.voiceId,
+          ac.signal,
+        ).catch(() => {});
       }
       return;
     }
-    const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_EDGE);
-    for (const c of chunks.length > 0 ? chunks : [t]) {
-      const k = chunkCacheKey(settings, c);
+    for (const c of use) {
+      const k = chunkCacheKey(settings, c.text, c.voiceId);
       if (this.edgeMp3Cache.has(k) || this.edgeMp3Inflight.has(k)) continue;
-      void this.getEdgeMp3(settings, c).catch(() => {});
+      void this.getEdgeMp3(settings, c.text, c.voiceId).catch(() => {});
     }
   }
 
-  /** 一行内所有切段是否均已合成进缓存（系统语音恒为 true） */
-  isLineSynthesisCached(settings: VoiceReadSettings, text: string): boolean {
-    if (settings.engine === "system") return true;
+  /** @deprecated 使用 warmSpeakChunks */
+  warmLine(settings: VoiceReadSettings, text: string): void {
     const t = normalizeLineText(text);
-    if (!t) return true;
+    if (!t || !hasVoiceReadSpeakableText(t)) return;
+    const units =
+      settings.engine === "edge"
+        ? VOICE_READ_CHUNK_UNITS_EDGE
+        : VOICE_READ_CHUNK_UNITS_DEFAULT;
+    const parts = splitVoiceReadChunks(t, units);
+    const texts = parts.length > 0 ? parts : [t];
+    this.warmSpeakChunks(
+      settings,
+      texts.map((part) => ({ text: part, voiceId: settings.voiceId })),
+    );
+  }
+
+  isLineSynthesisCached(
+    settings: VoiceReadSettings,
+    speakChunks: VoiceReadSpeakChunk[],
+  ): boolean {
+    if (settings.engine === "system") return true;
+    const use = normalizeSpeakChunks(speakChunks);
+    if (use.length === 0) return true;
     if (settings.engine === "dashscope") {
-      const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT);
-      const use = chunks.length > 0 ? chunks : [t];
       return use.every((c) =>
-        this.dashPcmCache.has(chunkCacheKey(settings, c)),
+        this.dashPcmCache.has(chunkCacheKey(settings, c.text, c.voiceId)),
       );
     }
-    const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_EDGE);
-    const use = chunks.length > 0 ? chunks : [t];
-    return use.every((c) => this.edgeMp3Cache.has(chunkCacheKey(settings, c)));
+    return use.every((c) =>
+      this.edgeMp3Cache.has(chunkCacheKey(settings, c.text, c.voiceId)),
+    );
   }
 
-  /** 预取「下一行」：写入持久缓存，跳转命中则无需重新合成 */
-  startPrefetch(settings: VoiceReadSettings, text: string): void {
+  /** 预取下一行 speak chunks */
+  startPrefetch(
+    settings: VoiceReadSettings,
+    chunks: VoiceReadSpeakChunk[],
+  ): void {
     this.discardDashPrefetchOnly();
-    this.warmLine(settings, text);
+    this.warmSpeakChunks(settings, chunks);
     if (settings.engine !== "dashscope") return;
-    const t = normalizeLineText(text);
-    if (!t) return;
-    const key = lineCacheKey(settings, text);
+    const use = normalizeSpeakChunks(chunks);
+    if (use.length !== 1) return;
+    const c = use[0]!;
+    const key = chunkCacheKey(settings, c.text, c.voiceId);
     if (this.dashPcmCache.has(key) || this.dashPcmInflight.has(key)) return;
     this.prefetchDashAbort = new AbortController();
     this.prefetchKey = key;
     this.prefetchPromise = this.getDashChunkPrepared(
       settings,
-      t,
+      c.text,
+      c.voiceId,
       this.prefetchDashAbort.signal,
     );
   }
@@ -586,12 +655,10 @@ export class VoiceReadLinePlayer {
    */
   jumpToChunk(
     settings: VoiceReadSettings,
-    chunks: string[],
+    chunks: VoiceReadSpeakChunk[],
     startIndex: number,
   ): Promise<void> {
-    const parts = chunks
-      .map((c) => normalizeLineText(c))
-      .filter((c) => c.length > 0);
+    const parts = normalizeSpeakChunks(chunks);
     if (parts.length === 0 || startIndex < 0 || startIndex >= parts.length) {
       return Promise.resolve();
     }
@@ -623,12 +690,12 @@ export class VoiceReadLinePlayer {
     }
   }
 
-  speakChunks(settings: VoiceReadSettings, chunks: string[]): Promise<void> {
-    const parts = chunks
-      .map((c) => normalizeLineText(c))
-      .filter((c) => c.length > 0 && hasVoiceReadSpeakableText(c));
-    if (parts.length === 0) return Promise.resolve();
-    const use = parts;
+  speakChunks(
+    settings: VoiceReadSettings,
+    chunks: VoiceReadSpeakChunk[],
+  ): Promise<void> {
+    const use = normalizeSpeakChunks(chunks);
+    if (use.length === 0) return Promise.resolve();
     this.abortActivePlayback();
     this.stopped = false;
     if (settings.engine === "system") {
@@ -640,61 +707,77 @@ export class VoiceReadLinePlayer {
     return this.speakDashChunks(settings, use);
   }
 
-  speakLine(settings: VoiceReadSettings, text: string): Promise<void> {
+  speakLine(
+    settings: VoiceReadSettings,
+    text: string,
+    speakChunks?: VoiceReadSpeakChunk[],
+  ): Promise<void> {
     const t = normalizeLineText(text);
     if (!t || !hasVoiceReadSpeakableText(t)) return Promise.resolve();
 
-    const key = lineCacheKey(settings, text);
+    const built =
+      speakChunks && speakChunks.length > 0
+        ? normalizeSpeakChunks(speakChunks)
+        : (() => {
+            const units =
+              settings.engine === "edge"
+                ? VOICE_READ_CHUNK_UNITS_EDGE
+                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const parts = splitVoiceReadChunks(t, units);
+            const texts = parts.length > 0 ? parts : [t];
+            return texts.map((part) => ({
+              text: part,
+              voiceId: settings.voiceId,
+            }));
+          })();
+
+    const key =
+      built.length === 1
+        ? chunkCacheKey(settings, built[0]!.text, built[0]!.voiceId)
+        : null;
     let dashPrepared: Promise<PreparedDashLine> | null = null;
-    if (settings.engine === "dashscope") {
+    if (settings.engine === "dashscope" && key) {
       if (this.prefetchKey === key && this.prefetchPromise) {
         dashPrepared = this.prefetchPromise;
         this.prefetchKey = null;
         this.prefetchPromise = null;
       }
-      this.discardDashPrefetchOnly();
-    } else if (settings.engine === "edge") {
-      this.discardDashPrefetchOnly();
-    } else {
-      this.discardDashPrefetchOnly();
     }
+    this.discardDashPrefetchOnly();
 
     this.abortActivePlayback();
     this.stopped = false;
 
     if (settings.engine === "system") {
-      const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT);
-      return this.speakSystemChunks(settings, chunks.length ? chunks : [" "]);
+      return this.speakSystemChunks(settings, built);
     }
 
-    if (settings.engine === "dashscope" && dashPrepared) {
+    if (
+      settings.engine === "dashscope" &&
+      dashPrepared &&
+      built.length === 1
+    ) {
       const playPrepared = async (p: PreparedDashLine) => {
         if (this.stopped) return;
         await this.playDashSingleBuffer(settings, p.pcm, p.sampleRate);
       };
-      const loadPrepared = this.dashPcmCache.has(key)
-        ? dashPrepared
-        : this.awaitWhenPlaybackBlocked(
-            () => this.isDashPlaybackCaughtUp(),
-            dashPrepared,
-          );
-      return loadPrepared.then(
-        playPrepared,
-        () =>
-          this.speakDashChunks(
-            settings,
-            splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT),
-          ),
+      const loadPrepared =
+        key && this.dashPcmCache.has(key)
+          ? dashPrepared
+          : this.awaitWhenPlaybackBlocked(
+              () => this.isDashPlaybackCaughtUp(),
+              dashPrepared,
+            );
+      return loadPrepared.then(playPrepared, () =>
+        this.speakDashChunks(settings, built),
       );
     }
 
     if (settings.engine === "edge") {
-      const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_EDGE);
-      return this.speakEdgeChunks(settings, chunks.length ? chunks : [" "]);
+      return this.speakEdgeChunks(settings, built);
     }
 
-    const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT);
-    return this.speakDashChunks(settings, chunks.length ? chunks : [" "]);
+    return this.speakDashChunks(settings, built);
   }
 
   private abortActivePlayback(): void {
@@ -742,8 +825,9 @@ export class VoiceReadLinePlayer {
   private async fetchEdgeMp3(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
   ): Promise<ArrayBuffer> {
-    const req = toVoiceReadEdgeTtsRequest(settings, text);
+    const req = toVoiceReadEdgeTtsRequest(settings, text, voiceId);
     const r = await window.colorTxt.voiceReadEdgeTts(req);
     if (!r.ok) {
       throw new Error(r.error || "Edge 语音合成失败");
@@ -753,18 +837,20 @@ export class VoiceReadLinePlayer {
 
   private async speakSystemChunks(
     settings: VoiceReadSettings,
-    chunks: string[],
+    chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
     for (let i = 0; i < chunks.length; i++) {
       if (this.stopped) return;
       this.onChunkChange?.(i, chunks.length);
-      await this.speakSystemOne(settings, chunks[i]!);
+      const c = chunks[i]!;
+      await this.speakSystemOne(settings, c.text, c.voiceId);
     }
   }
 
   private speakSystemOne(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (typeof window === "undefined" || !window.speechSynthesis) {
@@ -774,7 +860,7 @@ export class VoiceReadLinePlayer {
       const u = new SpeechSynthesisUtterance(text);
       u.rate = settings.rate;
       u.pitch = settings.pitch;
-      const vid = settings.voiceId.trim();
+      const vid = voiceId.trim() || settings.voiceId.trim();
       if (vid) {
         const v = window.speechSynthesis
           .getVoices()
@@ -800,7 +886,7 @@ export class VoiceReadLinePlayer {
   /** buffer 4 + producer + 时间线 decodeAndSchedule */
   private async speakEdgeChunks(
     settings: VoiceReadSettings,
-    chunks: string[],
+    chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
     const BUFFER = VoiceReadLinePlayer.EDGE_BUFFER_SIZE;
     this.edgeChunks = chunks;
@@ -909,7 +995,7 @@ export class VoiceReadLinePlayer {
 
   private async runEdgeProducer(
     settings: VoiceReadSettings,
-    chunks: string[],
+    chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
     const BUFFER = VoiceReadLinePlayer.EDGE_BUFFER_SIZE;
     while (this.edgeProducerIndex < chunks.length) {
@@ -939,7 +1025,9 @@ export class VoiceReadLinePlayer {
     if (
       settings &&
       ch &&
-      this.edgeMp3Cache.has(chunkCacheKey(settings, ch))
+      this.edgeMp3Cache.has(
+        chunkCacheKey(settings, ch.text, ch.voiceId),
+      )
     ) {
       return promise;
     }
@@ -954,15 +1042,15 @@ export class VoiceReadLinePlayer {
     index: number,
     total: number,
     settings: VoiceReadSettings,
-    text: string,
+    chunk: VoiceReadSpeakChunk,
   ): Promise<void> {
-    if (!hasVoiceReadSpeakableText(text)) return;
+    if (!hasVoiceReadSpeakableText(chunk.text)) return;
 
     const maxAttempts = 4;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (this.stopped) throw new Error("aborted");
       if (attempt > 0) {
-        this.invalidateEdgeChunkCache(settings, text);
+        this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
         await sleepMs(200 * attempt);
       }
 
@@ -971,7 +1059,7 @@ export class VoiceReadLinePlayer {
         buf =
           attempt === 0
             ? await this.waitEdgeChunk(index)
-            : await this.getEdgeMp3(settings, text);
+            : await this.getEdgeMp3(settings, chunk.text, chunk.voiceId);
       } catch (e) {
         if ((e as Error)?.message === "aborted") throw e;
         if (/无可朗读内容/.test((e as Error)?.message ?? "")) return;
@@ -981,7 +1069,7 @@ export class VoiceReadLinePlayer {
 
       if (this.stopped) throw new Error("aborted");
       if (!isEdgeMp3PayloadValid(buf)) {
-        this.invalidateEdgeChunkCache(settings, text);
+        this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
         if (attempt < maxAttempts - 1) continue;
         throw new Error("Edge TTS 返回无效音频");
       }
@@ -991,7 +1079,7 @@ export class VoiceReadLinePlayer {
         return;
       } catch (e) {
         if (isDecodeAudioDataEncodingError(e) && attempt < maxAttempts - 1) {
-          this.invalidateEdgeChunkCache(settings, text);
+          this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
           continue;
         }
         throw e;
@@ -1067,7 +1155,7 @@ export class VoiceReadLinePlayer {
   /** DashScope：流式 + scheduleFlush 排时间线 */
   private async speakDashChunks(
     settings: VoiceReadSettings,
-    chunks: string[],
+    chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
     this.dashSessionSettings = settings;
     this.dashAbort = new AbortController();
@@ -1158,13 +1246,20 @@ export class VoiceReadLinePlayer {
 
   private async dashStreamChunk(
     settings: VoiceReadSettings,
-    text: string,
+    chunk: VoiceReadSpeakChunk,
     index: number,
     total: number,
     signal: AbortSignal,
   ): Promise<void> {
-    const fetchPrepared = this.getDashChunkPrepared(settings, text, signal);
-    const prepared = this.dashPcmCache.has(chunkCacheKey(settings, text))
+    const fetchPrepared = this.getDashChunkPrepared(
+      settings,
+      chunk.text,
+      chunk.voiceId,
+      signal,
+    );
+    const prepared = this.dashPcmCache.has(
+      chunkCacheKey(settings, chunk.text, chunk.voiceId),
+    )
       ? await fetchPrepared
       : await this.awaitWhenPlaybackBlocked(
           () => this.isDashPlaybackCaughtUp(),
@@ -1304,6 +1399,7 @@ export class VoiceReadLinePlayer {
   private async fetchDashScopePcm(
     settings: VoiceReadSettings,
     text: string,
+    voiceId: string,
     signal: AbortSignal,
   ): Promise<Uint8Array> {
     const key = settings.dashscopeApiKey.trim();
@@ -1312,7 +1408,7 @@ export class VoiceReadLinePlayer {
         "请先在「语音朗读」设置中填写阿里云通义（DashScope）API 密钥",
       );
     }
-    const voice = settings.voiceId.trim() || "Cherry";
+    const voice = voiceId.trim() || settings.voiceId.trim() || "Cherry";
 
     const resp = await fetch(
       "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
@@ -1388,16 +1484,31 @@ export class VoiceReadLinePlayer {
   async buildLineDownloadable(
     settings: VoiceReadSettings,
     text: string,
+    speakChunks?: VoiceReadSpeakChunk[],
   ): Promise<VoiceReadPreviewDownload | null> {
     const t = normalizeLineText(text);
     if (!t || settings.engine === "system") return null;
 
+    const built =
+      speakChunks && speakChunks.length > 0
+        ? normalizeSpeakChunks(speakChunks)
+        : (() => {
+            const units =
+              settings.engine === "edge"
+                ? VOICE_READ_CHUNK_UNITS_EDGE
+                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const parts = splitVoiceReadChunks(t, units);
+            const texts = parts.length > 0 ? parts : [t];
+            return texts.map((part) => ({
+              text: part,
+              voiceId: settings.voiceId,
+            }));
+          })();
+
     if (settings.engine === "edge") {
-      const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_EDGE);
-      const use = chunks.length > 0 ? chunks : [t];
       const parts: ArrayBuffer[] = [];
-      for (const c of use) {
-        const buf = await this.getEdgeMp3(settings, c);
+      for (const c of built) {
+        const buf = await this.getEdgeMp3(settings, c.text, c.voiceId);
         if (!buf.byteLength) return null;
         parts.push(buf);
       }
@@ -1407,13 +1518,16 @@ export class VoiceReadLinePlayer {
       };
     }
 
-    const chunks = splitVoiceReadChunks(t, VOICE_READ_CHUNK_UNITS_DEFAULT);
-    const use = chunks.length > 0 ? chunks : [t];
     const signal = new AbortController().signal;
     const pcmParts: Uint8Array[] = [];
     let sampleRate = DASH_PCM_SAMPLE_RATE;
-    for (const c of use) {
-      const prep = await this.getDashChunkPrepared(settings, c, signal);
+    for (const c of built) {
+      const prep = await this.getDashChunkPrepared(
+        settings,
+        c.text,
+        c.voiceId,
+        signal,
+      );
       pcmParts.push(prep.pcm);
       sampleRate = prep.sampleRate;
     }

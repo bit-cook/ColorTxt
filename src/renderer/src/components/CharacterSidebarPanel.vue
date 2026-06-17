@@ -3,12 +3,17 @@ import {
   computed,
   nextTick,
   onBeforeUnmount,
+  onMounted,
   reactive,
   ref,
   shallowRef,
   watch,
 } from "vue";
-import type { AITxt2ImgBackend, PortraitExtractResult } from "@shared/aiTypes";
+import type {
+  AITxt2ImgBackend,
+  CharacterGoldenQuotesResult,
+  PortraitExtractResult,
+} from "@shared/aiTypes";
 import { getTxt2ImgPromptFamily } from "@shared/txt2ImgBackend";
 import {
   EMPTY_TOKEN_PRICE_PER_MILLION,
@@ -42,11 +47,27 @@ import { hashBookBrowser } from "../utils/aiBookHash";
 import type { Chapter } from "../chapter";
 import { APP_DISPLAY_NAME } from "../constants/appUi";
 import { vAiStickScroll } from "../directives/aiStickScroll";
-import { icons } from "../icons";
+import { icons, speakIconAnimFrames } from "../icons";
 import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
 import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
 import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
+import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import AppModal from "./AppModal.vue";
+import {
+  DASHSCOPE_TTS_VOICES,
+  defaultVoiceReadSettings,
+  voiceReadDashScopeRequiresApiKey,
+  type VoiceReadSettings,
+} from "../constants/voiceRead";
+import { speakCharacterVoiceSample } from "../services/voiceRead/voiceReadCharacterPreview";
+import { VoiceReadLinePlayer } from "../services/voiceRead/voiceReadLinePlayer";
+import {
+  flatVoiceOptionsToSelectItems,
+  groupEdgeTtsVoices,
+  groupSystemVoices,
+  resolveVoiceReadDisplayLabel,
+  voiceGroupsToSelectItems,
+} from "../utils/voiceReadVoiceGroups";
 import type { CharacterCardTextureEffectId } from "@shared/characterCardTextureEffects";
 import { DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT } from "@shared/characterCardTextureEffects";
 import CharacterRosterCard from "./CharacterRosterCard.vue";
@@ -77,6 +98,8 @@ const props = withDefaults(
     characterBookStyle?: CharacterBookStylePersisted;
     /** 设置「确定」保存后递增，用于同步文生图服务商等运行时配置 */
     aiConfigSyncNonce?: number;
+    /** 全局语音朗读设置（引擎与方案，用于角色专属朗读语音） */
+    voiceReadSettings?: VoiceReadSettings;
   }>(),
   {
     sessionFilePath: null,
@@ -90,6 +113,7 @@ const props = withDefaults(
     characterRoster: () => [],
     characterBookStyle: undefined,
     aiConfigSyncNonce: 0,
+    voiceReadSettings: () => ({ ...defaultVoiceReadSettings }),
   },
 );
 
@@ -142,6 +166,26 @@ const draftNegativeZh = ref("");
 const draftRetrieveThinking = ref("");
 const draftStylePrefix = ref("");
 const draftStyleNote = ref("");
+const draftVoiceReadVoiceId = ref("");
+const draftVoiceSampleLine = ref("");
+const draftVoiceSampleQuotes = ref<string[]>([]);
+const draftVoiceSampleQuoteIndex = ref(0);
+type DrawerMediaTab = "portrait" | "voice";
+const drawerMediaTab = ref<DrawerMediaTab>("portrait");
+
+type CharVoicePreviewPhase = "idle" | "synthesizing" | "playing";
+const charVoicePreviewPhase = ref<CharVoicePreviewPhase>("idle");
+const charVoicePreviewError = ref("");
+const charVoicePreviewPlayer = new VoiceReadLinePlayer();
+let charVoicePreviewRunId = 0;
+
+const rosterCardVoicePreviewPlayer = new VoiceReadLinePlayer();
+const rosterCardVoicePreviewEntryId = ref<string | null>(null);
+const rosterCardVoicePreviewPhase = ref<CharVoicePreviewPhase>("idle");
+let rosterCardVoicePreviewRunId = 0;
+const rosterCardSpeakIconFrame = ref(0);
+const SPEAK_ICON_ANIM_MS = 360;
+let rosterCardSpeakIconTimer: ReturnType<typeof setInterval> | null = null;
 
 const extracting = ref(false);
 /** 主进程 portrait extract/infer 中止用，与 `allocatePortraitRetrieveSessionId` 对齐 */
@@ -225,6 +269,295 @@ const sessionBookTitle = computed(() => {
   const withoutExt = dot > 0 ? base.slice(0, dot) : base;
   return withoutExt.trim() || base;
 });
+
+const isMultiVoiceReadScheme = computed(
+  () => props.voiceReadSettings.scheme === "multi",
+);
+
+/** 多音色且启用 AI 识别时，才显示「音色」标签页 */
+const showCharacterVoiceTab = computed(
+  () =>
+    isMultiVoiceReadScheme.value &&
+    props.voiceReadSettings.aiSpeakerRecognitionEnabled !== false,
+);
+
+watch(showCharacterVoiceTab, (show) => {
+  if (!show && drawerMediaTab.value === "voice") {
+    drawerMediaTab.value = "portrait";
+  }
+});
+
+const voiceReadEngine = computed(() => props.voiceReadSettings.engine);
+
+const systemVoices = ref<SpeechSynthesisVoice[]>([]);
+
+function refreshSystemVoices() {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  systemVoices.value = window.speechSynthesis.getVoices();
+}
+
+onMounted(() => {
+  refreshSystemVoices();
+  if (typeof window !== "undefined" && window.speechSynthesis) {
+    window.speechSynthesis.onvoiceschanged = () => refreshSystemVoices();
+  }
+});
+
+const charVoiceReadDefaultItem: CustomSelectItem = {
+  kind: "item",
+  id: "",
+  label: "使用全局对白音色",
+  description: "",
+};
+
+const charVoiceReadScrollItems = computed((): CustomSelectItem[] => {
+  let engineItems: CustomSelectItem[];
+  if (voiceReadEngine.value === "system") {
+    engineItems = voiceGroupsToSelectItems(
+      groupSystemVoices(systemVoices.value),
+    );
+  } else if (voiceReadEngine.value === "edge") {
+    engineItems = voiceGroupsToSelectItems(groupEdgeTtsVoices());
+  } else {
+    engineItems = flatVoiceOptionsToSelectItems(DASHSCOPE_TTS_VOICES);
+  }
+  return [charVoiceReadDefaultItem, ...engineItems];
+});
+
+const charVoiceReadScrollHasOptions = computed(() =>
+  charVoiceReadScrollItems.value.some((i) => i.kind === "item"),
+);
+
+const charVoiceReadScrollMaxHeight = computed(() =>
+  voiceReadEngine.value === "dashscope" ? 280 : 360,
+);
+
+const charVoiceReadDisplayLabel = computed(() => {
+  const id = draftVoiceReadVoiceId.value.trim();
+  if (!id) return charVoiceReadDefaultItem.label;
+  return resolveVoiceReadDisplayLabel(
+    voiceReadEngine.value,
+    id,
+    systemVoices.value,
+  );
+});
+
+function entryCanSpeakFromCard(entry: CharacterRosterEntry): boolean {
+  return (
+    showCharacterVoiceTab.value &&
+    Boolean(entry.voiceReadSampleLine?.trim()) &&
+    !voiceReadDashScopeRequiresApiKey(props.voiceReadSettings)
+  );
+}
+
+function rosterCardSpeakIconHtml(entryId: string): string {
+  if (
+    rosterCardVoicePreviewEntryId.value === entryId &&
+    rosterCardVoicePreviewPhase.value !== "idle"
+  ) {
+    return speakIconAnimFrames[rosterCardSpeakIconFrame.value] ?? icons.speak;
+  }
+  return icons.speak;
+}
+
+function startRosterCardSpeakIconAnimation(): void {
+  stopRosterCardSpeakIconAnimation();
+  rosterCardSpeakIconFrame.value = 0;
+  rosterCardSpeakIconTimer = setInterval(() => {
+    rosterCardSpeakIconFrame.value =
+      (rosterCardSpeakIconFrame.value + 1) % speakIconAnimFrames.length;
+  }, SPEAK_ICON_ANIM_MS);
+}
+
+function stopRosterCardSpeakIconAnimation(): void {
+  if (rosterCardSpeakIconTimer) {
+    clearInterval(rosterCardSpeakIconTimer);
+    rosterCardSpeakIconTimer = null;
+  }
+  rosterCardSpeakIconFrame.value = 0;
+}
+
+function resetRosterCardVoicePreview(): void {
+  rosterCardVoicePreviewRunId += 1;
+  rosterCardVoicePreviewPlayer.stop();
+  rosterCardVoicePreviewEntryId.value = null;
+  rosterCardVoicePreviewPhase.value = "idle";
+  stopRosterCardSpeakIconAnimation();
+}
+
+async function onRosterCardSpeak(entry: CharacterRosterEntry) {
+  const entryId = entry.id;
+  if (
+    rosterCardVoicePreviewEntryId.value === entryId &&
+    rosterCardVoicePreviewPhase.value !== "idle"
+  ) {
+    resetRosterCardVoicePreview();
+    return;
+  }
+  resetRosterCardVoicePreview();
+  resetDrawerVoicePreview();
+  if (!entryCanSpeakFromCard(entry)) return;
+
+  const runId = ++rosterCardVoicePreviewRunId;
+  rosterCardVoicePreviewEntryId.value = entryId;
+  rosterCardVoicePreviewPhase.value = "synthesizing";
+  startRosterCardSpeakIconAnimation();
+
+  const player = rosterCardVoicePreviewPlayer;
+  const prevOnChunkChange = player.onChunkChange;
+  player.onChunkChange = (index, total) => {
+    if (runId !== rosterCardVoicePreviewRunId) return;
+    rosterCardVoicePreviewPhase.value = "playing";
+    prevOnChunkChange?.(index, total);
+  };
+
+  try {
+    if (runId !== rosterCardVoicePreviewRunId) return;
+    await speakCharacterVoiceSample(
+      player,
+      props.voiceReadSettings,
+      entry,
+    );
+  } catch {
+    // 卡片试听失败时静默
+  } finally {
+    player.onChunkChange = prevOnChunkChange;
+    if (runId === rosterCardVoicePreviewRunId) {
+      resetRosterCardVoicePreview();
+    }
+  }
+}
+
+const charVoicePreviewButtonLabel = computed(() => {
+  if (charVoicePreviewPhase.value === "playing") return "停止";
+  if (charVoicePreviewPhase.value === "synthesizing") return "合成中…";
+  return "试听";
+});
+
+const charVoicePreviewDisabled = computed(
+  () =>
+    charVoicePreviewPhase.value === "synthesizing" ||
+    !draftVoiceSampleLine.value.trim() ||
+    voiceReadDashScopeRequiresApiKey(props.voiceReadSettings),
+);
+
+const canCycleVoiceSampleQuote = computed(
+  () => draftVoiceSampleQuotes.value.length > 1,
+);
+
+function resetVoiceSampleDraft(): void {
+  draftVoiceSampleLine.value = "";
+  draftVoiceSampleQuotes.value = [];
+  draftVoiceSampleQuoteIndex.value = 0;
+}
+
+function loadVoiceSampleFromEntry(entry?: CharacterRosterEntry): void {
+  const quotes = (entry?.voiceReadSampleQuotes ?? [])
+    .map((q) => q.trim())
+    .filter(Boolean);
+  draftVoiceSampleQuotes.value = quotes;
+  let idx =
+    typeof entry?.voiceReadSampleQuoteIndex === "number"
+      ? Math.floor(entry.voiceReadSampleQuoteIndex)
+      : 0;
+  if (quotes.length > 0) {
+    idx = Math.max(0, Math.min(idx, quotes.length - 1));
+  } else {
+    idx = 0;
+  }
+  draftVoiceSampleQuoteIndex.value = idx;
+  const savedLine = entry?.voiceReadSampleLine?.trim() ?? "";
+  if (savedLine) {
+    draftVoiceSampleLine.value = savedLine;
+  } else if (quotes.length > 0) {
+    draftVoiceSampleLine.value = quotes[idx] ?? quotes[0] ?? "";
+  } else {
+    draftVoiceSampleLine.value = "";
+  }
+}
+
+function voiceSampleFieldsForSave(): Pick<
+  CharacterRosterEntry,
+  "voiceReadSampleLine" | "voiceReadSampleQuotes" | "voiceReadSampleQuoteIndex"
+> {
+  const line = draftVoiceSampleLine.value.trim();
+  const quotes = draftVoiceSampleQuotes.value
+    .map((q) => q.trim())
+    .filter(Boolean);
+  const idx =
+    quotes.length > 0
+      ? Math.max(
+          0,
+          Math.min(draftVoiceSampleQuoteIndex.value, quotes.length - 1),
+        )
+      : 0;
+  return {
+    voiceReadSampleLine: line || undefined,
+    voiceReadSampleQuotes: quotes.length > 0 ? quotes : undefined,
+    voiceReadSampleQuoteIndex: quotes.length > 1 ? idx : undefined,
+  };
+}
+
+function onCycleVoiceSampleQuote(): void {
+  const quotes = draftVoiceSampleQuotes.value;
+  if (quotes.length <= 1) return;
+  const next = (draftVoiceSampleQuoteIndex.value + 1) % quotes.length;
+  draftVoiceSampleQuoteIndex.value = next;
+  draftVoiceSampleLine.value = quotes[next] ?? "";
+}
+
+function resetDrawerVoicePreview(): void {
+  charVoicePreviewRunId += 1;
+  charVoicePreviewPlayer.stop();
+  charVoicePreviewPhase.value = "idle";
+  charVoicePreviewError.value = "";
+}
+
+async function onCharVoicePreviewClick() {
+  if (charVoicePreviewPhase.value === "playing") {
+    resetDrawerVoicePreview();
+    return;
+  }
+  if (charVoicePreviewPhase.value === "synthesizing") return;
+  const text = draftVoiceSampleLine.value.trim();
+  if (!text) return;
+  if (voiceReadDashScopeRequiresApiKey(props.voiceReadSettings)) return;
+
+  resetRosterCardVoicePreview();
+
+  const runId = ++charVoicePreviewRunId;
+  charVoicePreviewError.value = "";
+  charVoicePreviewPhase.value = "synthesizing";
+
+  const prevOnChunkChange = charVoicePreviewPlayer.onChunkChange;
+  charVoicePreviewPlayer.onChunkChange = (index, total) => {
+    if (runId !== charVoicePreviewRunId) return;
+    charVoicePreviewPhase.value = "playing";
+    prevOnChunkChange?.(index, total);
+  };
+
+  try {
+    if (runId !== charVoicePreviewRunId) return;
+    await speakCharacterVoiceSample(
+      charVoicePreviewPlayer,
+      props.voiceReadSettings,
+      {
+        gender: draftGender.value,
+        voiceReadVoiceId: draftVoiceReadVoiceId.value.trim() || undefined,
+        voiceReadSampleLine: text,
+      },
+    );
+    if (runId !== charVoicePreviewRunId) return;
+  } catch (e) {
+    if (runId !== charVoicePreviewRunId) return;
+    charVoicePreviewError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    charVoicePreviewPlayer.onChunkChange = prevOnChunkChange;
+    if (runId === charVoicePreviewRunId) {
+      charVoicePreviewPhase.value = "idle";
+    }
+  }
+}
 
 const bookFolderSegment = computed(() =>
   sanitizeBookFolderSegment(
@@ -815,6 +1148,10 @@ function openAddSlide() {
   clearRetrieveTokenUsage();
   draftStylePrefix.value = props.characterBookStyle?.stylePrefixZh ?? "";
   draftStyleNote.value = props.characterBookStyle?.styleNoteZh ?? "";
+  draftVoiceReadVoiceId.value = "";
+  resetVoiceSampleDraft();
+  drawerMediaTab.value = "portrait";
+  resetDrawerVoicePreview();
   slideOpen.value = true;
   retrieveEverThisDrawer.value = false;
 }
@@ -843,6 +1180,10 @@ function openEditSlide(entry: CharacterRosterEntry) {
   clearRetrieveTokenUsage();
   draftStylePrefix.value = props.characterBookStyle?.stylePrefixZh ?? "";
   draftStyleNote.value = props.characterBookStyle?.styleNoteZh ?? "";
+  draftVoiceReadVoiceId.value = entry.voiceReadVoiceId?.trim() ?? "";
+  loadVoiceSampleFromEntry(entry);
+  drawerMediaTab.value = "portrait";
+  resetDrawerVoicePreview();
   portraitEditSessionKey.value = entry.id;
   slideOpen.value = true;
   retrieveEverThisDrawer.value = false;
@@ -866,6 +1207,8 @@ function openPortraitLightboxFromUrl(url: string | null | undefined) {
 
 function closeSlide() {
   if (extracting.value) return;
+  resetDrawerVoicePreview();
+  resetRosterCardVoicePreview();
   const sk = portraitEditSessionKey.value.trim();
   void deletePortraitSessionDraftFile(sk);
   portraitEditSessionKey.value = "";
@@ -979,6 +1322,9 @@ function resetCharacterEditDrawerOnBookChange() {
   clearRetrieveTokenUsage();
   draftStylePrefix.value = "";
   draftStyleNote.value = "";
+  draftVoiceReadVoiceId.value = "";
+  resetVoiceSampleDraft();
+  drawerMediaTab.value = "portrait";
   slideOpen.value = false;
 }
 
@@ -1068,6 +1414,18 @@ function hasBookStyleForRetrieve(): boolean {
   );
 }
 
+function applyGoldenQuotesRetrieveResult(
+  res: CharacterGoldenQuotesResult | { error: string },
+): void {
+  if ("error" in res) return;
+  absorbRetrieveTokenUsage(res);
+  const quotes = res.quotes.map((q) => q.trim()).filter(Boolean);
+  if (quotes.length === 0) return;
+  draftVoiceSampleQuotes.value = quotes;
+  draftVoiceSampleQuoteIndex.value = 0;
+  draftVoiceSampleLine.value = quotes[0]!;
+}
+
 async function onRetrieve() {
   if (extracting.value || isRetrieveIndexBuilding.value) return;
   slideError.value = "";
@@ -1142,15 +1500,29 @@ async function onRetrieve() {
     absorbRetrieveTokenUsage(ok);
     retrieveTokenUsageShown.value = true;
 
+    const mergedAliasText = formatCharacterAliasesList(ok.aliases ?? []);
+    const quotesPromise = window.colorTxt.ai.portraitGoldenQuotes({
+      bookHash: bookHash.value,
+      characterName: draftDisplayName.value.trim(),
+      characterAliases: mergedAliasText,
+      spoilerSafe: spoilerSafe.value,
+      activeChapterIdx: props.activeChapterIdx,
+      retrieveSessionId,
+    });
+
     if (!hasBookStyleForRetrieve()) {
       const title = sessionBookTitle.value.trim();
-      const inf = await window.colorTxt.ai.portraitInferBookStyle({
+      const inferPromise = window.colorTxt.ai.portraitInferBookStyle({
         bookHash: bookHash.value,
         ...(title ? { fileTitle: title } : {}),
         spoilerSafe: spoilerSafe.value,
         activeChapterIdx: props.activeChapterIdx,
         retrieveSessionId,
       });
+      const [inf, quotesRes] = await Promise.all([
+        inferPromise,
+        quotesPromise,
+      ]);
       if (!("error" in inf)) {
         absorbRetrieveTokenUsage(inf);
         const nextStyle: CharacterBookStylePersisted = {
@@ -1162,6 +1534,10 @@ async function onRetrieve() {
         draftStyleNote.value = nextStyle.styleNoteZh ?? "";
         emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
       }
+      applyGoldenQuotesRetrieveResult(quotesRes);
+    } else {
+      const quotesRes = await quotesPromise;
+      applyGoldenQuotesRetrieveResult(quotesRes);
     }
 
     retrieveNoticeBanner.value = "";
@@ -1204,6 +1580,8 @@ function buildEntryFromDraft(id: string): CharacterRosterEntry {
     promptZh: draftPromptZh.value.trim(),
     negativeZh: draftNegativeZh.value.trim(),
     retrieveThinkingText: draftRetrieveThinking.value.trim(),
+    voiceReadVoiceId: draftVoiceReadVoiceId.value.trim() || undefined,
+    ...voiceSampleFieldsForSave(),
   };
 }
 
@@ -1549,6 +1927,8 @@ onBeforeUnmount(() => {
   removePopoverEsc = null;
   abortRetrieveIndexBuild();
   teardownCardGridResizeObserver();
+  resetDrawerVoicePreview();
+  resetRosterCardVoicePreview();
 });
 </script>
 
@@ -1587,8 +1967,11 @@ onBeforeUnmount(() => {
                   :tilt-enabled="rosterTiltEnabledFor(entry.id)"
                   :reorder-dragging="rosterDraggingEntryId === entry.id"
                   :suppress-flip-check="() => rosterShouldSuppressFlip(entry.id)"
+                  :show-speak-button="entryCanSpeakFromCard(entry)"
+                  :speak-icon-html="rosterCardSpeakIconHtml(entry.id)"
                   @toggle-flip="toggleFlip(entry.id)"
                   @edit="openEditSlide(entry)"
+                  @speak="onRosterCardSpeak(entry)"
                   @view-portrait="toggleCharacterCardPopover(entry)"
                 />
               </div>
@@ -1763,9 +2146,41 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="drawerMainFields" :inert="extracting">
-            <div class="field">
-              <span class="label">立绘</span>
-              <div class="drawerPortraitBlock">
+            <div class="field drawerMediaField">
+              <div
+                v-if="showCharacterVoiceTab"
+                class="drawerMediaTabBar"
+                role="tablist"
+                aria-label="立绘与音色"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  class="drawerMediaTabBtn"
+                  :class="{ active: drawerMediaTab === 'portrait' }"
+                  :aria-selected="drawerMediaTab === 'portrait'"
+                  @click="drawerMediaTab = 'portrait'"
+                >
+                  立绘
+                </button>
+                <span class="drawerMediaTabSep" aria-hidden="true"></span>
+                <button
+                  type="button"
+                  role="tab"
+                  class="drawerMediaTabBtn"
+                  :class="{ active: drawerMediaTab === 'voice' }"
+                  :aria-selected="drawerMediaTab === 'voice'"
+                  @click="drawerMediaTab = 'voice'"
+                >
+                  音色
+                </button>
+              </div>
+              <span v-else class="label">立绘</span>
+
+              <div
+                v-show="!showCharacterVoiceTab || drawerMediaTab === 'portrait'"
+                class="drawerPortraitBlock"
+              >
                 <div
                   class="drawerPortraitFrame"
                   :data-drop-zone="DROP_ZONE_CHARACTER_PORTRAIT"
@@ -1818,6 +2233,74 @@ onBeforeUnmount(() => {
                   >
                     AI 生成
                   </button>
+                </div>
+              </div>
+
+              <div
+                v-if="showCharacterVoiceTab && drawerMediaTab === 'voice'"
+                class="drawerVoiceTab"
+              >
+                <div class="drawerVoiceRow">
+                  <span class="drawerVoiceRowLabel">语音</span>
+                  <AppCustomSelect
+                    class="charVoiceReadSelect"
+                    :model-value="draftVoiceReadVoiceId"
+                    :display-label="charVoiceReadDisplayLabel"
+                    :placeholder="
+                      charVoiceReadScrollHasOptions ? '' : '暂无可用语音'
+                    "
+                    :fixed-top-items="[]"
+                    :scroll-items="charVoiceReadScrollItems"
+                    :fixed-bottom-items="[]"
+                    :scroll-max-height="charVoiceReadScrollMaxHeight"
+                    ariaLabel="朗读语音"
+                    @update:model-value="draftVoiceReadVoiceId = $event"
+                  />
+                </div>
+                <label class="drawerVoiceRow drawerVoiceRow--stack">
+                  <span class="drawerVoiceRowLabel">台词</span>
+                  <textarea
+                    v-model="draftVoiceSampleLine"
+                    class="drawerVoiceSampleInput"
+                    rows="5"
+                    spellcheck="false"
+                    :disabled="extracting"
+                  />
+                </label>
+                <div class="drawerVoicePreviewRow">
+                  <button
+                    v-if="canCycleVoiceSampleQuote"
+                    type="button"
+                    class="btn drawerVoiceCycleBtn"
+                    :disabled="
+                      extracting || charVoicePreviewPhase !== 'idle'
+                    "
+                    @click="onCycleVoiceSampleQuote"
+                  >
+                    换一句
+                  </button>
+                  <div class="drawerVoicePreviewRowEnd">
+                    <p
+                      v-if="charVoicePreviewError"
+                      class="drawerVoicePreviewError"
+                      role="alert"
+                    >
+                      {{ charVoicePreviewError }}
+                    </p>
+                    <button
+                      type="button"
+                      class="btn"
+                      :class="{
+                        primary: charVoicePreviewPhase === 'idle',
+                        warning: charVoicePreviewPhase === 'synthesizing',
+                        danger: charVoicePreviewPhase === 'playing',
+                      }"
+                      :disabled="charVoicePreviewDisabled"
+                      @click="onCharVoicePreviewClick"
+                    >
+                      {{ charVoicePreviewButtonLabel }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2303,6 +2786,108 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.charVoiceReadSelect {
+  width: 100%;
+  min-width: 0;
+}
+
+.drawerMediaField {
+  gap: 10px;
+}
+
+.drawerMediaTabBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawerMediaTabSep {
+  width: 1px;
+  height: 14px;
+  flex-shrink: 0;
+  background: var(--border);
+}
+
+.drawerMediaTabBtn {
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+  color: var(--tab-fg);
+  font-size: 13px;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.drawerMediaTabBtn:hover {
+  color: var(--tab-fg-hover);
+}
+
+.drawerMediaTabBtn.active {
+  color: var(--tab-fg-active);
+  font-weight: 600;
+}
+
+.drawerVoiceTab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drawerVoiceRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drawerVoiceRow--stack {
+  margin: 0;
+}
+
+.drawerVoiceRowLabel {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.drawerVoiceSampleInput {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 72px;
+  resize: none;
+}
+
+.drawerVoicePreviewRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.drawerVoiceCycleBtn {
+  flex-shrink: 0;
+}
+
+.drawerVoicePreviewRowEnd {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.drawerVoicePreviewError {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+  text-align: right;
 }
 
 .drawerRetrieveRow {

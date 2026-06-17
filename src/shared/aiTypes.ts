@@ -340,6 +340,14 @@ export interface PortraitExtractResult {
   tokenUsageAvailable?: boolean;
 }
 
+/** 角色卡「音色」试听：从正文检索该角色的经典台词 */
+export interface CharacterGoldenQuotesResult {
+  /** 按推荐程度排序的台词原文（适合 TTS 朗读） */
+  quotes: string[];
+  tokenUsage?: AITokenUsageTotals;
+  tokenUsageAvailable?: boolean;
+}
+
 /** 侧栏「角色」推断全书画风（中文 SD 前缀草案 + 中文说明；提交 SD 前与角色 prompt 一并译英） */
 export interface BookStyleInferResult {
   style_sd_prefix_zh: string;
@@ -871,7 +879,7 @@ export function normalizeEmbeddingEndpoint(
 export const defaultAIConfig: AIConfig = {
   aiEnabled: true,
   aiDataCacheDir: "",
-  embeddingEnabled: false,
+  embeddingEnabled: true,
   chat: {
     baseUrl: "http://127.0.0.1:1234/v1",
     apiKey: "",

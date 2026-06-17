@@ -53,6 +53,11 @@ import {
 } from "./ai/tools/characterPortraitFs";
 import { synthesizeEdgeTtsMp3 } from "./voiceReadEdgeTts";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import type { VoiceReadAttributeSpeakersResult } from "@shared/voiceReadSpeakerIpc";
+import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
+import { loadAiConfig } from "./ai/infra/config";
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
+import { attributeVoiceReadSpeakers } from "./ai/voiceReadSpeaker";
 
 type TxtFileItem = { name: string; path: string; size: number };
 type DirListScanProgress = (item: { name: string; path: string }) => void;
@@ -864,6 +869,77 @@ export function registerMainIpcHandlers(
       try {
         const mp3 = await synthesizeEdgeTtsMp3(req);
         return { ok: true, mp3 };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    },
+  );
+
+function unknownQuoteAttributions(
+  count: number,
+): VoiceReadQuoteAttribution[] {
+  return Array.from({ length: count }, () => ({
+    kind: "unknown" as const,
+    speaker: null,
+  }));
+}
+
+  ipcMain.handle(
+    "voiceRead:attributeSpeakers",
+    async (_evt, raw: unknown): Promise<VoiceReadAttributeSpeakersResult> => {
+      if (!raw || typeof raw !== "object") {
+        return { ok: false, error: "无效请求" };
+      }
+      const o = raw as Record<string, unknown>;
+      const line = typeof o.line === "string" ? o.line : "";
+      const dialogueTexts = Array.isArray(o.dialogueTexts)
+        ? o.dialogueTexts.filter((t): t is string => typeof t === "string")
+        : [];
+      const rosterRaw = Array.isArray(o.roster) ? o.roster : [];
+      const roster: { displayName: string; aliases: string[] }[] = [];
+      for (const row of rosterRaw) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const displayName =
+          typeof r.displayName === "string" ? r.displayName.trim() : "";
+        if (!displayName) continue;
+        const aliases = Array.isArray(r.aliases)
+          ? r.aliases.filter((a): a is string => typeof a === "string")
+          : [];
+        roster.push({ displayName, aliases });
+      }
+      if (!line.trim() || dialogueTexts.length === 0) {
+        return { ok: true, quotes: unknownQuoteAttributions(dialogueTexts.length) };
+      }
+      try {
+        const cfg = await loadAiConfig();
+        if (!cfg.aiEnabled) {
+          return {
+            ok: true,
+            quotes: unknownQuoteAttributions(dialogueTexts.length),
+          };
+        }
+        const chat = readActiveChatEndpoint(cfg);
+        if (!chat.baseUrl.trim() || !chat.model.trim()) {
+          return {
+            ok: true,
+            quotes: unknownQuoteAttributions(dialogueTexts.length),
+          };
+        }
+        const { quotes, tokenUsage } = await attributeVoiceReadSpeakers(chat, {
+          line,
+          dialogueTexts,
+          roster,
+        });
+        return {
+          ok: true,
+          quotes,
+          tokenUsage,
+          tokenUsageAvailable: tokenUsage != null,
+        };
       } catch (e) {
         return {
           ok: false,

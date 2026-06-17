@@ -145,8 +145,18 @@ export type PersistedSettingsData = {
    * 缺省时运行时使用 `userData/CharacterPortrait`（子目录名见 `@shared/characterPortraitPaths`）。
    */
   characterPortraitCacheDir?: string;
-  /** 语音朗读（引擎、音色、语速音调、DashScope Key） */
-  voiceRead?: Partial<VoiceReadSettings>;
+  /** 语音朗读（引擎、音色、语速音调、DashScope Key、配置方案） */
+  voiceRead?: Partial<VoiceReadSettings> & {
+    profiles?: unknown[];
+    activeProfileId?: string;
+    aiSpeakerTokenUsage?: {
+      promptTokens?: number;
+      completionTokens?: number;
+      totalTokens?: number;
+      promptCacheHitTokens?: number;
+    };
+    aiSpeakerTokenUsageAvailable?: boolean;
+  };
   /** 角色卡列表纹理/全息效果 */
   characterCardTextureEffect?: string;
 };
@@ -426,16 +436,62 @@ export function loadPersistedSettingsData(
   if (obj.voiceRead && typeof obj.voiceRead === "object") {
     const vr = obj.voiceRead as Record<string, unknown>;
     data.voiceRead = {
+      scheme:
+        vr.scheme === "single" || vr.scheme === "multi" ? vr.scheme : undefined,
       engine:
         vr.engine === "edge" || vr.engine === "dashscope" || vr.engine === "system"
           ? vr.engine
           : undefined,
       voiceId: typeof vr.voiceId === "string" ? vr.voiceId : undefined,
+      narrationVoiceId:
+        typeof vr.narrationVoiceId === "string"
+          ? vr.narrationVoiceId
+          : undefined,
+      dialogueVoiceId:
+        typeof vr.dialogueVoiceId === "string" ? vr.dialogueVoiceId : undefined,
+      dialogueMaleVoiceId:
+        typeof vr.dialogueMaleVoiceId === "string"
+          ? vr.dialogueMaleVoiceId
+          : undefined,
+      dialogueFemaleVoiceId:
+        typeof vr.dialogueFemaleVoiceId === "string"
+          ? vr.dialogueFemaleVoiceId
+          : undefined,
+      dialogueQuoteStyles: Array.isArray(vr.dialogueQuoteStyles)
+        ? vr.dialogueQuoteStyles
+        : undefined,
+      aiSpeakerRecognitionEnabled:
+        typeof vr.aiSpeakerRecognitionEnabled === "boolean"
+          ? vr.aiSpeakerRecognitionEnabled
+          : undefined,
       rate: typeof vr.rate === "number" ? vr.rate : undefined,
       pitch: typeof vr.pitch === "number" ? vr.pitch : undefined,
       dashscopeApiKey:
         typeof vr.dashscopeApiKey === "string" ? vr.dashscopeApiKey : undefined,
+      profiles: Array.isArray(vr.profiles) ? vr.profiles : undefined,
+      activeProfileId:
+        typeof vr.activeProfileId === "string" ? vr.activeProfileId : undefined,
     };
+    const usageRaw = vr.aiSpeakerTokenUsage;
+    if (usageRaw && typeof usageRaw === "object") {
+      const u = usageRaw as Record<string, unknown>;
+      data.voiceRead!.aiSpeakerTokenUsage = {
+        promptTokens:
+          typeof u.promptTokens === "number" ? u.promptTokens : undefined,
+        completionTokens:
+          typeof u.completionTokens === "number" ? u.completionTokens : undefined,
+        totalTokens:
+          typeof u.totalTokens === "number" ? u.totalTokens : undefined,
+        promptCacheHitTokens:
+          typeof u.promptCacheHitTokens === "number"
+            ? u.promptCacheHitTokens
+            : undefined,
+      };
+    }
+    if (typeof vr.aiSpeakerTokenUsageAvailable === "boolean") {
+      data.voiceRead!.aiSpeakerTokenUsageAvailable =
+        vr.aiSpeakerTokenUsageAvailable;
+    }
   }
 
   return {

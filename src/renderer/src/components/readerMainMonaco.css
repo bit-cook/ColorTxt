@@ -309,6 +309,34 @@ body > .overflowingContentWidgets
   height: 22px;
 }
 
+/* 查找栏计数、按钮等不可拖选；搜索输入框仍可选中复制 */
+.monaco-editor .find-widget,
+.monaco-editor .find-widget *,
+.reader-monaco-overflow-host .find-widget,
+.reader-monaco-overflow-host .find-widget * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.monaco-editor .find-widget input,
+.monaco-editor .find-widget textarea,
+.monaco-editor .find-widget .monaco-inputbox,
+.monaco-editor .find-widget .monaco-inputbox .input,
+.monaco-editor .find-widget .monaco-findInput .input,
+.reader-monaco-overflow-host .find-widget input,
+.reader-monaco-overflow-host .find-widget textarea,
+.reader-monaco-overflow-host .find-widget .monaco-inputbox,
+.reader-monaco-overflow-host .find-widget .monaco-inputbox .input,
+.reader-monaco-overflow-host .find-widget .monaco-findInput .input {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.monaco-editor .find-widget .matchesCount,
+.reader-monaco-overflow-host .find-widget .matchesCount {
+  cursor: default;
+}
+
 /*
  * Monaco 在 minimap.enabled:false 时仍保留 .minimap 节点；只读或未开编辑小地图时整节点隐藏。
  */

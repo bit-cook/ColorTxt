@@ -1241,13 +1241,6 @@ defineExpose({
   max-width: 100%;
 }
 
-.aiMasterHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
-}
-
 .settingsStretchTextarea--workflow {
   min-height: 100px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

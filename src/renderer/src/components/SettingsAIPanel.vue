@@ -576,7 +576,7 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheHit"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
+                class="numCompact"
                 aria-label="输入缓存命中每百万 Token 价格"
               />
             </div>
@@ -588,7 +588,7 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheMiss"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
+                class="numCompact"
                 aria-label="输入缓存未命中每百万 Token 价格"
               />
             </div>
@@ -600,7 +600,7 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.output"
                 :min="0"
                 :step="0.01"
-                class="aiTokenPriceInput"
+                class="numCompact"
                 aria-label="输出每百万 Token 价格"
               />
             </div>
@@ -811,20 +811,20 @@ defineExpose({
 
 
 .aiChatProviderSelect {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
 }
 
 .aiRowStretchInput {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
 }
 
 .aiRowField {
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
 }
@@ -891,25 +891,12 @@ defineExpose({
   min-width: 0;
 }
 
-.aiMasterHint code {
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
-}
-
 .aiTokenPriceTitle {
   margin-top: 4px;
 }
 
 .aiTokenPriceHint {
   margin: 0;
-}
-
-.aiTokenPriceInput {
-  flex: 1 1 65%;
-  min-width: 0;
-  max-width: 160px;
 }
 
 .settingsHint {
@@ -967,6 +954,7 @@ defineExpose({
 
 .numCompact {
   width: 120px;
+  flex: 0 0 120px;
 }
 
 .quickQRow {

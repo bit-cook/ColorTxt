@@ -418,6 +418,20 @@ code {
   margin: 0 2px;
   user-select: text;
 }
+
+/* 设置页内联代码片段（提示文案、选项标签等共用） */
+.settingsCode,
+.settingsHint code,
+.aiMasterHint code {
+  display: inline;
+  margin: 0 1px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
+  font-size: 11px;
+  line-height: 1.35;
+  vertical-align: baseline;
+}
 kbd {
   border-radius: 6px;
 }

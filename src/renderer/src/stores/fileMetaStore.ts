@@ -172,6 +172,8 @@ const MAX_STYLE_PREFIX_ZH = 8000;
 const MAX_STYLE_NOTE_ZH = 4000;
 const MAX_ROSTER_ENTRIES = 200;
 const MAX_CHAR_FIELD = 32000;
+const MAX_VOICE_SAMPLE_LINE = 2000;
+const MAX_VOICE_SAMPLE_QUOTES = 8;
 const MAX_DISPLAY_NAME = 200;
 const MAX_ALIASES = 500;
 const MAX_ID_LEN = 64;
@@ -212,6 +214,20 @@ function normalizeCharacterBookStyle(
   if (styleNoteZh) out.styleNoteZh = styleNoteZh;
   if (updatedAt != null) out.updatedAt = updatedAt;
   return out;
+}
+
+function normalizeVoiceReadSampleQuotes(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw.slice(0, MAX_VOICE_SAMPLE_QUOTES)) {
+    if (typeof item !== "string") continue;
+    const t = clampStr(item.trim(), MAX_VOICE_SAMPLE_LINE);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function normalizeCharacterRosterEntry(
@@ -258,6 +274,28 @@ function normalizeCharacterRosterEntry(
       typeof o.retrieveThinkingText === "string"
         ? clampStr(o.retrieveThinkingText, MAX_CHAR_FIELD)
         : "",
+    voiceReadVoiceId:
+      typeof o.voiceReadVoiceId === "string"
+        ? clampStr(o.voiceReadVoiceId, 256)
+        : "",
+    voiceReadSampleLine:
+      typeof o.voiceReadSampleLine === "string"
+        ? clampStr(o.voiceReadSampleLine, MAX_VOICE_SAMPLE_LINE) || undefined
+        : undefined,
+    voiceReadSampleQuotes: normalizeVoiceReadSampleQuotes(
+      o.voiceReadSampleQuotes,
+    ),
+    voiceReadSampleQuoteIndex:
+      typeof o.voiceReadSampleQuoteIndex === "number" &&
+      Number.isFinite(o.voiceReadSampleQuoteIndex)
+        ? Math.max(
+            0,
+            Math.min(
+              MAX_VOICE_SAMPLE_QUOTES - 1,
+              Math.floor(o.voiceReadSampleQuoteIndex),
+            ),
+          )
+        : undefined,
   };
 }
 

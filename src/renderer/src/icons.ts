@@ -81,6 +81,16 @@ import favoriteFillIcon from "./assets/favorite_fill.svg?raw";
 import noteIcon from "./assets/note.svg?raw";
 import quoteIcon from "./assets/quote.svg?raw";
 import deleteLineationIcon from "./assets/delete_lineation.svg?raw";
+import speakIcon from "./assets/speak.svg?raw";
+import speak0Icon from "./assets/speak_0.svg?raw";
+import speak1Icon from "./assets/speak_1.svg?raw";
+
+/** 角色卡「语音」播放动画帧：speak_0 → speak_1 → speak */
+export const speakIconAnimFrames = [
+  speak0Icon,
+  speak1Icon,
+  speakIcon,
+] as const;
 
 export const icons = {
   dark: darkIcon,
@@ -181,4 +191,9 @@ export const icons = {
   note: noteIcon,
   quote: quoteIcon,
   deleteLineation: deleteLineationIcon,
+  /** 角色卡「语音」默认图标 */
+  speak: speakIcon,
+  /** 角色卡「语音」播放动画帧 */
+  speak0: speak0Icon,
+  speak1: speak1Icon,
 } as const;

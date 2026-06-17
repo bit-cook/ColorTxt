@@ -1,6 +1,7 @@
 import { ipcMain } from "electron";
 import {
   SECRET_SLOT_VOICE_READ_DASHSCOPE_API_KEY,
+  SECRET_SLOT_VOICE_READ_PROFILE_KEYS,
   type SecretSlotId,
 } from "@shared/secretSlots";
 import {
@@ -11,7 +12,10 @@ import {
 } from "./secretStorage";
 
 function isVoiceReadSlot(slot: unknown): slot is SecretSlotId {
-  return slot === SECRET_SLOT_VOICE_READ_DASHSCOPE_API_KEY;
+  return (
+    slot === SECRET_SLOT_VOICE_READ_DASHSCOPE_API_KEY ||
+    slot === SECRET_SLOT_VOICE_READ_PROFILE_KEYS
+  );
 }
 
 export function registerSecretsIpcHandlers(): void {

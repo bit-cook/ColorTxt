@@ -548,11 +548,14 @@ const triggerMainText = computed(() => {
 .customSelect {
   position: relative;
   min-width: 0;
-  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
 }
 .customSelectTrigger.btn {
   flex-shrink: 1;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 .customSelectTrigger {
   box-sizing: border-box;

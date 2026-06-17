@@ -44,11 +44,11 @@ function onSelect(id: string) {
 </script>
 
 <template>
-  <div class="aiProfileToolbar">
-    <span class="aiProfileToolbarLabel">当前方案</span>
+  <div class="settingsRowMain settingsRowMain--baseline aiProfileToolbar">
+    <span class="settingsLabel short">当前方案</span>
     <div class="aiProfileToolbarMain">
       <AppCustomSelect
-        class="aiProfileSelect"
+        class="aiProfileSelect settingsRowControl"
         :model-value="editingId"
         :display-label="displayName"
         :placeholder="placeholder"
@@ -95,31 +95,16 @@ function onSelect(id: string) {
 </template>
 
 <style scoped>
-.aiProfileToolbar {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  min-width: 0;
-}
-
-.aiProfileToolbarLabel {
-  font-size: 14px;
-  color: var(--fg);
-  white-space: nowrap;
-  flex: 1 1 30%;
-  min-width: 30%;
-}
-
 .aiProfileToolbarMain {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1 1 65%;
+  flex: 1 1 0;
   min-width: 0;
 }
 
 .aiProfileSelect {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
