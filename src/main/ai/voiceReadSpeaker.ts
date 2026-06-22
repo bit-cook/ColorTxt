@@ -152,12 +152,13 @@ export async function attributeVoiceReadSpeakers(
   const emotionBlock = includeEmotion
     ? `
 
-同时根据整行原文（含引号外引导语、叙述）标注朗读情绪 emotion，取值：
-auto（不确定或交给引擎）、happy、sad、worried、fearful、angry、disgusted、surprised、calm、fluent、whisper。
-- kind 为 narration 时 emotion 用 calm 或 auto。
+同时根据整行原文（含引号外引导语、叙述）标注朗读情绪 emotion：
+- 用简短中文自然语言描述语气/情绪（10～30 字），如「语气关切、略带担忧」「冷淡、不带感情」「哽咽、压抑悲伤」「俏皮、略带调侃」等，可覆盖任意细腻情绪。
+- 不确定或无需强调时填 auto（由引擎根据文本推断）。
+- kind 为 narration 时 emotion 一般用「语气平静、自然」或 auto。
 - 对白应结合引导语判断，如「冷冷地说」「哽咽道」等。
 
-另输出 narrationEmotion 表示本行引号外旁白段的整体情绪（一般用 calm 或 auto）。`
+另输出 narrationEmotion 表示本行引号外旁白段的整体情绪（一般用「语气平静、自然」或 auto）。`
     : "";
 
   const jsonShape = includeEmotion
