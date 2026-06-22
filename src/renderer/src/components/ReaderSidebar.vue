@@ -1192,7 +1192,7 @@ defineExpose({
   opacity: 1;
 }
 .activityTabBtn--mutedColor .activityIcon :deep(svg) {
-  filter: grayscale(1) brightness(1.2);
+  filter: grayscale(1);
 }
 
 .activityTabBtn:hover {

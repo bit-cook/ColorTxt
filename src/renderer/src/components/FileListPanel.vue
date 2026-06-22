@@ -806,16 +806,20 @@ onBeforeUnmount(() => {
                 "
               >
                 <span class="fileItemMain">
-                  <input
+                  <span
                     v-if="isEditingFileList"
-                    class="fileItemCheckbox"
-                    type="checkbox"
-                    :checked="
-                      selectedFilePaths.includes(filesFiltered[index].path)
-                    "
-                    tabindex="-1"
+                    class="checkbox fileItemCheckboxWrap"
                     aria-hidden="true"
-                  />
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="
+                        selectedFilePaths.includes(filesFiltered[index].path)
+                      "
+                      tabindex="-1"
+                      aria-hidden="true"
+                    />
+                  </span>
                   <span
                     v-if="fileItemShowCategoryMarkRow(filesFiltered[index])"
                     class="fileItemCatMark"
@@ -1287,11 +1291,15 @@ onBeforeUnmount(() => {
 .fileItem--last-selected {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-.fileItemCheckbox {
+.fileItemCheckboxWrap {
+  flex-shrink: 0;
   pointer-events: none;
-  margin: 0;
-  width: 14px;
-  height: 14px;
+  cursor: default;
+}
+
+.fileItemCheckboxWrap input {
+  pointer-events: none;
+  cursor: default;
 }
 .fileItemRenameInput {
   flex: 1;

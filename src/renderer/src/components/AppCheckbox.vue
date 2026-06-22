@@ -20,7 +20,7 @@ withDefaults(
 
 <template>
   <label
-    class="appCheckbox"
+    class="checkbox appCheckbox"
     :class="{
       'appCheckbox--disabled': disabled,
       'appCheckbox--passive': passive,
@@ -28,7 +28,6 @@ withDefaults(
   >
     <input
       v-model="modelValue"
-      class="appCheckbox__input"
       type="checkbox"
       :disabled="disabled"
       :aria-label="ariaLabel || label || undefined"
@@ -42,13 +41,8 @@ withDefaults(
 
 <style scoped>
 .appCheckbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  user-select: none;
-  font-size: 14px;
   color: var(--fg);
+  font-size: 14px;
 }
 
 .appCheckbox--passive {
@@ -58,14 +52,6 @@ withDefaults(
 .appCheckbox--disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.appCheckbox__input {
-  margin: 0;
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  cursor: inherit;
 }
 
 .appCheckbox__label {
