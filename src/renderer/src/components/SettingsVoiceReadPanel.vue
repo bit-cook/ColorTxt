@@ -1046,22 +1046,6 @@ onUnmounted(() => {
           />
         </div>
       </div>
-      <p v-if="rateDisabled" class="settingsHint">当前服务商不支持调节语速。</p>
-
-      <div class="settingsRowMain">
-        <span class="settingsLabel short">音量（{{ Math.round(draft.volume * 100) }}%）</span>
-        <div class="settingsRowField">
-          <RangeSlider
-            :model-value="draft.volume"
-            :min="0"
-            :max="1"
-            :step="0.05"
-            :show-percent="false"
-            aria-label="音量"
-            @update:model-value="patchVolume($event)"
-          />
-        </div>
-      </div>
 
       <div v-if="showPitchControl" class="settingsRowMain">
         <span class="settingsLabel short">音调（{{ draft.pitch.toFixed(2) }}）</span>
@@ -1074,6 +1058,21 @@ onUnmounted(() => {
             :show-percent="false"
             aria-label="音调"
             @update:model-value="patchDraft({ pitch: $event })"
+          />
+        </div>
+      </div>
+
+      <div class="settingsRowMain">
+        <span class="settingsLabel short">音量（{{ Math.round(draft.volume * 100) }}%）</span>
+        <div class="settingsRowField">
+          <RangeSlider
+            :model-value="draft.volume"
+            :min="0"
+            :max="1"
+            :step="0.05"
+            :show-percent="false"
+            aria-label="音量"
+            @update:model-value="patchVolume($event)"
           />
         </div>
       </div>
