@@ -15,6 +15,7 @@ import {
   isChatApiProviderCustomId,
   resolveChatProviderPresetIdFromBaseUrl,
 } from "@shared/apiEndpointPresets";
+import { sortChatModelsForBaseUrl } from "@shared/chatModelPresets";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import ApiEndpointInput from "./ApiEndpointInput.vue";
 import AppConnectionTestButton from "./AppConnectionTestButton.vue";
@@ -151,11 +152,14 @@ async function refreshChatModels(opts?: { pullDone?: AppPullFlashDone }) {
     });
     ok = r.ok;
     if (r.ok) {
-      chatModelOptions.value = r.models;
-      if (r.models.length > 0) {
+      chatModelOptions.value = sortChatModelsForBaseUrl(
+        modelValue.value.chat.baseUrl,
+        r.models,
+      );
+      if (chatModelOptions.value.length > 0) {
         const cur = modelValue.value.chat.model.trim();
-        if (!cur || !r.models.includes(cur)) {
-          modelValue.value.chat.model = r.models[0]!;
+        if (!cur || !chatModelOptions.value.includes(cur)) {
+          modelValue.value.chat.model = chatModelOptions.value[0]!;
         }
       }
     } else chatModelOptions.value = [];

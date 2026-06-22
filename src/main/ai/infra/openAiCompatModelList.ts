@@ -1,4 +1,7 @@
-import { openAiCompatModelsUrl } from "@shared/apiEndpointPresets";
+import {
+  applyOpenAiCompatAuthHeaders,
+  openAiCompatModelsUrl,
+} from "@shared/apiEndpointPresets";
 
 /** OpenAI 兼容 `GET {baseUrl}/models`（对话与向量远程拉模型列表共用） */
 export async function fetchOpenAiCompatModelIds(opts: {
@@ -9,9 +12,7 @@ export async function fetchOpenAiCompatModelIds(opts: {
   if (!url) return { ok: false, error: "缺少接口地址" };
   try {
     const headers: Record<string, string> = {};
-    if (opts.apiKey.trim()) {
-      headers.Authorization = `Bearer ${opts.apiKey.trim()}`;
-    }
+    applyOpenAiCompatAuthHeaders(headers, opts.baseUrl, opts.apiKey);
     const res = await fetch(url, { headers });
     if (!res.ok) {
       const t = await res.text().catch(() => "");

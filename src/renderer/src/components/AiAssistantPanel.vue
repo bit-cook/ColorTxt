@@ -20,6 +20,7 @@ import {
   type AITokenPricePerMillion,
 } from "@shared/aiTypes";
 import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
+import { sortChatModelsForBaseUrl } from "@shared/chatModelPresets";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import { collectEnabledAgentSkills } from "@shared/aiSkills";
 import {
@@ -562,12 +563,12 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
     });
     ok = r.ok;
     if (r.ok) {
-      chatModelOptions.value = r.models;
+      chatModelOptions.value = sortChatModelsForBaseUrl(chat.baseUrl, r.models);
       chatModelsListFingerprint.value = fp;
-      if (r.models.length > 0) {
+      if (chatModelOptions.value.length > 0) {
         const cur = activeChatModel.value.trim();
-        if (!cur || !r.models.includes(cur)) {
-          activeChatModel.value = r.models[0]!;
+        if (!cur || !chatModelOptions.value.includes(cur)) {
+          activeChatModel.value = chatModelOptions.value[0]!;
         }
       }
     } else {

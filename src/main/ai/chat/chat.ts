@@ -11,6 +11,9 @@ import {
   extractUsageFromChatJson,
   type AITokenUsageTotals,
 } from "@shared/aiTokenUsage";
+import {
+  applyOpenAiCompatAuthHeaders,
+} from "@shared/apiEndpointPresets";
 import { resolveAgentDeepThinkingParams } from "./chatThinking";
 
 function normalizeBase(u: string): string {
@@ -328,7 +331,7 @@ export async function chatCompletionOnce(opts: {
     "Content-Type": "application/json",
   };
   if (opts.chat.apiKey.trim()) {
-    headers.Authorization = `Bearer ${opts.chat.apiKey.trim()}`;
+    applyOpenAiCompatAuthHeaders(headers, opts.chat.baseUrl, opts.chat.apiKey);
   }
   const model = opts.chat.model.trim();
   if (!model) throw new Error("未配置对话模型");
@@ -407,7 +410,7 @@ export async function streamChatCompletion(opts: {
     "Content-Type": "application/json",
   };
   if (chat.apiKey.trim()) {
-    headers.Authorization = `Bearer ${chat.apiKey.trim()}`;
+    applyOpenAiCompatAuthHeaders(headers, chat.baseUrl, chat.apiKey);
   }
 
   const ac = new AbortController();

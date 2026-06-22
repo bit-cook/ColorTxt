@@ -16,6 +16,7 @@ import {
   formatAiToolChapterHeading,
 } from "@shared/aiChapterRefPrompt";
 import { CHAPTER_MATCH_RULES_SKILL_ID } from "@shared/aiAgentSkillToolNames";
+import { applyOpenAiCompatAuthHeaders } from "@shared/apiEndpointPresets";
 import { isChapterMatchRuleAgentTurn } from "@shared/chapterMatchAgentTurn";
 import {
   agentSkillToolFunctionName,
@@ -1334,7 +1335,7 @@ export async function runAgentChat(opts: {
     "Content-Type": "application/json",
   };
   if (chat.apiKey.trim()) {
-    headers.Authorization = `Bearer ${chat.apiKey.trim()}`;
+    applyOpenAiCompatAuthHeaders(headers, chat.baseUrl, chat.apiKey);
   }
 
   let usageAcc: AITokenUsageTotals = { ...ZERO_TOKEN_USAGE };

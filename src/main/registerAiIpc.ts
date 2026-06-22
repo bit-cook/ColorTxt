@@ -25,7 +25,11 @@ import {
 } from "./ai/infra/config";
 import { embedTexts, probeEmbeddingDimension } from "./ai/rag/embedding";
 import { fetchOpenAiCompatModelIds } from "./ai/infra/openAiCompatModelList";
-import { normalizeChatPresetBaseUrl } from "@shared/apiEndpointPresets";
+import { extractSseErrorMessage } from "./ai/chat/chat";
+import {
+  applyOpenAiCompatAuthHeaders,
+  normalizeChatPresetBaseUrl,
+} from "@shared/apiEndpointPresets";
 import {
   migrateAiDataCacheRoot,
   migrateBuiltinModelCacheRoot,
@@ -889,6 +893,33 @@ export function registerAiIpcHandlers(): void {
     },
   );
 
+function formatChatConnectionTestError(status: number, raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    parsed = null;
+  }
+  const errType =
+    parsed &&
+    typeof parsed === "object" &&
+    (parsed as Record<string, unknown>).error &&
+    typeof (parsed as Record<string, unknown>).error === "object"
+      ? String(
+          ((parsed as Record<string, unknown>).error as Record<string, unknown>)
+            .type ?? "",
+        )
+      : "";
+
+  if (status === 402 || errType === "insufficient_balance") {
+    return "账户余额不足，无法发起对话。";
+  }
+
+  const msg = parsed ? extractSseErrorMessage(parsed) : null;
+  if (msg) return `HTTP ${status}: ${msg}`;
+  return `HTTP ${status}: ${raw.slice(0, 300)}`;
+}
+
   ipcMain.handle(
     "ai:test:chat",
     async (
@@ -906,7 +937,9 @@ export function registerAiIpcHandlers(): void {
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
         };
-        if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+        if (apiKey.trim()) {
+          applyOpenAiCompatAuthHeaders(headers, baseUrl, apiKey);
+        }
         const res = await fetch(url, {
           method: "POST",
           headers,
@@ -918,7 +951,10 @@ export function registerAiIpcHandlers(): void {
         });
         if (!res.ok) {
           const t = await res.text().catch(() => "");
-          return { ok: false, error: `HTTP ${res.status}: ${t.slice(0, 300)}` };
+          return {
+            ok: false,
+            error: formatChatConnectionTestError(res.status, t),
+          };
         }
         return { ok: true };
       } catch (e) {

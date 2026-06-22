@@ -31,7 +31,7 @@ export const MINIMAX_IMAGE_API_ROOT = "https://api.minimaxi.com";
 export const MINIMAX_API_KEY_CONSOLE_URL =
   "https://platform.minimaxi.com/user-center/basic-information/interface-key";
 
-/** 小米 MiMo 平台统一品牌名（语音朗读 TTS） */
+/** 小米 MiMo 平台统一品牌名（对话、语音朗读 TTS 等） */
 export const MIMO_PLATFORM_LABEL = "小米 MiMo";
 
 /** 小米 MiMo 官方 OpenAI 兼容 API Base URL */
@@ -122,6 +122,12 @@ const CHAT_API_PROVIDER_KNOWN_PRESETS: readonly ChatApiProviderPreset[] = [
     deepThinkingAdapted: true,
   },
   {
+    id: "mimo",
+    label: MIMO_PLATFORM_LABEL,
+    baseUrl: MIMO_API_BASE_URL,
+    deepThinkingAdapted: true,
+  },
+  {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
@@ -160,6 +166,27 @@ export function agnesApiLikely(baseUrl: string): boolean {
 export function minimaxApiLikely(baseUrl: string): boolean {
   const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
   return u.includes("minimaxi.com") || u.includes("minimax.io");
+}
+
+/** 接口地址是否为小米 MiMo 官方 API */
+export function mimoApiLikely(baseUrl: string): boolean {
+  const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
+  return u.includes("xiaomimimo.com") || u.includes("mimo.mi.com");
+}
+
+/** OpenAI 兼容对话/向量：MiMo 使用 api-key 头，其余默认 Bearer */
+export function applyOpenAiCompatAuthHeaders(
+  headers: Record<string, string>,
+  baseUrl: string,
+  apiKey: string,
+): void {
+  const key = apiKey.trim();
+  if (!key) return;
+  if (mimoApiLikely(baseUrl)) {
+    headers["api-key"] = key;
+    return;
+  }
+  headers.Authorization = `Bearer ${key}`;
 }
 
 export function findChatProviderPresetByBaseUrl(
