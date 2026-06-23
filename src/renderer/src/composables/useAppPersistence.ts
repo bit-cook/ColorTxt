@@ -121,11 +121,13 @@ import {
 import {
   collectVoiceReadProfileApiKeys,
   hydrateVoiceReadProfilesApiKeys,
+  mergeVoiceReadProfileSecretsForSave,
   serializeVoiceReadProfileSecrets,
   stripVoiceReadProfileApiKeysForDisk,
   type VoiceReadProfile,
 } from "@shared/voiceReadProfiles";
 import { parseProfileKeysBlob } from "@shared/aiEndpointProfiles";
+import { parseProfileSecretsBlob, serializeProfileSecretsBlob } from "@shared/voiceReadEngineConfig";
 import {
   migrateVoiceReadFromPersisted,
   normalizeVoiceReadProfilesForSave,
@@ -661,15 +663,20 @@ export function useAppPersistence(deps: {
         await window.colorTxt.secrets.getVoiceReadProfileKeys();
       const profileKeysBlob = profileKeysRes.keys ?? "";
       const profileKeys = parseProfileKeysBlob(profileKeysBlob);
-      hydrateVoiceReadProfilesApiKeys(
-        deps.voiceReadProfiles.value,
-        profileKeys,
-        profileKeysBlob,
-      );
+      const activeId = deps.activeVoiceReadProfileId.value.trim();
+      if (
+        hydrateVoiceReadProfilesApiKeys(
+          deps.voiceReadProfiles.value,
+          profileKeys,
+          profileKeysBlob,
+          activeId,
+        )
+      ) {
+        migrated = true;
+      }
 
       const legacyRes = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
       const legacyKey = legacyRes.apiKey.trim();
-      const activeId = deps.activeVoiceReadProfileId.value.trim();
       const activeProfile =
         deps.voiceReadProfiles.value.find((p) => p.id === activeId) ??
         deps.voiceReadProfiles.value[0];
@@ -706,6 +713,15 @@ export function useAppPersistence(deps: {
           );
           migrated = true;
         }
+      } else if (migrated && profileKeysBlob.trim()) {
+        const existingVault = parseProfileSecretsBlob(profileKeysBlob);
+        const merged = mergeVoiceReadProfileSecretsForSave(
+          deps.voiceReadProfiles.value,
+          existingVault,
+        );
+        await window.colorTxt.secrets.setVoiceReadProfileKeys(
+          serializeProfileSecretsBlob(merged),
+        );
       }
     } catch {
       // ignore
@@ -717,8 +733,14 @@ export function useAppPersistence(deps: {
     const profiles = normalizeVoiceReadProfilesForSave(
       deps.voiceReadProfiles.value,
     );
+    const existingRes = await window.colorTxt.secrets.getVoiceReadProfileKeys();
+    const existingVault = parseProfileSecretsBlob(existingRes.keys ?? "");
+    const mergedSecrets = mergeVoiceReadProfileSecretsForSave(
+      profiles,
+      existingVault,
+    );
     await window.colorTxt.secrets.setVoiceReadProfileKeys(
-      serializeVoiceReadProfileSecrets(profiles),
+      serializeProfileSecretsBlob(mergedSecrets),
     );
     const activeId = deps.activeVoiceReadProfileId.value.trim();
     const activeKey =

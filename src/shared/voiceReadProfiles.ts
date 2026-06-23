@@ -1,5 +1,6 @@
 /** 语音朗读配置方案（主进程 / preload / renderer 对齐） */
 
+import { reconcileOrphanProfileKeys } from "./aiEndpointProfiles";
 import {
   extractProfileSecrets,
   hydrateEngineConfigSecrets,
@@ -280,16 +281,74 @@ export function serializeVoiceReadProfileSecrets(
   return serializeProfileSecretsBlob(secrets);
 }
 
+/** 结构化 secrets blob：孤儿 profile id 的密钥挂回活跃方案 */
+export function reconcileOrphanVoiceReadSecrets(
+  profiles: VoiceReadProfile[],
+  activeProfileId: string,
+  secretsByProfile: Record<string, VoiceReadProfileSecrets>,
+): boolean {
+  const activeId = activeProfileId.trim();
+  if (!activeId) return false;
+  const activeSecrets = secretsByProfile[activeId];
+  if (activeSecrets && Object.keys(activeSecrets).length > 0) return false;
+
+  const profileIds = new Set(profiles.map((p) => p.id));
+  const orphans = Object.entries(secretsByProfile).filter(
+    ([id, sec]) => !profileIds.has(id) && Object.keys(sec).length > 0,
+  );
+  if (orphans.length === 0) return false;
+
+  const chosen =
+    orphans.length === 1
+      ? orphans[0]![1]
+      : (
+          orphans.find(([id]) => id === LEGACY_DEFAULT_VOICE_READ_PROFILE_ID) ??
+          orphans[0]
+        )![1];
+  secretsByProfile[activeId] = { ...chosen };
+  return true;
+}
+
+export function mergeVoiceReadProfileSecretsForSave(
+  profiles: VoiceReadProfile[],
+  existingVault: Record<string, VoiceReadProfileSecrets>,
+): Record<string, VoiceReadProfileSecrets> {
+  const profileIds = new Set(profiles.map((p) => p.id));
+  const out: Record<string, VoiceReadProfileSecrets> = {};
+
+  for (const [id, sec] of Object.entries(existingVault)) {
+    if (!profileIds.has(id) && Object.keys(sec).length > 0) {
+      out[id] = { ...sec };
+    }
+  }
+  for (const p of profiles) {
+    const extracted = extractProfileSecrets(p.settings.engineConfig);
+    if (Object.keys(extracted).length > 0) {
+      out[p.id] = extracted;
+    }
+  }
+  return out;
+}
+
 export function hydrateVoiceReadProfilesApiKeys(
   profiles: VoiceReadProfile[],
   keys: Record<string, string>,
   secretsBlob?: string,
-): void {
+  activeProfileId?: string,
+): boolean {
+  let migrated = false;
   const parsed = secretsBlob?.trim()
     ? parseProfileSecretsBlob(secretsBlob)
     : {};
   const hasStructured = Object.keys(parsed).length > 0;
+  const activeId = activeProfileId?.trim() ?? "";
   if (hasStructured) {
+    if (
+      activeId &&
+      reconcileOrphanVoiceReadSecrets(profiles, activeId, parsed)
+    ) {
+      migrated = true;
+    }
     for (const p of profiles) {
       const vault = parsed[p.id];
       if (!vault) continue;
@@ -298,7 +357,10 @@ export function hydrateVoiceReadProfilesApiKeys(
         p.settings.dashscopeApiKey = vault.dashscopeApiKey;
       }
     }
-    return;
+    return migrated;
+  }
+  if (activeId && reconcileOrphanProfileKeys(profiles, activeId, keys)) {
+    migrated = true;
   }
   for (const p of profiles) {
     const legacy = keys[p.id];
@@ -309,6 +371,7 @@ export function hydrateVoiceReadProfilesApiKeys(
       p.settings.dashscopeApiKey = legacy;
     }
   }
+  return migrated;
 }
 
 export function stripVoiceReadProfileApiKeysForDisk(

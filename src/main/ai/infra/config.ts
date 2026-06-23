@@ -8,8 +8,10 @@ import {
   hydrateChatProfilesApiKeys,
   hydrateTxt2ImgProfilesApiKeys,
   LEGACY_DEFAULT_PROFILE_ID,
+  mergeProfileKeyMapsForSave,
   normalizeChatEndpoint,
   parseProfileKeysBlob,
+  reconcileOrphanProfileKeys,
   serializeProfileKeysBlob,
   stripProfileApiKeysForDisk,
 } from "@shared/aiEndpointProfiles";
@@ -27,6 +29,7 @@ import {
   SECRET_SLOT_AI_EMBEDDING_API_KEY,
   SECRET_SLOT_AI_TXT2IMG_API_KEY,
   SECRET_SLOT_AI_TXT2IMG_PROFILE_KEYS,
+  type SecretSlotId,
 } from "@shared/secretSlots";
 import {
   aiConfigFilePath,
@@ -151,6 +154,25 @@ async function hydrateApiKeysFromVault(cfg: AIConfig): Promise<{
     profileKeysMigrated = true;
   }
 
+  if (
+    reconcileOrphanProfileKeys(
+      next.chatProfiles,
+      activeChatId,
+      chatProfileKeys,
+    )
+  ) {
+    profileKeysMigrated = true;
+  }
+  if (
+    reconcileOrphanProfileKeys(
+      next.txt2imgProfiles,
+      activeTxt2ImgId,
+      txt2imgProfileKeys,
+    )
+  ) {
+    profileKeysMigrated = true;
+  }
+
   hydrateChatProfilesApiKeys(next.chatProfiles, chatProfileKeys);
   hydrateTxt2ImgProfilesApiKeys(next.txt2imgProfiles, txt2imgProfileKeys);
 
@@ -212,15 +234,22 @@ async function hydrateApiKeysFromVault(cfg: AIConfig): Promise<{
   }
 
   if (migratedPlaintext || profileKeysMigrated) {
-    await setSecretsBatch({
-      [SECRET_SLOT_AI_CHAT_API_KEY]: activeChatKey,
-      [SECRET_SLOT_AI_EMBEDDING_API_KEY]: next.embedding.apiKey,
-      [SECRET_SLOT_AI_TXT2IMG_API_KEY]: activeTxt2ImgKey,
+    const migrationBatch: Partial<Record<SecretSlotId, string>> = {
       [SECRET_SLOT_AI_CHAT_PROFILE_KEYS]:
         serializeProfileKeysBlob(chatProfileKeys),
       [SECRET_SLOT_AI_TXT2IMG_PROFILE_KEYS]:
         serializeProfileKeysBlob(txt2imgProfileKeys),
-    });
+    };
+    if (activeChatKey.trim()) {
+      migrationBatch[SECRET_SLOT_AI_CHAT_API_KEY] = activeChatKey;
+    }
+    if (next.embedding.apiKey.trim()) {
+      migrationBatch[SECRET_SLOT_AI_EMBEDDING_API_KEY] = next.embedding.apiKey;
+    }
+    if (activeTxt2ImgKey.trim()) {
+      migrationBatch[SECRET_SLOT_AI_TXT2IMG_API_KEY] = activeTxt2ImgKey;
+    }
+    await setSecretsBatch(migrationBatch, { skipEmpty: true });
   }
 
   return { cfg: next, migratedPlaintext, profileKeysMigrated };
@@ -268,8 +297,17 @@ export async function loadAiConfig(): Promise<AIConfig> {
 
 export async function saveAiConfig(cfg: AIConfig): Promise<void> {
   const next = ensureAiConfigProfiles(structuredClone(cfg));
-  const chatProfileKeys = collectChatProfileApiKeys(next.chatProfiles);
-  const txt2imgProfileKeys = collectTxt2ImgProfileApiKeys(next.txt2imgProfiles);
+  const existingVault = await loadProfileKeyMaps();
+  const chatProfileKeys = mergeProfileKeyMapsForSave(
+    next.chatProfiles,
+    collectChatProfileApiKeys(next.chatProfiles),
+    existingVault.chat,
+  );
+  const txt2imgProfileKeys = mergeProfileKeyMapsForSave(
+    next.txt2imgProfiles,
+    collectTxt2ImgProfileApiKeys(next.txt2imgProfiles),
+    existingVault.txt2img,
+  );
 
   await setSecretsBatch({
     [SECRET_SLOT_AI_CHAT_API_KEY]: next.chat.apiKey,

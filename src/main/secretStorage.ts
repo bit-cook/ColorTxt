@@ -174,6 +174,7 @@ export async function clearSecret(slot: SecretSlotId): Promise<void> {
 
 export async function setSecretsBatch(
   entries: Partial<Record<SecretSlotId, string>>,
+  opts?: { skipEmpty?: boolean },
 ): Promise<void> {
   const file = await loadSecretsFile();
   file.backend = isSystemSecretEncryptionAvailable()
@@ -183,8 +184,11 @@ export async function setSecretsBatch(
     [SecretSlotId, string | undefined]
   >) {
     const trimmed = (value ?? "").trim();
-    if (!trimmed) delete file.values[slot];
-    else file.values[slot] = encryptSecret(trimmed, file.backend);
+    if (!trimmed) {
+      if (!opts?.skipEmpty) delete file.values[slot];
+    } else {
+      file.values[slot] = encryptSecret(trimmed, file.backend);
+    }
   }
   await persistSecretsFile(file);
 }
