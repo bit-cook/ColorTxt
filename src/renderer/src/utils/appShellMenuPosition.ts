@@ -1,6 +1,7 @@
 export type AnchoredMenuPlacement =
   | "below-end"
   | "below-start"
+  | "below-center"
   | "beside-right"
   | "beside-left";
 
@@ -40,6 +41,10 @@ export function computeAnchoredMenuPosition(
       break;
     case "below-start":
       left = anchorRect.left;
+      top = anchorRect.bottom + gap;
+      break;
+    case "below-center":
+      left = anchorRect.left + anchorRect.width / 2 - w / 2;
       top = anchorRect.bottom + gap;
       break;
     case "beside-right":

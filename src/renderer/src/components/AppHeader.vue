@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import IconButton from "./IconButton.vue";
-import FontPicker from "./FontPicker.vue";
 import MoreMenu from "./MoreMenu.vue";
-import ConvertMenu from "./ConvertMenu.vue";
+import HeaderFontToolbar from "./HeaderFontToolbar.vue";
+import HeaderFormatToolbar from "./HeaderFormatToolbar.vue";
+import { useAppHeaderLayout } from "../composables/useAppHeaderLayout";
 import { icons } from "../icons";
 import readingSvg from "../assets/reading.svg?raw";
 import playSvg from "../assets/play.svg?raw";
@@ -145,6 +146,13 @@ const emit = defineEmits<{
 }>();
 
 const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
+
+const { compactFontToolbar, compactFormatToolbar } = useAppHeaderLayout();
+
+const showFontToolbarInHeader = computed(() => !compactFontToolbar.value);
+const showFormatToolbarInHeader = computed(() => !compactFormatToolbar.value);
+const showFontToolbarInMore = computed(() => compactFontToolbar.value);
+const showFormatToolbarInMore = computed(() => compactFormatToolbar.value);
 </script>
 
 <template>
@@ -237,117 +245,65 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
           :disabled="!voiceReadActive && (!canVoiceRead || timedScrollActive)"
           @click="emit('voiceReadToggle')"
         />
-        <span class="toolbarDivider" aria-hidden="true"></span>
-        <div class="hdrLockable">
-          <FontPicker
-            :monaco-font-family="monacoFontFamily"
-            :pinned-other-fonts="pinnedOtherFonts"
-            :disabled="vrFormatLock"
-            @set-monaco-font="(fontFamily) => emit('setMonacoFont', fontFamily)"
-            @toggle-pin-other-font="
-              (fontName) => emit('togglePinOtherFont', fontName)
-            "
-          />
-          <IconButton
-            :icon-html="icons.fontSizeDown"
-            title="减小字号"
-            aria-label="减小字号"
-            :disabled="vrFormatLock || !canDecreaseFont"
-            @click="emit('decreaseFontSize')"
-          />
-          <IconButton
-            :icon-html="icons.fontSizeUp"
-            title="加大字号"
-            aria-label="加大字号"
-            :disabled="vrFormatLock || !canIncreaseFont"
-            @click="emit('increaseFontSize')"
-          />
-          <IconButton
-            :icon-html="icons.lineHeightDown"
-            title="减小行高"
-            aria-label="减小行高"
-            :disabled="vrFormatLock || !canDecreaseLineHeight"
-            @click="emit('decreaseLineHeight')"
-          />
-          <IconButton
-            :icon-html="icons.lineHeightUp"
-            title="加大行高"
-            aria-label="加大行高"
-            :disabled="vrFormatLock || !canIncreaseLineHeight"
-            @click="emit('increaseLineHeight')"
-          />
-        </div>
-        <span class="toolbarDivider" aria-hidden="true"></span>
-        <ConvertMenu
+        <span
+          v-if="showFontToolbarInHeader || showFormatToolbarInHeader"
+          class="toolbarDivider"
+          aria-hidden="true"
+        ></span>
+        <HeaderFontToolbar
+          v-if="showFontToolbarInHeader"
+          class="hdrLockable"
+          :monaco-font-family="monacoFontFamily"
+          :pinned-other-fonts="pinnedOtherFonts"
+          :disabled="vrFormatLock"
+          :can-increase-font="canIncreaseFont"
+          :can-decrease-font="canDecreaseFont"
+          :can-increase-line-height="canIncreaseLineHeight"
+          :can-decrease-line-height="canDecreaseLineHeight"
+          @set-monaco-font="(fontFamily) => emit('setMonacoFont', fontFamily)"
+          @toggle-pin-other-font="(fontName) => emit('togglePinOtherFont', fontName)"
+          @increase-font-size="emit('increaseFontSize')"
+          @decrease-font-size="emit('decreaseFontSize')"
+          @increase-line-height="emit('increaseLineHeight')"
+          @decrease-line-height="emit('decreaseLineHeight')"
+        />
+        <span
+          v-if="showFontToolbarInHeader && showFormatToolbarInHeader"
+          class="toolbarDivider"
+          aria-hidden="true"
+        ></span>
+        <HeaderFormatToolbar
+          v-if="showFormatToolbarInHeader"
+          class="hdrLockable"
           :reader-edit-mode="readerEditMode"
           :disabled="vrFormatLock"
           :text-convert-zh="textConvertZh"
           :text-convert-letter="textConvertLetter"
           :text-convert-digit="textConvertDigit"
-          @select-zh-read="emit('selectTextConvertZhRead', $event)"
-          @select-letter-read="emit('selectTextConvertLetterRead', $event)"
-          @select-digit-read="emit('selectTextConvertDigitRead', $event)"
-          @apply-zh-edit="emit('applyTextConvertZhEdit', $event)"
-          @apply-letter-edit="emit('applyTextConvertLetterEdit', $event)"
-          @apply-digit-edit="emit('applyTextConvertDigitEdit', $event)"
+          :compress-blank-lines="compressBlankLines"
+          :lead-indent-full-width="leadIndentFullWidth"
+          :monaco-advanced-wrapping="monacoAdvancedWrapping"
+          :monaco-custom-highlight="monacoCustomHighlight"
+          @select-text-convert-zh-read="emit('selectTextConvertZhRead', $event)"
+          @select-text-convert-letter-read="
+            emit('selectTextConvertLetterRead', $event)
+          "
+          @select-text-convert-digit-read="
+            emit('selectTextConvertDigitRead', $event)
+          "
+          @apply-text-convert-zh-edit="emit('applyTextConvertZhEdit', $event)"
+          @apply-text-convert-letter-edit="
+            emit('applyTextConvertLetterEdit', $event)
+          "
+          @apply-text-convert-digit-edit="emit('applyTextConvertDigitEdit', $event)"
+          @toggle-compress-blank-lines="emit('toggleCompressBlankLines')"
+          @toggle-lead-indent-full-width="emit('toggleLeadIndentFullWidth')"
+          @format-edit-compress-blank-lines="emit('formatEditCompressBlankLines')"
+          @format-edit-lead-indent-full-width="emit('formatEditLeadIndentFullWidth')"
+          @toggle-monaco-advanced-wrapping="emit('toggleMonacoAdvancedWrapping')"
+          @toggle-monaco-custom-highlight="emit('toggleMonacoCustomHighlight')"
         />
-        <template v-if="!readerEditMode">
-          <IconButton
-            :icon-html="icons.compress"
-            :active="compressBlankLines"
-            :pressed="compressBlankLines"
-            title="压缩空行"
-            aria-label="压缩空行"
-            :disabled="vrFormatLock"
-            @click="emit('toggleCompressBlankLines')"
-          />
-          <IconButton
-            :icon-html="icons.indent"
-            :active="leadIndentFullWidth"
-            :pressed="leadIndentFullWidth"
-            title="行首缩进"
-            aria-label="行首缩进"
-            :disabled="vrFormatLock"
-            @click="emit('toggleLeadIndentFullWidth')"
-          />
-        </template>
-        <template v-else>
-          <IconButton
-            :icon-html="icons.compress"
-            primary
-            title="格式化：压缩空行"
-            aria-label="格式化：压缩空行"
-            :disabled="vrFormatLock"
-            @click="emit('formatEditCompressBlankLines')"
-          />
-          <IconButton
-            :icon-html="icons.indent"
-            primary
-            title="格式化：行首缩进"
-            aria-label="格式化：行首缩进"
-            :disabled="vrFormatLock"
-            @click="emit('formatEditLeadIndentFullWidth')"
-          />
-        </template>
       </div>
-      <IconButton
-        :icon-html="icons.advancedWrapping"
-        :active="monacoAdvancedWrapping"
-        :pressed="monacoAdvancedWrapping"
-        title="高级换行策略
-开启可以优化换行效果，但对性能影响较大。"
-        aria-label="高级换行策略"
-        :disabled="vrFormatLock"
-        @click="$emit('toggleMonacoAdvancedWrapping')"
-      />
-      <IconButton
-        :icon-html="icons.palette"
-        multicolor
-        :active="monacoCustomHighlight"
-        :pressed="monacoCustomHighlight"
-        title="内容上色"
-        @click="$emit('toggleMonacoCustomHighlight')"
-      />
       <span class="toolbarDivider" aria-hidden="true"></span>
       <IconButton
         :icon-html="icons.regExp"
@@ -398,7 +354,71 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
           @quit-app="emit('quitApp')"
           @open-recent-file="(filePath) => emit('openRecentFile', filePath)"
           @clear-recent-files="emit('clearRecentFiles')"
-        />
+        >
+          <template
+            v-if="showFontToolbarInMore || showFormatToolbarInMore"
+            #toolbar
+          >
+            <HeaderFontToolbar
+              v-if="showFontToolbarInMore"
+              :monaco-font-family="monacoFontFamily"
+              :pinned-other-fonts="pinnedOtherFonts"
+              :disabled="vrFormatLock"
+              :can-increase-font="canIncreaseFont"
+              :can-decrease-font="canDecreaseFont"
+              :can-increase-line-height="canIncreaseLineHeight"
+              :can-decrease-line-height="canDecreaseLineHeight"
+              @set-monaco-font="(fontFamily) => emit('setMonacoFont', fontFamily)"
+              @toggle-pin-other-font="
+                (fontName) => emit('togglePinOtherFont', fontName)
+              "
+              @increase-font-size="emit('increaseFontSize')"
+              @decrease-font-size="emit('decreaseFontSize')"
+              @increase-line-height="emit('increaseLineHeight')"
+              @decrease-line-height="emit('decreaseLineHeight')"
+            />
+            <HeaderFormatToolbar
+              v-if="showFormatToolbarInMore"
+              :reader-edit-mode="readerEditMode"
+              :disabled="vrFormatLock"
+              :text-convert-zh="textConvertZh"
+              :text-convert-letter="textConvertLetter"
+              :text-convert-digit="textConvertDigit"
+              :compress-blank-lines="compressBlankLines"
+              :lead-indent-full-width="leadIndentFullWidth"
+              :monaco-advanced-wrapping="monacoAdvancedWrapping"
+              :monaco-custom-highlight="monacoCustomHighlight"
+              @select-text-convert-zh-read="
+                emit('selectTextConvertZhRead', $event)
+              "
+              @select-text-convert-letter-read="
+                emit('selectTextConvertLetterRead', $event)
+              "
+              @select-text-convert-digit-read="
+                emit('selectTextConvertDigitRead', $event)
+              "
+              @apply-text-convert-zh-edit="emit('applyTextConvertZhEdit', $event)"
+              @apply-text-convert-letter-edit="
+                emit('applyTextConvertLetterEdit', $event)
+              "
+              @apply-text-convert-digit-edit="
+                emit('applyTextConvertDigitEdit', $event)
+              "
+              @toggle-compress-blank-lines="emit('toggleCompressBlankLines')"
+              @toggle-lead-indent-full-width="emit('toggleLeadIndentFullWidth')"
+              @format-edit-compress-blank-lines="
+                emit('formatEditCompressBlankLines')
+              "
+              @format-edit-lead-indent-full-width="
+                emit('formatEditLeadIndentFullWidth')
+              "
+              @toggle-monaco-advanced-wrapping="
+                emit('toggleMonacoAdvancedWrapping')
+              "
+              @toggle-monaco-custom-highlight="emit('toggleMonacoCustomHighlight')"
+            />
+          </template>
+        </MoreMenu>
       </div>
     </div>
   </header>
@@ -445,6 +465,11 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
 .moreMenuWrapLocked {
   pointer-events: none;
   opacity: 0.45;
+}
+
+.moreMenuToolbar :deep(.headerFontToolbar),
+.moreMenuToolbar :deep(.headerFormatToolbar) {
+  justify-content: center;
 }
 
 .hdrLockable {

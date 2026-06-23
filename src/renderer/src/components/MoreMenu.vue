@@ -64,6 +64,7 @@ function onDocPointerDown(ev: PointerEvent) {
   if (!root) return;
   const t = ev.target as Node | null;
   if (t && root.contains(t)) return;
+  if (t instanceof Element && t.closest("[data-header-float-panel]")) return;
   moreMenuOpen.value = false;
 }
 
@@ -176,9 +177,18 @@ onBeforeUnmount(() => {
     <div
       v-if="moreMenuOpen"
       class="moreMenuHost appShellMenuPanel"
+      :class="{ 'moreMenuHost--withToolbar': !!$slots.toolbar }"
       role="menu"
       @click.stop
     >
+      <div v-if="$slots.toolbar" class="moreMenuToolbar">
+        <slot name="toolbar" />
+      </div>
+      <div
+        v-if="$slots.toolbar"
+        class="appShellMenuDivider"
+        role="separator"
+      ></div>
       <button class="appShellMenuItem" role="menuitem" @click="onToggleFind">
         <span class="appShellMenuIconSlot" v-html="icons.find"></span>
         <span class="appShellMenuLabel">查找</span>
@@ -309,6 +319,19 @@ onBeforeUnmount(() => {
   right: 0;
   z-index: 5000;
   min-width: 200px;
+}
+
+.moreMenuHost--withToolbar {
+  overflow: visible;
+}
+
+.moreMenuToolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 4px 4px 0;
+  overflow: visible;
 }
 
 .moreMenuHost::before,

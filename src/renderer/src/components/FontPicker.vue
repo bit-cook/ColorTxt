@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  onBeforeUnmount,
-  onMounted,
   ref,
   computed,
   watch,
@@ -19,6 +17,7 @@ import {
   getPresetLabel,
   type PresetFontKey,
 } from "../utils/presetFontDefinitions";
+import { useAnchoredAppShellMenu } from "../composables/useAnchoredAppShellMenu";
 
 const props = withDefaults(
   defineProps<{
@@ -40,7 +39,7 @@ const showOtherFontsPanel = ref(false);
 const systemFonts = ref<string[]>([]);
 const systemFontsLoading = ref(false);
 
-const fontMenuRootEl = ref<HTMLElement | null>(null);
+const fontPickerAnchorEl = ref<HTMLElement | null>(null);
 const otherFontFilterInputRef = ref<HTMLInputElement | null>(null);
 const fontOtherVirtualListRef = ref<InstanceType<typeof VirtualList> | null>(
   null,
@@ -121,12 +120,28 @@ async function ensureSystemFontsLoaded() {
   }
 }
 
-function toggleFontMenu() {
-  fontMenuOpen.value = !fontMenuOpen.value;
-  if (!fontMenuOpen.value) {
+function closeFontMenu() {
+  fontMenu.closeMenu();
+}
+
+const fontMenu = useAnchoredAppShellMenu({
+  open: fontMenuOpen,
+  anchor: fontPickerAnchorEl,
+  placement: "below-center",
+  widthPx: 140,
+  gap: 6,
+  zIndex: 7200,
+  onClose: () => {
     showOtherFontsPanel.value = false;
     otherFontFilter.value = "";
-  }
+  },
+});
+
+const { panelRef: fontMenuPanelRef, panelStyle: fontMenuPanelStyle } = fontMenu;
+
+function toggleFontMenu() {
+  if (props.disabled) return;
+  void fontMenu.toggleMenu();
 }
 
 function choosePreset(key: PresetFontKey) {
@@ -169,12 +184,6 @@ function isOtherFontSelected(fontName: string) {
   return normalizeOtherFontName(fontName) === selectedOtherFontNormalized.value;
 }
 
-function closeFontMenu() {
-  fontMenuOpen.value = false;
-  showOtherFontsPanel.value = false;
-  otherFontFilter.value = "";
-}
-
 function scrollSelectedOtherFontIntoView() {
   const selected = selectedOtherFontNormalized.value;
   if (!selected) return;
@@ -214,26 +223,19 @@ watch(
   },
 );
 
-const onPointerDown = (_ev: PointerEvent) => {
-  if (!fontMenuOpen.value) return;
-  const root = fontMenuRootEl.value;
-  if (!root) return;
-  const target = _ev.target as Node | null;
-  if (target && root.contains(target)) return;
-  closeFontMenu();
-};
-
-onMounted(() => {
-  document.addEventListener("pointerdown", onPointerDown, true);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", onPointerDown, true);
-});
+watch(
+  () => showOtherFontsPanel.value,
+  () => {
+    if (!fontMenuOpen.value) return;
+    void nextTick(() => {
+      void fontMenu.reposition();
+    });
+  },
+);
 </script>
 
 <template>
-  <div ref="fontMenuRootEl" class="fontPicker">
+  <div ref="fontPickerAnchorEl" class="fontPicker">
     <IconButton
       :icon-html="icons.fontFamily"
       :active="fontMenuOpen"
@@ -244,12 +246,21 @@ onBeforeUnmount(() => {
       @click.stop="toggleFontMenu"
     />
 
-    <div
-      v-if="fontMenuOpen"
-      class="fontMenu"
-      :class="{ 'fontMenu--other': showOtherFontsPanel }"
-      @click.stop
-    >
+    <Teleport to="body">
+      <div
+        v-if="fontMenuOpen"
+        ref="fontMenuPanelRef"
+        class="fontMenu fontMenu--teleport"
+        :class="{ 'fontMenu--other': showOtherFontsPanel }"
+        data-header-float-panel
+        :style="{
+          position: 'fixed',
+          left: fontMenuPanelStyle.left,
+          top: fontMenuPanelStyle.top,
+          zIndex: fontMenuPanelStyle.zIndex,
+        }"
+        @click.stop
+      >
       <div v-if="!showOtherFontsPanel" class="fontMenuList">
         <div class="fontMenuListBody">
           <button
@@ -369,6 +380,7 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </div>
+    </Teleport>
   </div>
 </template>
 
@@ -378,12 +390,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
 }
 
-.fontMenu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1001;
+.fontMenu--teleport {
   min-width: 140px;
   max-width: 300px;
   background: var(--bg);
@@ -393,12 +400,8 @@ onBeforeUnmount(() => {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
-.fontMenu--other {
-  min-width: 220px;
-}
-
-.fontMenu::before,
-.fontMenu::after {
+.fontMenu--teleport::before,
+.fontMenu--teleport::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -408,24 +411,39 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-.fontMenu::before {
+.fontMenu--teleport::before {
   top: -8px;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
   border-bottom: 8px solid var(--border);
 }
 
-.fontMenu::after {
+.fontMenu--teleport::after {
   top: -7px;
   border-left: 7px solid transparent;
   border-right: 7px solid transparent;
   border-bottom: 7px solid var(--bg);
 }
 
+.fontMenu {
+  z-index: 7200;
+}
+
+.fontMenu--other {
+  min-width: 220px;
+}
+
 .fontMenuDivider {
   flex-shrink: 0;
   height: 1px;
   background: var(--border);
+}
+
+.fontOtherPanel {
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+  min-height: 0; /* allow inner scroll */
 }
 
 .fontMenuList {
@@ -572,13 +590,6 @@ onBeforeUnmount(() => {
 
 .fontMenuPinIcon :deep(path) {
   fill: currentColor;
-}
-
-.fontOtherPanel {
-  display: flex;
-  flex-direction: column;
-  max-height: 70vh;
-  min-height: 0; /* allow inner scroll */
 }
 
 .fontOtherFilterRow {

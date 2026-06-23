@@ -40,9 +40,19 @@ const emit = defineEmits<{
 
 const menuOpen = ref(false);
 const menuRootEl = ref<HTMLElement | null>(null);
+const zhSubWrapEl = ref<HTMLElement | null>(null);
+const letterSubWrapEl = ref<HTMLElement | null>(null);
+const digitSubWrapEl = ref<HTMLElement | null>(null);
 const zhSubOpen = ref(false);
 const letterSubOpen = ref(false);
 const digitSubOpen = ref(false);
+const zhFlyoutSide = ref<"left" | "right">("right");
+const letterFlyoutSide = ref<"left" | "right">("right");
+const digitFlyoutSide = ref<"left" | "right">("right");
+
+/** 与 `.convertMenuFlyout` 的 min-width 一致，用于打开前估算能否放在右侧 */
+const CONVERT_FLYOUT_ESTIMATE_WIDTH = 160;
+const FLYOUT_VIEWPORT_MARGIN = 8;
 
 const buttonTitle = computed(() =>
   props.readerEditMode ? "格式化：转换" : "转换",
@@ -150,6 +160,32 @@ function showDividerBefore(
     : item.dividerBeforeRead === true;
 }
 
+function pickFlyoutSide(wrapEl: HTMLElement | null): "left" | "right" {
+  if (!wrapEl) return "right";
+  const rect = wrapEl.getBoundingClientRect();
+  const needed = CONVERT_FLYOUT_ESTIMATE_WIDTH + FLYOUT_VIEWPORT_MARGIN;
+  const spaceRight = window.innerWidth - rect.right;
+  const spaceLeft = rect.left;
+  if (spaceRight >= needed) return "right";
+  if (spaceLeft >= needed) return "left";
+  return spaceRight >= spaceLeft ? "right" : "left";
+}
+
+function openZhSubmenu() {
+  zhFlyoutSide.value = pickFlyoutSide(zhSubWrapEl.value);
+  zhSubOpen.value = true;
+}
+
+function openLetterSubmenu() {
+  letterFlyoutSide.value = pickFlyoutSide(letterSubWrapEl.value);
+  letterSubOpen.value = true;
+}
+
+function openDigitSubmenu() {
+  digitFlyoutSide.value = pickFlyoutSide(digitSubWrapEl.value);
+  digitSubOpen.value = true;
+}
+
 onMounted(() => {
   document.addEventListener("pointerdown", onDocPointerDown, true);
 });
@@ -180,8 +216,9 @@ onBeforeUnmount(() => {
       @click.stop
     >
       <div
+        ref="zhSubWrapEl"
         class="appShellMenuSubWrap"
-        @mouseenter="zhSubOpen = true"
+        @mouseenter="openZhSubmenu"
         @mouseleave="zhSubOpen = false"
       >
         <button
@@ -192,12 +229,17 @@ onBeforeUnmount(() => {
           :aria-expanded="zhSubOpen"
         >
           <span class="appShellMenuIconSlot" aria-hidden="true"></span>
-          <span class="appShellMenuLabel">简 ↔ 繁</span>
+          <span class="appShellMenuLabel">简繁</span>
           <span class="appShellMenuSubChevron">›</span>
         </button>
         <div
           v-show="zhSubOpen"
-          class="appShellMenuFlyout appShellMenuFlyout--left convertMenuFlyout"
+          class="appShellMenuFlyout convertMenuFlyout"
+          :class="
+            zhFlyoutSide === 'right'
+              ? 'appShellMenuFlyout--right'
+              : 'appShellMenuFlyout--left'
+          "
           role="menu"
           @click.stop
         >
@@ -221,8 +263,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div
+        ref="letterSubWrapEl"
         class="appShellMenuSubWrap"
-        @mouseenter="letterSubOpen = true"
+        @mouseenter="openLetterSubmenu"
         @mouseleave="letterSubOpen = false"
       >
         <button
@@ -238,7 +281,12 @@ onBeforeUnmount(() => {
         </button>
         <div
           v-show="letterSubOpen"
-          class="appShellMenuFlyout appShellMenuFlyout--left convertMenuFlyout"
+          class="appShellMenuFlyout convertMenuFlyout"
+          :class="
+            letterFlyoutSide === 'right'
+              ? 'appShellMenuFlyout--right'
+              : 'appShellMenuFlyout--left'
+          "
           role="menu"
           @click.stop
         >
@@ -262,8 +310,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div
+        ref="digitSubWrapEl"
         class="appShellMenuSubWrap"
-        @mouseenter="digitSubOpen = true"
+        @mouseenter="openDigitSubmenu"
         @mouseleave="digitSubOpen = false"
       >
         <button
@@ -279,7 +328,12 @@ onBeforeUnmount(() => {
         </button>
         <div
           v-show="digitSubOpen"
-          class="appShellMenuFlyout appShellMenuFlyout--left convertMenuFlyout"
+          class="appShellMenuFlyout convertMenuFlyout"
+          :class="
+            digitFlyoutSide === 'right'
+              ? 'appShellMenuFlyout--right'
+              : 'appShellMenuFlyout--left'
+          "
           role="menu"
           @click.stop
         >
@@ -313,15 +367,18 @@ onBeforeUnmount(() => {
 .convertMenuHost {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 5000;
-  min-width: 168px;
+  min-width: 120px;
 }
 
 .convertMenuHost::before,
 .convertMenuHost::after {
   content: "";
   position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
   width: 0;
   height: 0;
   pointer-events: none;
@@ -329,7 +386,6 @@ onBeforeUnmount(() => {
 
 .convertMenuHost::before {
   top: -8px;
-  right: 6px;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
   border-bottom: 8px solid var(--border);
@@ -337,15 +393,15 @@ onBeforeUnmount(() => {
 
 .convertMenuHost::after {
   top: -7px;
-  right: 7px;
   border-left: 7px solid transparent;
   border-right: 7px solid transparent;
   border-bottom: 7px solid var(--bg);
 }
 
 .convertMenuFlyout {
-  min-width: 220px;
-  /* 简 ↔ 繁 共 9 项，默认 320px 会裁切最后一项 */
+  width: max-content;
+  min-width: 160px;
+  max-width: min(50vw, 260px);
   max-height: min(70vh, 420px);
   overflow-x: hidden;
   overflow-y: auto;

@@ -29,7 +29,7 @@ export type TextConvertWidthMenuOption = {
   dividerBeforeEdit?: boolean;
 };
 
-/** 阅读模式：简 ↔ 繁 子菜单（含「关」） */
+/** 阅读模式：「简繁」子菜单（含「关」） */
 export const TEXT_CONVERT_ZH_READ_MENU: TextConvertZhMenuOption[] = [
   { id: "off", label: "关" },
   { id: "t2s", label: "標準繁體 → 简体", dividerBeforeRead: true },
