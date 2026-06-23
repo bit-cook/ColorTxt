@@ -614,6 +614,12 @@ const lineationColorsForReader = computed(() =>
     : lineationColorsDark.value,
 );
 
+const readerPaletteColorEnabledForReader = computed(() =>
+  currentTheme.value === "vs"
+    ? readerPaletteColorEnabledLight.value
+    : readerPaletteColorEnabledDark.value,
+);
+
 const currentFileMetaRecord = computed(() => {
   const p = currentFile.value;
   if (!p) return undefined;
@@ -3263,6 +3269,7 @@ useAppShellThemeWatch({
           :stream-loading="loading"
           :reader-surface-light="effectiveReaderSurfaceLight"
           :reader-surface-dark="effectiveReaderSurfaceDark"
+          :reader-palette-color-enabled="readerPaletteColorEnabledForReader"
           :highlight-colors="highlightColorsForReader"
           :lineation-colors="lineationColorsForReader"
           :highlight-words-by-index="readerDisplayHighlightWordsByIndex"

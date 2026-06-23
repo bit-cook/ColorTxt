@@ -108,6 +108,8 @@ import {
   defaultReaderLineHeightMultiple,
   defaultReaderPaletteDark,
   defaultReaderPaletteLight,
+  defaultReaderPaletteColorEnabled,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "../constants/appUi";
 import { DEFAULT_HIGHLIGHT_COLORS_LIGHT } from "../constants/highlightColors";
@@ -366,6 +368,8 @@ const props = withDefaults(
     /** 合并用户覆盖后的阅读器表面色（亮色 / 暗色） */
     readerSurfaceLight?: ReaderSurfacePalette;
     readerSurfaceDark?: ReaderSurfacePalette;
+    /** 当前主题下阅读器 token 独立配色开关（Monarch 引号/括号内回退用） */
+    readerPaletteColorEnabled?: ReaderSurfaceColorEnabled;
     /** 当前主题下的高亮色列表（与设置中亮/暗数组之一对应） */
     highlightColors?: string[];
     /** 当前主题下的划线标注色列表（与设置中亮/暗数组之一对应） */
@@ -434,6 +438,7 @@ const props = withDefaults(
     streamLoading: false,
     readerSurfaceLight: () => ({ ...defaultReaderPaletteLight }),
     readerSurfaceDark: () => ({ ...defaultReaderPaletteDark }),
+    readerPaletteColorEnabled: () => ({ ...defaultReaderPaletteColorEnabled }),
     highlightColors: () => [...DEFAULT_HIGHLIGHT_COLORS_LIGHT],
     lineationColors: () => [...DEFAULT_LINEATION_COLORS_LIGHT],
     highlightWordsByIndex: undefined,
@@ -1109,6 +1114,7 @@ function applyTxtrMonarchTokenizer() {
     createTxtrTextMonarchLanguage(
       getTxtrMonarchHighlightOptions(),
       props.txtrDelimitedMatchCrossLine,
+      props.readerPaletteColorEnabled,
     ),
   );
 }
@@ -1135,6 +1141,14 @@ watch(
 
 watch(
   () => props.highlightWordsByIndex,
+  () => {
+    applyTxtrMonarchTokenizer();
+  },
+  { deep: true },
+);
+
+watch(
+  () => props.readerPaletteColorEnabled,
   () => {
     applyTxtrMonarchTokenizer();
   },

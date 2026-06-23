@@ -1,5 +1,9 @@
 import type * as monaco from "monaco-editor";
 import {
+  defaultReaderPaletteColorEnabled,
+  type ReaderSurfaceColorEnabled,
+} from "../constants/readerPalette";
+import {
   buildTxtrCustomHighlightMonarchRules,
   type TxtrMonarchHighlightOptions,
 } from "./txtrHighlightMonarch";
@@ -72,15 +76,24 @@ function bracketOpenerRules(): monaco.languages.IMonarchLanguageRule[] {
   ];
 }
 
+function tokenInsideDelimited(
+  innerToken: "txtr.quoteInner" | "txtr.bracketInner",
+  specificToken: string,
+  enabled: boolean,
+): string {
+  return enabled ? specificToken : innerToken;
+}
+
 /**
  * 引号/括号内侧：自定义高亮词优先于引号/括号内侧兜底；引号内再在高亮词之后尝试括号开符，以便「《书名》」仍为 bracketInner。
- * 数字、英文、标点优先于 innerRest；txtr.quoteInner / txtr.bracketInner 仅兜底（优先级最低）。
+ * 数字、英文、标点等可独立上色；对应开关关闭时在引号/括号内回退为 quoteInner / bracketInner（而非 root 的 english 等）。
  */
 function rulesInsideDelimited(
   closeMatch: RegExp,
   closeChar: string,
   innerToken: "txtr.quoteInner" | "txtr.bracketInner",
   highlightRules: monaco.languages.IMonarchLanguageRule[],
+  colorEnabled: ReaderSurfaceColorEnabled,
   /** 仅 true：在引号内于高亮词之后匹配成对括号开符 */
   bracketOpenersInQuote = false,
 ): monaco.languages.IMonarchLanguageRule[] {
@@ -89,10 +102,34 @@ function rulesInsideDelimited(
     ...highlightRules,
     ...(bracketOpenersInQuote ? bracketOpenerRules() : []),
     [closeMatch, { token: "txtr.punctuation", next: "@pop" }],
-    [SPECIAL_MARKERS, "txtr.specialMarker"],
-    [NUMBER, "txtr.number"],
-    [LATIN_WORD, "txtr.english"],
-    [PUNCTUATION_CLASS, "txtr.punctuation"],
+    [
+      SPECIAL_MARKERS,
+      tokenInsideDelimited(
+        innerToken,
+        "txtr.specialMarker",
+        colorEnabled.txtrSpecialMarker,
+      ),
+    ],
+    [
+      NUMBER,
+      tokenInsideDelimited(innerToken, "txtr.number", colorEnabled.txtrNumber),
+    ],
+    [
+      LATIN_WORD,
+      tokenInsideDelimited(
+        innerToken,
+        "txtr.english",
+        colorEnabled.txtrEnglish,
+      ),
+    ],
+    [
+      PUNCTUATION_CLASS,
+      tokenInsideDelimited(
+        innerToken,
+        "txtr.punctuation",
+        colorEnabled.txtrPunctuation,
+      ),
+    ],
     [innerRestRe(closeChar, bracketOpenersInQuote), innerToken],
   ];
 }
@@ -107,6 +144,7 @@ export function createTxtrTextMonarchLanguage(
   highlight?: TxtrMonarchHighlightOptions,
   /** 为 true 时成对引号/括号可跨行（Monarch includeLF: false） */
   delimitedMatchCrossLine = false,
+  colorEnabled: ReaderSurfaceColorEnabled = defaultReaderPaletteColorEnabled,
 ): monaco.languages.IMonarchLanguage {
   const hl = highlight ?? {
     enabled: false,
@@ -115,6 +153,7 @@ export function createTxtrTextMonarchLanguage(
   };
   const hlRules = buildTxtrCustomHighlightMonarchRules(hl);
   const crossLineEffective = Boolean(hl.enabled) && delimitedMatchCrossLine;
+  const insideColor = { ...defaultReaderPaletteColorEnabled, ...colorEnabled };
 
   return {
     defaultToken: "",
@@ -141,6 +180,7 @@ export function createTxtrTextMonarchLanguage(
         '"',
         "txtr.quoteInner",
         hlRules,
+        insideColor,
         true,
       ),
 
@@ -149,6 +189,7 @@ export function createTxtrTextMonarchLanguage(
         "」",
         "txtr.quoteInner",
         hlRules,
+        insideColor,
         true,
       ),
 
@@ -157,6 +198,7 @@ export function createTxtrTextMonarchLanguage(
         "』",
         "txtr.quoteInner",
         hlRules,
+        insideColor,
         true,
       ),
 
@@ -165,6 +207,7 @@ export function createTxtrTextMonarchLanguage(
         "\u201D",
         "txtr.quoteInner",
         hlRules,
+        insideColor,
         true,
       ),
 
@@ -173,6 +216,7 @@ export function createTxtrTextMonarchLanguage(
         "\u2019",
         "txtr.quoteInner",
         hlRules,
+        insideColor,
         true,
       ),
 
@@ -181,6 +225,7 @@ export function createTxtrTextMonarchLanguage(
         "》",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketAngleFull: rulesInsideDelimited(
@@ -188,6 +233,7 @@ export function createTxtrTextMonarchLanguage(
         "＞",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketParenAscii: rulesInsideDelimited(
@@ -195,6 +241,7 @@ export function createTxtrTextMonarchLanguage(
         ")",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketParenFull: rulesInsideDelimited(
@@ -202,6 +249,7 @@ export function createTxtrTextMonarchLanguage(
         "）",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketSquareAscii: rulesInsideDelimited(
@@ -209,6 +257,7 @@ export function createTxtrTextMonarchLanguage(
         "]",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketCjk: rulesInsideDelimited(
@@ -216,6 +265,7 @@ export function createTxtrTextMonarchLanguage(
         "】",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketFancy: rulesInsideDelimited(
@@ -223,6 +273,7 @@ export function createTxtrTextMonarchLanguage(
         "〗",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketCurlyAscii: rulesInsideDelimited(
@@ -230,6 +281,7 @@ export function createTxtrTextMonarchLanguage(
         "}",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
 
       bracketCurlyFull: rulesInsideDelimited(
@@ -237,6 +289,7 @@ export function createTxtrTextMonarchLanguage(
         "｝",
         "txtr.bracketInner",
         hlRules,
+        insideColor,
       ),
     },
   };
