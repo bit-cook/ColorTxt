@@ -51,6 +51,12 @@ function keyboardTargetInsideReaderMonacoEditor(
   return Boolean(root && root.contains(t));
 }
 
+/** 焦点是否在 Monaco 查找栏内（查找/替换输入框 ↑↓ 浏览历史，勿交给阅读器滚行快捷键） */
+function keyboardTargetInsideFindWidget(ev: KeyboardEvent): boolean {
+  const t = ev.target;
+  return t instanceof Element && !!t.closest(".find-widget");
+}
+
 export function useAppWindowBindings(deps: {
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>;
   stream: Stream;
@@ -257,10 +263,19 @@ export function useAppWindowBindings(deps: {
         (ev) =>
           !hasModalOrEscBeforeModalLayer() &&
           !keyboardEventFromReaderSidebar(ev),
-        (action, ev) =>
-          deps.readerEditMode.value &&
-          keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef) &&
-          EDIT_MODE_MONACO_DEFERRED_ACTIONS.has(action),
+        (action, ev) => {
+          if (
+            keyboardTargetInsideFindWidget(ev) &&
+            (action === "scrollUpLine" || action === "scrollDownLine")
+          ) {
+            return true;
+          }
+          return (
+            deps.readerEditMode.value &&
+            keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef) &&
+            EDIT_MODE_MONACO_DEFERRED_ACTIONS.has(action)
+          );
+        },
         (action) =>
           Boolean(deps.voiceReadScrollLocked?.value) &&
           VOICE_READ_SCROLL_BLOCKED_ACTIONS.has(action),

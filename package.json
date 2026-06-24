@@ -14,7 +14,7 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "echo \"(no lint configured)\"",
     "release": "electron-vite build && electron-rebuild -f -w better-sqlite3,opencc && node scripts/prune-pack-deps.mjs && electron-builder --publish always",
-    "postinstall": "electron-rebuild -f -w better-sqlite3,opencc && node scripts/patch-nested-sharp-stub.mjs"
+    "postinstall": "electron-rebuild -f -w better-sqlite3,opencc && node scripts/patch-nested-sharp-stub.mjs && node scripts/patch-monaco-hover-pointer-below.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
