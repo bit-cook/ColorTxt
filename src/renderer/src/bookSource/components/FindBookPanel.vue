@@ -34,13 +34,13 @@ import {
   useBookSourceSearch,
 } from "../composables/useBookSource";
 import { useBookshelfCoverUrls } from "../composables/useBookshelfCoverUrls";
-import type { BookSourceListItem, BookDetail, BookChapter, SearchBookItem } from "@shared/bookSource/types";
+import type { BookSourceListItem, Book, BookChapter, SearchBookItem } from "@shared/bookSource/types";
 import { appLog } from "../../services/appDialog";
 import { appToast } from "../../services/appToast";
 import type { BookshelfBook } from "../findBookBookshelf";
+import { bookshelfAsBook } from "../findBookBookshelf";
 import type { ReplaceRule } from "@shared/bookSource/replaceRule";
 import {
-  buildBookDetailFromShelf,
   hasCachedBookshelfToc,
   loadBookshelfReaderPayload,
 } from "../bookshelfOpenReader";
@@ -196,7 +196,7 @@ const readerInitialChapterIndex = ref(0);
 /** 书架未缓存目录时先打开阅读器，后台拉目录 */
 const readerTocLoading = ref(false);
 let bookshelfReaderOpenGen = 0;
-const readerDetail = ref<BookDetail | null>(null);
+const readerDetail = ref<Book | null>(null);
 const readerChapters = ref<BookChapter[]>([]);
 const selectedBook = ref<SearchBookItem | null>(null);
 const findBookBodyRef = ref<HTMLElement | null>(null);
@@ -538,7 +538,7 @@ async function onReadBookshelfBook(item: SearchBookItem) {
   }
 
   // 未读/无目录缓存：先打开阅读器，目录加载放进面板内
-  readerDetail.value = buildBookDetailFromShelf(shelfBook);
+  readerDetail.value = bookshelfAsBook(shelfBook);
   readerChapters.value = [];
   readerInitialChapterIndex.value = 0;
   readerTocLoading.value = true;
@@ -594,7 +594,7 @@ function raiseOrOpenBookReader(chapterIndex?: number) {
 
 function onReadChapter(payload: {
   index: number;
-  detail: BookDetail;
+  detail: Book;
   chapters: BookChapter[];
 }) {
   if (!selectedBook.value) return;
@@ -610,7 +610,7 @@ function onOpenBookDetailFromReader() {
 
 /** 阅读器侧栏重新获取目录后同步 */
 function onReaderTocRefreshed(payload: {
-  detail: BookDetail;
+  detail: Book;
   chapters: BookChapter[];
 }) {
   readerDetail.value = payload.detail;

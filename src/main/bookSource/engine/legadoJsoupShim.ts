@@ -40,6 +40,7 @@ type JsoupElements = {
   hasClass(className: string): boolean;
   isEmpty(): boolean;
   toArray(): JsoupElement[];
+  forEach(callback: (el: JsoupElement, index: number) => void): void;
   toString(): string;
   [Symbol.iterator](): Iterator<JsoupElement>;
 };
@@ -53,12 +54,14 @@ function wrapElement($: CheerioAPI, node: AnyNode): JsoupElement {
 
   const api: JsoupElement = {
     select(cssQuery: string) {
-      return wrapElements($, el.find(cssQuery));
+      // Jsoup Collector：根节点自身若匹配也入选；cheerio.find 只含后代
+      const descendants = el.find(cssQuery);
+      const merged = el.is(cssQuery) ? el.add(descendants) : descendants;
+      return wrapElements($, merged);
     },
     selectFirst(cssQuery: string) {
-      const hit = el.find(cssQuery).first();
-      const raw = hit.get(0);
-      return raw ? wrapElement($, raw) : null;
+      const all = api.select(cssQuery);
+      return all.first();
     },
     attr(attributeKey: string) {
       return el.attr(attributeKey) ?? "";
@@ -128,12 +131,15 @@ function wrapElements($: CheerioAPI, selection: Cheerio<AnyNode>): JsoupElements
       return selection.length > 0 ? api.get(selection.length - 1) : null;
     },
     select(cssQuery: string) {
-      return wrapElements($, selection.find(cssQuery));
+      const descendants = selection.find(cssQuery);
+      const selfMatch = selection.filter((_, node) => $(node).is(cssQuery));
+      const merged = selfMatch.length
+        ? selfMatch.add(descendants)
+        : descendants;
+      return wrapElements($, merged);
     },
     selectFirst(cssQuery: string) {
-      const hit = selection.find(cssQuery).first();
-      const raw = hit.get(0);
-      return raw ? wrapElement($, raw) : null;
+      return api.select(cssQuery).first();
     },
     attr(attributeKey: string) {
       return selection.first().attr(attributeKey) ?? "";
@@ -165,6 +171,11 @@ function wrapElements($: CheerioAPI, selection: Cheerio<AnyNode>): JsoupElements
     },
     toArray() {
       return selection.toArray().map((n) => wrapElement($, n));
+    },
+    forEach(callback: (el: JsoupElement, index: number) => void) {
+      selection.each((i, n) => {
+        callback(wrapElement($, n), i);
+      });
     },
     toString() {
       return api.outerHtml();
@@ -240,6 +251,14 @@ function parseHtml(html: unknown): JsoupElement {
     },
   };
   return doc;
+}
+
+/** 将 cheerio 选择结果转为 Jsoup Element 数组，供规则 JS `$[i].select()` 使用 */
+export function cheerioToJsoupList(
+  $: CheerioAPI,
+  selection: Cheerio<AnyNode>,
+): unknown[] {
+  return selection.toArray().map((n) => wrapElement($, n));
 }
 
 /** 顶层 `org` / `Packages.org` */

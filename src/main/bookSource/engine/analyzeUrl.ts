@@ -23,7 +23,7 @@ import { parseLegadoUrlSuffixJson } from "./legadoCompositeRule";
 import { withSourceRateLimit } from "./concurrentRateLimiter";
 import {
   extractProxyFromHeaders,
-  getProxyDispatcher,
+  getBookSourceDispatcher,
 } from "./httpProxy";
 
 export type StrResponse = {
@@ -77,6 +77,15 @@ function augmentGorgonHeaders(
   return out;
 }
 
+/** 对齐 Legado：仅剥离 `,{"method":…}` 类 UrlOption，勿切断 query 内逗号 */
+function stripUrlOptionSuffix(url: string): string {
+  const m = PARAM_JSON_PATTERN.exec(url);
+  if (!m || m.index == null) return url.trim();
+  const tail = url.slice(m.index + m[0].length).trimStart();
+  if (!tail.startsWith("{")) return url.trim();
+  return url.slice(0, m.index).trim();
+}
+
 function resolveGetRequestUrl(
   url: string,
   urlNoQuery: string,
@@ -84,12 +93,12 @@ function resolveGetRequestUrl(
   headers: Record<string, string>,
   method: string,
 ): string {
-  const plainUrl = url.split(",")[0].trim();
+  const plainUrl = stripUrlOptionSuffix(url);
   // Legado POST：urlNoQuery 可带 query（product 等），勿剥成光 path
   if (method !== "GET") {
-    if (urlNoQuery.includes("?")) return urlNoQuery.split(",")[0].trim();
+    if (urlNoQuery.includes("?")) return stripUrlOptionSuffix(urlNoQuery);
     if (plainUrl.includes("?")) return plainUrl;
-    return urlNoQuery.split(",")[0].trim();
+    return stripUrlOptionSuffix(urlNoQuery);
   }
   if (hasGorgonHeader(headers) && plainUrl.includes("?")) return plainUrl;
   if (fieldMap.size > 0) return buildQueryUrl(urlNoQuery, fieldMap);
@@ -791,7 +800,7 @@ async function fetchStrResponseInner(
   const extracted = extractProxyFromHeaders(headers);
   headers = extracted.headers;
   const proxy = opts.proxy?.trim() || extracted.proxy;
-  const dispatcher = getProxyDispatcher(proxy);
+  const dispatcher = getBookSourceDispatcher(proxy);
 
   const split = splitUrlFetchOptions(url);
   if (split.options && Object.keys(split.options).length > 0) {
@@ -849,7 +858,15 @@ async function fetchStrResponseInner(
       !headers["Content-Type"] &&
       !headers["content-type"]
     ) {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      // 对齐 Legado：JSON body 用 postJson（application/json），否则 form-urlencoded
+      const bodyText =
+        typeof requestBody === "string"
+          ? requestBody.trim()
+          : "";
+      headers["Content-Type"] =
+        bodyText.startsWith("{") || bodyText.startsWith("[")
+          ? "application/json; charset=UTF-8"
+          : "application/x-www-form-urlencoded";
     }
   }
 

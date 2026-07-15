@@ -232,7 +232,7 @@ async function checkBook(
 
     report("┌获取目录链接");
     const detailLogs: string[] = [];
-    const detail = await getBookInfo(
+    let detail = await getBookInfo(
       source,
       bookUrl,
       name,
@@ -250,12 +250,19 @@ async function checkBook(
     bookUrl = detail.bookUrl || bookUrl;
     name = detail.name || name;
     author = detail.author || author;
+    detail = {
+      ...detail,
+      tocUrl,
+      bookUrl,
+      name,
+      author,
+    };
 
     if (!config.checkCategory) return next;
 
     report("┌获取目录");
     const tocLogs: string[] = [];
-    const toc = await getChapterList(source, tocUrl, bookUrl, tocLogs);
+    const toc = await getChapterList(source, detail, tocLogs);
     const chapters = toc
       .filter((ch) => !(ch.isVolume && ch.url.startsWith(ch.title)))
       .slice(0, 2);
@@ -271,7 +278,7 @@ async function checkBook(
     const content = await getChapterContent(
       source,
       first.url,
-      { name, author, bookUrl, tocUrl },
+      detail,
       { title: first.title, url: first.url },
       contentLogs,
       nextChapterUrl,

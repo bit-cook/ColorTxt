@@ -18,7 +18,7 @@ import {
 } from "../composables/useBookSource";
 import type {
   BookChapter,
-  BookDetail,
+  Book,
   BookSourceRecord,
   SearchBookItem,
 } from "@shared/bookSource/types";
@@ -28,7 +28,10 @@ import { useFindBookBookshelf } from "../composables/useFindBookBookshelf";
 import { useChapterCacheMarks } from "../composables/useChapterCacheMarks";
 import { confirmClearBookChapterCache } from "../services/clearBookChapterCache";
 import { sortContentChaptersDisplay } from "../sortContentChaptersDisplay";
-import { bookshelfBookKey } from "../findBookBookshelf";
+import {
+  bookshelfBookKey,
+  updateFindBookBookshelfBookInfo,
+} from "../findBookBookshelf";
 import { useAnchoredAppShellMenu } from "../../composables/useAnchoredAppShellMenu";
 import {
   formatBookAuthor,
@@ -36,6 +39,7 @@ import {
   getBookKindList,
 } from "../bookSourceDisplay";
 import { resolveFirstChapterContentIndex } from "../chapterReadingOrder";
+import { resolveLatestChapterTitleFromToc } from "../findBookshelfDisplay";
 import type { BookSourceEditTab } from "../editBookSourceFields";
 
 /** 与 .bookDetailChapterItem 固定行高一致（外层滚动虚拟列表） */
@@ -49,7 +53,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   fileDownloaded: [filePath: string, size: number];
-  readChapter: [payload: { index: number; detail: BookDetail; chapters: BookChapter[] }];
+  readChapter: [payload: { index: number; detail: Book; chapters: BookChapter[] }];
   chapterCacheCleared: [];
 }>();
 
@@ -188,7 +192,8 @@ const latestChapterIsVip = computed(() => {
   const list = chapters.value.filter((ch) => !ch.isVolume);
   if (!list.length) return false;
   // 目录数组始终「最新在前」，与展示排序无关
-  return Boolean(list[0]?.isVip);
+  const ch = list[0];
+  return Boolean(ch?.isVip || ch?.isPay);
 });
 const displayUpdateTime = computed(() => detail.value?.updateTime ?? "");
 const kindTags = computed(() => {
@@ -212,7 +217,12 @@ const breadcrumbSourceName = computed(
   () => displayItem.value?.originName?.trim() ?? "",
 );
 
-const { books, toggle: toggleBookshelf, updateReadProgress } = useFindBookBookshelf();
+const {
+  books,
+  toggle: toggleBookshelf,
+  updateReadProgress,
+  applyBooks,
+} = useFindBookBookshelf();
 
 const inBookshelf = computed(() => {
   const item = props.item;
@@ -276,6 +286,8 @@ const canStartReading = computed(
 function buildShelfItem(): SearchBookItem | null {
   const item = props.item;
   if (!item) return null;
+  // 有目录时用最新章标题入库（对齐 Legado）
+  const tocLatest = resolveLatestChapterTitleFromToc(chapters.value);
   return {
     ...item,
     name: displayName.value,
@@ -283,7 +295,7 @@ function buildShelfItem(): SearchBookItem | null {
     intro: detail.value?.intro ?? item.intro,
     coverUrl: displayCover.value || item.coverUrl,
     coverSourceUrl: detail.value?.coverSourceUrl ?? item.coverSourceUrl,
-    lastChapter: displayLastChapter.value || item.lastChapter,
+    lastChapter: tocLatest || displayLastChapter.value || item.lastChapter,
     kind: detail.value?.kind ?? item.kind,
     wordCount: detail.value?.wordCount ?? item.wordCount,
   };
@@ -295,6 +307,15 @@ function onToggleBookshelf() {
   const added = toggleBookshelf(item, {
     updateTime: detail.value?.updateTime?.trim() || undefined,
   });
+  // 放入时同步目录缓存，触发 lastChapter 写回最新章标题（对齐 Legado）
+  if (added && chapters.value.length && item.bookUrl && item.origin) {
+    const next = updateFindBookBookshelfBookInfo(item.bookUrl, item.origin, {
+      tocUrl: detail.value?.tocUrl || item.tocUrl,
+      chapters: chapters.value,
+      lastChapter: item.lastChapter,
+    });
+    if (next) applyBooks(next);
+  }
   appToast(added ? "已放入书架" : "已从书架移除");
 }
 
@@ -867,13 +888,14 @@ async function onDownloadOrStop() {
                 v-if="displayChapters[index]"
                 class="bookDetailChapterItem"
                 :class="{
-                  'bookDetailChapterItem--vip': displayChapters[index].isVip,
+                  'bookDetailChapterItem--vip':
+                    displayChapters[index].isVip || displayChapters[index].isPay,
                   'bookDetailChapterItem--clickable': !loading && !!detail,
                 }"
                 @click="onReadChapter(index)"
               >
                 <span
-                  v-if="displayChapters[index].isVip"
+                  v-if="displayChapters[index].isVip || displayChapters[index].isPay"
                   class="bookDetailChapterLock"
                   v-html="icons.lock"
                   aria-label="VIP"

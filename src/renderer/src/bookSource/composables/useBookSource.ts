@@ -5,11 +5,12 @@ import type {
   BookSourceListItem,
   BookSourceRecord,
   BookSourceSearchEvent,
-  BookDetail,
+  Book,
   BookChapter,
   SearchBookItem,
 } from "@shared/bookSource/types";
 import { parseBookSourceJson } from "@shared/bookSource/types";
+import { searchBookToBook } from "@shared/bookSource/bookModel";
 import { appPrompt } from "../../services/appDialog";
 
 /** IPC 只能传递可结构化克隆的纯对象，需剥离 Vue 响应式代理 */
@@ -429,7 +430,7 @@ export function useBookSourceDetail() {
   const loading = ref(false);
   const error = ref("");
   const logs = ref<string[]>([]);
-  const detail = ref<BookDetail | null>(null);
+  const detail = ref<Book | null>(null);
   const chapters = ref<BookChapter[]>([]);
 
   async function load(item: SearchBookItem) {
@@ -439,27 +440,32 @@ export function useBookSourceDetail() {
     detail.value = null;
     chapters.value = [];
     try {
+      const seed = searchBookToBook(item);
       const infoRes = await window.colorTxt.bookSourceGetBookInfo({
         bookSourceUrl: item.origin,
-        bookUrl: item.bookUrl,
-        name: item.name,
-        author: item.author,
-        kind: item.kind,
-        wordCount: item.wordCount,
-        intro: item.intro,
-        lastChapter: item.lastChapter,
-        coverUrl: item.coverUrl,
+        bookUrl: seed.bookUrl,
+        name: seed.name,
+        author: seed.author,
+        kind: seed.kind,
+        wordCount: seed.wordCount,
+        intro: seed.intro,
+        lastChapter: seed.lastChapter,
+        coverUrl: seed.coverUrl,
       });
       if (infoRes.logs?.length) logs.value = infoRes.logs;
       if (infoRes.message || !infoRes.detail) {
         error.value = infoRes.message ?? "加载书籍信息失败";
         return;
       }
-      detail.value = infoRes.detail;
+      const book: Book = {
+        ...infoRes.detail,
+        origin: item.origin,
+        originName: item.originName,
+      };
+      detail.value = book;
       const tocRes = await window.colorTxt.bookSourceGetChapterList({
         bookSourceUrl: item.origin,
-        bookUrl: infoRes.detail.bookUrl,
-        tocUrl: infoRes.detail.tocUrl,
+        book,
       });
       if (tocRes.logs?.length) logs.value = [...logs.value, ...tocRes.logs];
       if (tocRes.message) {
@@ -501,10 +507,7 @@ export function useBookSourceChapterContent() {
 
   async function load(payload: {
     bookSourceUrl: string;
-    bookUrl: string;
-    tocUrl: string;
-    name: string;
-    author: string;
+    book: Book;
     chapterUrl: string;
     chapterTitle: string;
     chapterIndex: number;

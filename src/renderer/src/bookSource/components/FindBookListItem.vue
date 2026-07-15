@@ -7,6 +7,9 @@ import {
   formatBookIntroForDisplay,
   getBookKindList,
 } from "../bookSourceDisplay";
+import { useFindBookBookshelf } from "../composables/useFindBookBookshelf";
+import { isBookshelfCaughtUpToLatest } from "../findBookshelfDisplay";
+import { icons } from "../../icons";
 
 const props = withDefaults(
   defineProps<{
@@ -27,6 +30,8 @@ const emit = defineEmits<{
   click: [item: SearchBookItem];
   coverError: [item: SearchBookItem];
 }>();
+
+const { findBookshelfBook } = useFindBookBookshelf();
 
 const coverLoadFailed = ref(false);
 
@@ -61,6 +66,20 @@ const showCoverPending = computed(
     props.coverPending,
 );
 
+const shelfBook = computed(() =>
+  findBookshelfBook(props.item.bookUrl, props.item.origin),
+);
+
+/** 已在书架且已读至最新 → 成功角标；否则书架角标 */
+const coverBadge = computed((): "caughtUp" | "onShelf" | null => {
+  const shelf = shelfBook.value;
+  if (!shelf) return null;
+  if (isBookshelfCaughtUpToLatest(shelf)) {
+    return "caughtUp";
+  }
+  return "onShelf";
+});
+
 watch(
   () => [props.coverUrl, props.item.coverUrl, props.item.id] as const,
   () => {
@@ -85,27 +104,43 @@ function onCoverLoad(e: Event) {
 
 <template>
   <li class="findBookListItem" @click="onClick">
-    <DefaultBookCover
-      v-if="showDefaultCover"
-      class="findBookListItemCover"
-      :title="item.name"
-      :author="item.author"
+    <span
+      v-if="coverBadge === 'caughtUp'"
+      class="findBookCoverBadge findBookCoverBadge--caughtUp"
+      title="已读至最新章节"
+      aria-label="已读至最新章节"
+      v-html="icons.ok"
     />
-    <div
-      v-else-if="showCoverPending"
-      class="findBookListItemCover findBookListItemCover--pending"
-      aria-hidden="true"
+    <span
+      v-else-if="coverBadge === 'onShelf'"
+      class="findBookCoverBadge findBookCoverBadge--onShelf"
+      title="已在书架"
+      aria-label="已在书架"
+      v-html="icons.bookshelf"
     />
-    <img
-      v-else
-      class="findBookListItemCover"
-      :src="displayCoverUrl"
-      alt=""
-      loading="lazy"
-      referrerpolicy="no-referrer"
-      @error="onCoverError"
-      @load="onCoverLoad"
-    />
+    <div class="findBookListItemCoverWrap">
+      <DefaultBookCover
+        v-if="showDefaultCover"
+        class="findBookListItemCover"
+        :title="item.name"
+        :author="item.author"
+      />
+      <div
+        v-else-if="showCoverPending"
+        class="findBookListItemCover findBookListItemCover--pending"
+        aria-hidden="true"
+      />
+      <img
+        v-else
+        class="findBookListItemCover"
+        :src="displayCoverUrl"
+        alt=""
+        loading="lazy"
+        referrerpolicy="no-referrer"
+        @error="onCoverError"
+        @load="onCoverLoad"
+      />
+    </div>
     <div class="findBookListItemMain">
       <div v-if="showOrigin" class="findBookListItemHead">
         <div class="findBookListItemTitle">{{ item.name }}</div>
@@ -136,6 +171,7 @@ function onCoverLoad(e: Event) {
 
 <style scoped>
 .findBookListItem {
+  position: relative;
   display: flex;
   gap: 10px;
   padding: 10px;
@@ -149,11 +185,49 @@ function onCoverLoad(e: Event) {
 .findBookListItem:hover {
   box-shadow: 0 2px 8px color-mix(in srgb, var(--fg) 12%, transparent);
 }
+.findBookListItemCoverWrap {
+  flex-shrink: 0;
+  width: 76px;
+  height: 102px;
+}
 .findBookListItemCover {
   width: 76px;
   height: 102px;
   border-radius: 4px;
   flex-shrink: 0;
+  display: block;
+}
+.findBookCoverBadge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 3px 0 0 3px;
+  border-radius: 7px 0 0 0;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  color: #fff;
+  pointer-events: none;
+  user-select: none;
+}
+.findBookCoverBadge--caughtUp {
+  background: var(--success);
+}
+.findBookCoverBadge--onShelf {
+  background: var(--accent);
+}
+.findBookCoverBadge :deep(svg) {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+.findBookCoverBadge :deep(svg path) {
+  fill: currentColor;
 }
 img.findBookListItemCover {
   object-fit: cover;

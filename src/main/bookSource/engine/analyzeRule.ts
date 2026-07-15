@@ -13,10 +13,13 @@ import {
   isLegadoAttrExtract,
   hasLegadoSegmentIndex,
   loadCheerioHtml,
+  parseLegadoResultExtract,
   parseLegadoSelectorSegment,
   pickElements,
+  pickLegadoResultByIndex,
   queryLegadoSelectorSegment,
   splitRuleRegexSuffix,
+  trimLegadoRulePreservingRegexReplace,
   normalizeTagListTextRule,
   extractIndexedSpanTextFromListItems,
   extractTagListLabelsFromHtml,
@@ -31,6 +34,7 @@ import {
   isLegadoAttrSelectorSegment,
   queryLegadoAttrSelector,
 } from "./legadoAttrSelector";
+import { cheerioToJsoupList } from "./legadoJsoupShim";
 import {
   looksLikeLegadoRegexRule,
   parseRegexRuleList,
@@ -89,10 +93,11 @@ function coerceLegadoRuleString(value: unknown): string {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
+    // 对齐 Legado：列表用换行拼接（勿用逗号，否则 URL 数组 / tagList 会被拆坏）
     return value
       .map((v) => coerceLegadoMediaUrl(v))
       .filter(Boolean)
-      .join(",");
+      .join("\n");
   }
   if (typeof value === "object") {
     const s = coerceJavaString(value).trim();
@@ -194,7 +199,7 @@ export class AnalyzeRule {
     rule: string | undefined | null,
     mContent?: unknown,
   ): Promise<string> {
-    const normalized = rule?.trim() ?? "";
+    const normalized = trimLegadoRulePreservingRegexReplace(rule ?? "");
     if (normalized && isTagListTextRule(normalized)) {
       const content = mContent ?? this.content;
       const html = typeof content === "string" ? content : String(content ?? "");
@@ -300,21 +305,23 @@ export class AnalyzeRule {
     rule: string,
     mContent?: unknown,
   ): Promise<string> {
-    const { cleanRule, putMap } = parsePutMapFromRule(rule.trim());
+    const normalized = trimLegadoRulePreservingRegexReplace(rule);
+    const { cleanRule, putMap } = parsePutMapFromRule(normalized);
     if (Object.keys(putMap).length > 0) {
       await this.evalPutMap(putMap, mContent);
     }
-    const trimmed = cleanRule.trim();
-    return trimmed || rule.trim();
+    const kept = trimLegadoRulePreservingRegexReplace(cleanRule);
+    return kept || normalized;
   }
 
   private applyPutFromFullRuleSync(rule: string, mContent?: unknown): string {
-    const { cleanRule, putMap } = parsePutMapFromRule(rule.trim());
+    const normalized = trimLegadoRulePreservingRegexReplace(rule);
+    const { cleanRule, putMap } = parsePutMapFromRule(normalized);
     if (Object.keys(putMap).length > 0) {
       this.evalPutMapSync(putMap, mContent);
     }
-    const trimmed = cleanRule.trim();
-    return trimmed || rule.trim();
+    const kept = trimLegadoRulePreservingRegexReplace(cleanRule);
+    return kept || normalized;
   }
 
   async getString(rule: string | undefined | null, mContent?: unknown): Promise<string> {
@@ -364,8 +371,31 @@ export class AnalyzeRule {
     const parseRule = await this.applyPutFromFullRule(rule, content);
     // 对齐 Legado：含 @js 时整条走规则链（段内 ## 由 getOne 处理）
     if (/(?:@js:|<js>|@webjs:)/i.test(parseRule)) {
-      const s = await this.getStringChain(parseRule, content);
-      return s ? splitStringListLines(s) : [];
+      const prevChain = this.chainItemContext;
+      this.chainItemContext = content;
+      try {
+        const rules = splitSourceRule(parseRule);
+        let result: unknown = content;
+        for (const r of rules) {
+          result = await this.evalStringChainSegment(r, result);
+        }
+        if (Array.isArray(result)) {
+          return result
+            .flatMap((v) => {
+              if (v == null) return [];
+              if (Array.isArray(v)) {
+                return v.map((x) => String(x ?? "").trim()).filter(Boolean);
+              }
+              const s = String(v).trim();
+              return s ? [s] : [];
+            })
+            .filter(Boolean);
+        }
+        const s = coerceLegadoRuleString(result);
+        return s ? splitStringListLines(s) : [];
+      } finally {
+        this.chainItemContext = prevChain;
+      }
     }
 
     if (shouldSplitOrAlternatives(parseRule)) {
@@ -436,8 +466,31 @@ export class AnalyzeRule {
     const content = mContent ?? this.content;
     const parseRule = this.applyPutFromFullRuleSync(rule, content);
     if (/(?:@js:|<js>|@webjs:)/i.test(parseRule)) {
-      const s = this.getStringChainSync(parseRule, content);
-      return s ? splitStringListLines(s) : [];
+      const prevChain = this.chainItemContext;
+      this.chainItemContext = content;
+      try {
+        const rules = splitSourceRule(parseRule);
+        let result: unknown = content;
+        for (const r of rules) {
+          result = this.evalStringChainSegmentSync(r, result);
+        }
+        if (Array.isArray(result)) {
+          return result
+            .flatMap((v) => {
+              if (v == null) return [];
+              if (Array.isArray(v)) {
+                return v.map((x) => String(x ?? "").trim()).filter(Boolean);
+              }
+              const s = String(v).trim();
+              return s ? [s] : [];
+            })
+            .filter(Boolean);
+        }
+        const s = coerceLegadoRuleString(result);
+        return s ? splitStringListLines(s) : [];
+      } finally {
+        this.chainItemContext = prevChain;
+      }
     }
 
     if (shouldSplitOrAlternatives(parseRule)) {
@@ -543,9 +596,9 @@ export class AnalyzeRule {
     try {
       const rules = splitSourceRule(rule);
       let result: unknown = mContent ?? this.content;
+      // 空串不打断：后续 @js 可用 baseUrl 兜底
       for (const r of rules) {
         result = await this.evalStringChainSegment(r, result);
-        if (result == null || result === "") break;
       }
       return coerceLegadoRuleString(result);
     } finally {
@@ -561,7 +614,6 @@ export class AnalyzeRule {
       let result: unknown = mContent ?? this.content;
       for (const r of rules) {
         result = this.evalStringChainSegmentSync(r, result);
-        if (result == null || result === "") break;
       }
       return coerceLegadoRuleString(result);
     } finally {
@@ -580,9 +632,17 @@ export class AnalyzeRule {
     }
     const rules = splitSourceRule(rule);
     let result: unknown = mContent ?? this.content;
-    for (const r of rules) {
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i]!;
+      const nextIsJs =
+        i + 1 < rules.length && isLegadoJsRule(rules[i + 1]!);
       result = await this.getOne(r, result, true);
-      if (result == null || result === "" || (Array.isArray(result) && result.length === 0)) {
+      if (
+        !nextIsJs &&
+        (result == null ||
+          result === "" ||
+          (Array.isArray(result) && result.length === 0))
+      ) {
         break;
       }
     }
@@ -603,9 +663,17 @@ export class AnalyzeRule {
     }
     const rules = splitSourceRule(rule);
     let result: unknown = mContent ?? this.content;
-    for (const r of rules) {
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i]!;
+      const nextIsJs =
+        i + 1 < rules.length && isLegadoJsRule(rules[i + 1]!);
       result = this.getOneSync(r, result, true);
-      if (result == null || result === "" || (Array.isArray(result) && result.length === 0)) {
+      if (
+        !nextIsJs &&
+        (result == null ||
+          result === "" ||
+          (Array.isArray(result) && result.length === 0))
+      ) {
         break;
       }
     }
@@ -964,7 +1032,7 @@ export class AnalyzeRule {
   }
 
   private async getOne(rule: string, content: unknown, list = false): Promise<unknown> {
-    const trimmed = rule.trim();
+    const trimmed = trimLegadoRulePreservingRegexReplace(rule);
     if (!trimmed) return content;
 
     const putResolved = await this.applyPutPrefixRule(trimmed, content);
@@ -1103,7 +1171,7 @@ export class AnalyzeRule {
 
   /** Legado/Rhino 规则 JS 内 getOne 须同步阻塞（与 java.getStringList 一致） */
   private getOneSync(rule: string, content: unknown, list = false): unknown {
-    const trimmed = rule.trim();
+    const trimmed = trimLegadoRulePreservingRegexReplace(rule);
     if (!trimmed) return content;
 
     const putResolved = this.applyPutPrefixRuleSync(trimmed, content);
@@ -1450,9 +1518,21 @@ export class AnalyzeRule {
         return Array.isArray(results) ? results : [results];
       }
       if (Array.isArray(results)) {
-        const joinMulti = path.includes("..") || path.includes("[*]");
+        // 对齐 Legado：标量数组整表 join（如 $.tagList），勿只取 [0]
+        const allScalar = results.every(
+          (v) =>
+            v == null ||
+            typeof v === "string" ||
+            typeof v === "number" ||
+            typeof v === "boolean",
+        );
+        const joinMulti =
+          allScalar || path.includes("..") || path.includes("[*]");
         if (joinMulti) {
-          const sep = path.includes("[*]") && !path.includes("..") ? "," : "\n";
+          const sep =
+            path.includes("[*]") && !path.includes("..") && !allScalar
+              ? ","
+              : "\n";
           return results.map((v) => String(v ?? "")).filter(Boolean).join(sep);
         }
         const first = results[0] ?? "";
@@ -1557,13 +1637,13 @@ export class AnalyzeRule {
     if (atParts.length < 2) return [];
 
     let extract: string | null = null;
+    let resultIndex: number | undefined;
     let selectorSegs = atParts;
     const lastPart = atParts[atParts.length - 1];
-    if (lastPart && isLegadoExtractType(lastPart)) {
-      extract = lastPart;
-      selectorSegs = atParts.slice(0, -1);
-    } else if (lastPart && isLegadoAttrExtract(lastPart)) {
-      extract = `[${lastPart}]`;
+    const parsedExtract = lastPart ? parseLegadoResultExtract(lastPart) : null;
+    if (parsedExtract) {
+      extract = parsedExtract.extract;
+      resultIndex = parsedExtract.resultIndex;
       selectorSegs = atParts.slice(0, -1);
     }
     if (!extract || selectorSegs.length !== 1) return [];
@@ -1584,7 +1664,7 @@ export class AnalyzeRule {
       const v = extractFromElement($(el), extract!).trim();
       if (v) out.push(v);
     });
-    return out;
+    return pickLegadoResultByIndex(out, resultIndex);
   }
 
   private byLegadoDefaultSingle(rule: string, content: unknown, list: boolean): unknown {
@@ -1626,13 +1706,13 @@ export class AnalyzeRule {
     }
 
     let extract: string | null = null;
+    let resultIndex: number | undefined;
     let selectorSegs = atParts;
     const lastPart = atParts[atParts.length - 1];
-    if (lastPart && isLegadoExtractType(lastPart)) {
-      extract = lastPart;
-      selectorSegs = atParts.slice(0, -1);
-    } else if (lastPart && isLegadoAttrExtract(lastPart)) {
-      extract = `[${lastPart}]`;
+    const parsedExtract = lastPart ? parseLegadoResultExtract(lastPart) : null;
+    if (parsedExtract) {
+      extract = parsedExtract.extract;
+      resultIndex = parsedExtract.resultIndex;
       selectorSegs = atParts.slice(0, -1);
     }
 
@@ -1700,7 +1780,8 @@ export class AnalyzeRule {
           const v = extractFromElement($(el), extract).trim();
           if (v) out.push(v);
         });
-        return list ? out : out.join("\n");
+        const picked = pickLegadoResultByIndex(out, resultIndex);
+        return list ? picked : legadoJoinResultTexts(picked);
       }
       value = extractFromElement(current, extract);
     } else {
@@ -1744,7 +1825,8 @@ export class AnalyzeRule {
     const els = $(sel);
     if (!els.length) return list ? [] : "";
     if (list) {
-      return elementsToHtmlList(els, $);
+      // 供后续 @js：`$[i].select()`（对齐 Legado Elements）；普通列表字段仍靠 toString→outerHtml
+      return cheerioToJsoupList($, els);
     }
     return extractFromElement(els.first(), extract);
   }
@@ -1753,6 +1835,66 @@ export class AnalyzeRule {
     rule: string | undefined | null,
     mContent?: unknown,
   ): Promise<string[]> {
+    if (!rule?.trim()) return [];
+    const content = mContent ?? this.content;
+    const parseRule = await this.applyPutFromFullRule(rule, content);
+    // @js 返回 string[] 时保留列表（对齐 Legado getStringList isUrl），勿先拼成单串
+    if (/(?:@js:|<js>|@webjs:)/i.test(parseRule)) {
+      const prevChain = this.chainItemContext;
+      this.chainItemContext = content;
+      try {
+        const rules = splitSourceRule(parseRule);
+        let result: unknown = content;
+        for (const r of rules) {
+          result = await this.evalStringChainSegment(r, result);
+        }
+        if (Array.isArray(result)) {
+          const out: string[] = [];
+          for (const item of result) {
+            const u = this.resolveAbsoluteRuleUrl(String(item ?? "").trim());
+            if (u) out.push(u);
+          }
+          return out;
+        }
+        const raw = coerceLegadoRuleString(result).trim();
+        if (!raw) return [];
+        if (/,\s*\{/.test(raw)) {
+          const u = this.resolveAbsoluteRuleUrl(raw);
+          return u ? [u] : [];
+        }
+        const out: string[] = [];
+        for (const line of splitStringListLines(raw)) {
+          const u = this.resolveAbsoluteRuleUrl(line);
+          if (u) out.push(u);
+        }
+        return out;
+      } finally {
+        this.chainItemContext = prevChain;
+      }
+    }
+
+    const raw = (await this.getString(rule, mContent)).trim();
+    if (!raw) return [];
+    // 含 UrlOption 的整段可跨行，不可按行拆成多条
+    if (/,\s*\{/.test(raw)) {
+      const chunks = raw
+        .split(/\n\s*\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const out: string[] = [];
+      for (const chunk of chunks.length ? chunks : [raw]) {
+        if (/,\s*\{/.test(chunk)) {
+          const u = this.resolveAbsoluteRuleUrl(chunk);
+          if (u) out.push(u);
+          continue;
+        }
+        for (const line of chunk.split(/[\r\n]+/)) {
+          const u = this.resolveAbsoluteRuleUrl(line.trim());
+          if (u) out.push(u);
+        }
+      }
+      return out;
+    }
     const list = await this.getStringList(rule, mContent);
     const out: string[] = [];
     for (const item of list) {
@@ -1785,15 +1927,30 @@ export class AnalyzeRule {
       const base = normalizeBookSourceBaseUrl(
         this.redirectUrl || this.baseUrl || this.source?.bookSourceUrl || "",
       );
+      // UrlOption 后缀已拆出；相对路径不含换行。多行 href 误入时只取首行
       path = resolveAbsoluteUrl(base, path);
     }
     return path + suffix;
   }
 
   async getUrl(rule: string, content?: unknown): Promise<string> {
-    let u = await this.getString(rule, content);
-    if (!u) return "";
-    return this.resolveAbsoluteRuleUrl(u);
+    const raw = (await this.getString(rule, content)).trim();
+    if (!raw) return "";
+    /**
+     * 搜索/详情 bookUrl 常为多行 UrlOption：
+     * `https://host/path,{\n  "body":'{"bookId":"1"}',\n  "method":"POST"\n}`
+     * 不可走 getStringList 按换行切开（会只剩 `…/path,{`，bookId 丢失）。
+     */
+    if (/,\s*\{/.test(raw)) {
+      return this.resolveAbsoluteRuleUrl(raw);
+    }
+    // 多条普通 href 换行拼接（如 a@href）：取第一条
+    const first =
+      raw
+        .split(/[\r\n]+/)
+        .map((s) => s.trim())
+        .find(Boolean) ?? "";
+    return first ? this.resolveAbsoluteRuleUrl(first) : "";
   }
 }
 
@@ -1811,9 +1968,16 @@ function jsonPathFromContent(path: string, content: unknown): string {
   try {
     const results = JSONPath({ path: jsonPath, json: data as object, wrap: false });
     if (Array.isArray(results)) {
-      const joinMulti = jsonPath.includes("..") || jsonPath.includes("[*]");
+      // 对齐 Legado：数组结果用换行拼接（含 $.data.Content[0].Content 字符串数组）
+      const allScalar = results.every(
+        (v) => v == null || typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+      );
+      const joinMulti =
+        allScalar || jsonPath.includes("..") || jsonPath.includes("[*]");
       if (joinMulti) {
-        const sep = jsonPath.includes("[*]") && !jsonPath.includes("..") ? "," : "\n";
+        const sep = jsonPath.includes("[*]") && !jsonPath.includes("..") && !allScalar
+          ? ","
+          : "\n";
         return results.map((v) => coerceLegadoMediaUrl(v)).filter(Boolean).join(sep);
       }
       return coerceLegadoMediaUrl(results[0]);
@@ -1846,7 +2010,9 @@ function jsonPathWithLegacyResponseFallback(path: string, content: unknown): str
 function expandLegadoTemplateJsonPathExpr(expr: string, content: unknown): string {
   const alts = expr.split("||").map((s) => s.trim()).filter(Boolean);
   for (const alt of alts) {
-    const pathPart = alt.split("##")[0]?.trim() ?? alt;
+    // 对齐 Legado：`{{$.docId##.*_}}` 先取 JsonPath，再套用 ## 替换
+    const { baseRule, regex } = splitRuleRegexSuffix(alt);
+    const pathPart = baseRule.trim();
     if (
       !pathPart.startsWith("$.") &&
       !pathPart.startsWith("$..") &&
@@ -1854,15 +2020,19 @@ function expandLegadoTemplateJsonPathExpr(expr: string, content: unknown): strin
     ) {
       continue;
     }
+    let val = "";
     if (isPlainRuleObject(content)) {
-      const val = readJsonField(content as Record<string, unknown>, pathPart);
-      if (val) return val;
+      val = readJsonField(content as Record<string, unknown>, pathPart);
     }
-    const val = jsonPathWithLegacyResponseFallback(pathPart, content);
+    if (!val) {
+      val = jsonPathWithLegacyResponseFallback(pathPart, content);
+    }
+    if (val && regex) val = applyRuleRegexImpl(val, regex);
     if (val) return val;
   }
   if (alts.length === 1 && isJsonItemContent(content)) {
-    const pathPart = alts[0]!.split("##")[0]?.trim() ?? alts[0]!;
+    const { baseRule } = splitRuleRegexSuffix(alts[0]!);
+    const pathPart = baseRule.trim();
     const nestedFallback: Record<string, string> = {
       "$.blogId": "$.blogInfo.blogId",
       "$.blogName": "$.blogInfo.blogName",

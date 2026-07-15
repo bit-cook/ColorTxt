@@ -8,6 +8,8 @@ import {
   formatBookshelfLastRead,
   formatBookshelfLatestChapter,
   isBookshelfCaughtUpToLatest,
+  isBookshelfLastReadChapterVip,
+  isBookshelfLatestChapterVip,
 } from "../findBookshelfDisplay";
 import { SORTABLE_ROW_HANDLE_CLASS } from "../../composables/useSortableReorder";
 import { icons } from "../../icons";
@@ -78,6 +80,10 @@ const lastReadText = computed(
 );
 const caughtUpToLatest = computed(() =>
   isBookshelfCaughtUpToLatest(props.item, lastReadText.value),
+);
+const latestChapterVip = computed(() => isBookshelfLatestChapterVip(props.item));
+const lastReadChapterVip = computed(() =>
+  isBookshelfLastReadChapterVip(props.item),
 );
 const updateDisabled = computed(() => props.item.canUpdate === false);
 
@@ -166,10 +172,20 @@ function onRemoveClick(e: MouseEvent) {
         <div class="findBookListItemTitle">{{ item.name }}</div>
         <div class="findBookListItemAuthor">{{ formatBookAuthor(item.author) }}</div>
         <div class="findBookListItemLatest">
-          最新章节：<span :title="latestChapterText">{{ latestChapterText }}</span>
+          最新章节：<span
+            v-if="latestChapterVip"
+            class="findBookshelfChapterLock"
+            v-html="icons.lock"
+            aria-hidden="true"
+          /><span :title="latestChapterText">{{ latestChapterText }}</span>
         </div>
         <div class="findBookListItemLatest">
-          最后阅读：<span :title="lastReadText">{{ lastReadText }}</span>
+          最后阅读：<span
+            v-if="lastReadChapterVip"
+            class="findBookshelfChapterLock"
+            v-html="icons.lock"
+            aria-hidden="true"
+          /><span :title="lastReadText">{{ lastReadText }}</span>
         </div>
         <div v-if="item.originName" class="findBookListItemOrigin">{{ item.originName }}</div>
       </div>
@@ -501,6 +517,21 @@ img.findBookListItemCover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.findBookshelfChapterLock {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -0.15em;
+  margin-right: 4px;
+  color: var(--warning);
+}
+.findBookshelfChapterLock :deep(svg) {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.findBookshelfChapterLock :deep(svg path) {
+  fill: currentColor;
 }
 .findBookListItemLatest:last-child {
   margin-bottom: 0;

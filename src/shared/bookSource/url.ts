@@ -50,7 +50,31 @@ export function resolveAbsoluteUrl(
   baseUrl: string,
   relativePath: string,
 ): string {
-  const rel = relativePath.trim();
+  const trimmed = relativePath.trim();
+  /**
+   * UrlOption 常跨行：`/path,{\n  "body":…\n}`。
+   * 不可只取首行（会剩 `…,{`），也不能把整段交给 URL()。
+   */
+  if (/,\s*\{/.test(trimmed)) {
+    const optIdx = /,\s*(?=\{)/.exec(trimmed)?.index;
+    if (optIdx != null && optIdx > 0) {
+      const pathOnly = trimmed.slice(0, optIdx).trim().split(/\r?\n/)[0]?.trim() ?? "";
+      const suffix = trimmed.slice(optIdx);
+      const base = normalizeBookSourceBaseUrl(baseUrl);
+      if (/^https?:\/\//i.test(pathOnly)) return pathOnly + suffix;
+      if (pathOnly.startsWith("data:") || pathOnly.startsWith("javascript")) {
+        return pathOnly + suffix;
+      }
+      if (!base) return pathOnly + suffix;
+      try {
+        return new URL(pathOnly, base).href + suffix;
+      } catch {
+        return pathOnly + suffix;
+      }
+    }
+  }
+  // 多行相对路径（如 a@href 命中多链后 join）不可整体交给 URL()，否则会拼出 /a//b//c
+  const rel = trimmed.split(/\r?\n/)[0]?.trim() ?? "";
   const base = normalizeBookSourceBaseUrl(baseUrl);
   if (!base) return rel;
   if (/^https?:\/\//i.test(rel)) return rel;

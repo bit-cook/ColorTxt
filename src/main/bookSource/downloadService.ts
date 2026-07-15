@@ -120,20 +120,10 @@ async function runDownload(
       req.author,
       logs,
     );
-    const chapters = await getChapterList(
-      source,
-      detail.tocUrl,
-      req.bookUrl,
-      logs,
-    );
+    const chapters = await getChapterList(source, detail, logs);
     const contentChapters = contentChaptersInReadingOrder(chapters);
     const total = contentChapters.length;
-    const book = {
-      name: detail.name,
-      author: detail.author,
-      bookUrl: req.bookUrl,
-      tocUrl: detail.tocUrl,
-    };
+    const book = detail;
 
     emit({
       downloadId,

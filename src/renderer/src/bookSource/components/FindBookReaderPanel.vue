@@ -25,7 +25,7 @@ import AppShellMenuTeleport from "../../components/AppShellMenuTeleport.vue";
 import { icons } from "../../icons";
 import type {
   BookChapter,
-  BookDetail,
+  Book,
   BookSourceRecord,
   SearchBookItem,
 } from "@shared/bookSource/types";
@@ -95,7 +95,7 @@ import {
 const props = withDefaults(
   defineProps<{
     item: SearchBookItem;
-    detail: BookDetail;
+    detail: Book;
     chapters: BookChapter[];
     initialChapterIndex?: number;
     /** 书架首次打开：目录尚未就绪，阅读区内显示加载中 */
@@ -111,7 +111,7 @@ const emit = defineEmits<{
   openBookDetail: [];
   chapterCacheCleared: [];
   /** 重新获取目录后同步父级 detail/chapters */
-  tocRefreshed: [payload: { detail: BookDetail; chapters: BookChapter[] }];
+  tocRefreshed: [payload: { detail: Book; chapters: BookChapter[] }];
   openTextReplace: [];
 }>();
 
@@ -831,6 +831,9 @@ async function onToggleReaderEdit() {
   }
   voiceRead.exitVoiceRead();
   timedScroll.stopTimedScroll();
+  // 先进入编辑态再 setChapters，避免阅读态标题装饰残留（与主界面一致：编辑不渲标题样式）
+  readerEditMode.value = true;
+  await nextTick();
   // 进入编辑：直接编辑原文（文本替换只在阅读展示管线，不改 lastChapter*）
   const editText = buildEditSourceText();
   const reader = readerRef.value;
@@ -848,8 +851,6 @@ async function onToggleReaderEdit() {
       reader.setChapters([]);
     }
   }
-  readerEditMode.value = true;
-  await nextTick();
   readerRef.value?.markReaderEditSaved?.();
   readerEditorDirty.value = false;
 }
@@ -928,10 +929,12 @@ async function loadChapterAtDisplayIndex(
   try {
     const loaded = await loadChapterContent({
       bookSourceUrl: props.item.origin,
-      bookUrl: props.detail.bookUrl,
-      tocUrl: props.detail.tocUrl,
-      name: props.detail.name,
-      author: props.detail.author,
+      book: {
+        ...props.detail,
+        kind: props.detail.kind || props.item.kind || "",
+        origin: props.item.origin,
+        originName: props.item.originName,
+      },
       chapterUrl: ch.url,
       chapterTitle: ch.title,
       chapterIndex: contentIndex,
@@ -1287,8 +1290,16 @@ async function onRefreshToc() {
   try {
     const tocRes = await window.colorTxt.bookSourceGetChapterList({
       bookSourceUrl: origin,
-      bookUrl,
-      tocUrl: props.detail.tocUrl,
+      book: {
+        ...props.detail,
+        bookUrl,
+        tocUrl: props.detail.tocUrl || bookUrl,
+        kind: props.detail.kind || props.item.kind || "",
+        name: props.detail.name || props.item.name,
+        author: props.detail.author || props.item.author,
+        origin,
+        originName: props.item.originName,
+      },
     });
     if (tocRes.logs?.length) logs.value = tocRes.logs;
     if (tocRes.message) {
@@ -1301,16 +1312,17 @@ async function onRefreshToc() {
       appToast("未获取到章节", { kind: "warning" });
       return;
     }
-    const prevLatest = contentChapters.value[contentChapters.value.length - 1];
+    // 内容章「最新在前」：与 resolveLatestChapterTitleFromToc / Legado 写回一致
+    const prevLatest = contentChapters.value[0];
     const prevLatestTitle = prevLatest?.title?.trim() ?? "";
     const prevLatestUrl = prevLatest?.url ?? "";
-    const latest = contentOnly[contentOnly.length - 1]!;
+    const latest = contentOnly[0]!;
     const latestTitle = latest.title?.trim() ?? "";
     const latestUrl = latest.url ?? "";
     const latestUnchanged =
       prevLatestUrl === latestUrl && prevLatestTitle === latestTitle;
 
-    const nextDetail: BookDetail = latestTitle
+    const nextDetail: Book = latestTitle
       ? { ...props.detail, lastChapter: latestTitle }
       : props.detail;
     updateFindBookBookshelfBookInfo(bookUrl, origin, {
@@ -1951,13 +1963,18 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
                         class="sidebarItem"
                         :class="{
                           active: index === currentDisplayIndex,
-                          'sidebarItem--vip': displayChapters[index]?.isVip,
+                          'sidebarItem--vip':
+                            displayChapters[index]?.isVip ||
+                            displayChapters[index]?.isPay,
                         }"
                         :title="chapterDisplayTitle(index)"
                         @click="onChapterClick(index)"
                       >
                         <span
-                          v-if="displayChapters[index]?.isVip"
+                          v-if="
+                            displayChapters[index]?.isVip ||
+                            displayChapters[index]?.isPay
+                          "
                           class="findBookReaderChapterLock"
                           v-html="icons.lock"
                           aria-label="VIP"

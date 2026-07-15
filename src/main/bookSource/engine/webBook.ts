@@ -1,5 +1,16 @@
-import type { BookSourceRecord, SearchBookItem, BookDetail, BookChapter, BookInfoSeed } from "@shared/bookSource/types";
+import type {
+  BookSourceRecord,
+  SearchBookItem,
+  Book,
+  BookChapter,
+  BookInfoSeed,
+} from "@shared/bookSource/types";
 import { splitBookMetaTags } from "@shared/bookSource/bookMetaTags";
+import {
+  coerceBook,
+  stripNumericIdPrefix,
+  toEngineBook,
+} from "@shared/bookSource/bookModel";
 import { normalizeBookSourceBaseUrl, resolveAbsoluteUrl } from "@shared/bookSource/url";
 import { wordCountFormat } from "@shared/bookSource/wordCountFormat";
 import { formatLegadoBookAuthor } from "@shared/bookSource/formatBookAuthor";
@@ -510,6 +521,11 @@ async function parseInfoSearchItem(
   };
 }
 
+/**
+ * 对齐 Legado `BookList.getSearchItem` 字段顺序：
+ * name → author → kind → wordCount → lastChapter → intro → coverUrl → bookUrl
+ *（kind 须在 bookUrl 之前写入 AnalyzeRule.book，供 `{{book.kind}}` 使用）
+ */
 async function parseSearchItem(
   source: BookSourceRecord,
   ar: AnalyzeRule,
@@ -528,6 +544,31 @@ async function parseSearchItem(
     if (!name) return null;
     const author =
       formatLegadoBookAuthor(await ar.getString(rule.author, el)) || "未知";
+
+    const kindParts = rule.kind
+      ? await resolveBookInfoKindParts(ar, rule.kind, el)
+      : [];
+    warnSuspiciousKindTags(kindParts, logs, source.bookSourceName);
+    const kind = kindParts.length ? kindParts.join(",") : undefined;
+
+    // 先绑定 name/author/kind，再解析后续依赖 book.* 的字段（对齐 Legado setRuleData）
+    ar.setBook({ name, author, kind: kind ?? "" });
+
+    const rawWordCount = await ar.getString(rule.wordCount, el);
+    const wordCount = wordCountFormat(rawWordCount) || undefined;
+    const lastChapter =
+      formatLegadoLastChapterDisplay(await ar.getString(rule.lastChapter, el)) ||
+      undefined;
+
+    const introRaw = (await ar.getString(rule.intro, el)).trim();
+    const intro = introRaw ? formatLegadoBookIntro(introRaw) || undefined : undefined;
+
+    // 列表不预拉封面（搜索/发现条目多）；由渲染侧 useBookshelfCoverUrls 懒解析
+    const rawCover = await ar.getUrl(rule.coverUrl ?? "", el);
+    const coverSourceUrl =
+      resolveCoverSourceUrl(source, rawCover, baseUrl, logs) ?? undefined;
+    const coverUrl = coverSourceUrl;
+
     const hasBookUrlRule = Boolean(rule.bookUrl?.trim());
     let bookUrl = await ar.getUrl(rule.bookUrl ?? "", el);
     if (!bookUrl) {
@@ -545,34 +586,16 @@ async function parseSearchItem(
       );
       return null;
     }
-    const rawCover = await ar.getUrl(rule.coverUrl ?? "", el);
-    const coverSourceUrl =
-      resolveCoverSourceUrl(source, rawCover, baseUrl, logs) ?? undefined;
-    let coverUrl = coverSourceUrl
-      ? await resolveBookCoverDisplayUrl(source, rawCover, baseUrl, logs)
-      : undefined;
-    if (!coverUrl && coverSourceUrl) {
-      coverUrl = coverSourceUrl;
-    }
-    const kindParts = rule.kind
-      ? await resolveBookInfoKindParts(ar, rule.kind, el)
-      : [];
-    warnSuspiciousKindTags(kindParts, logs, source.bookSourceName);
-    const kind = kindParts.length ? kindParts.join(",") : undefined;
-    const rawWordCount = await ar.getString(rule.wordCount, el);
-    const wordCount = wordCountFormat(rawWordCount) || undefined;
-    ar.setBook({ name, author, bookUrl });
-    const introRaw = (await ar.getString(rule.intro, el)).trim();
-    const intro = introRaw ? formatLegadoBookIntro(introRaw) || undefined : undefined;
+
+    ar.setBook({ name, author, kind: kind ?? "", bookUrl });
+
     return {
       id: `${source.bookSourceUrl}::${bookUrl}::${index}`,
       name,
       author,
       kind,
       wordCount,
-      lastChapter:
-        formatLegadoLastChapterDisplay(await ar.getString(rule.lastChapter, el)) ||
-        undefined,
+      lastChapter,
       intro,
       coverUrl,
       coverSourceUrl,
@@ -585,7 +608,7 @@ async function parseSearchItem(
   }
 }
 
-export type { BookDetail, BookChapter };
+export type { Book, BookChapter };
 
 function ensureBookUrlWithHeaders(
   bookUrl: string,
@@ -602,6 +625,74 @@ function ensureBookUrlWithHeaders(
     ? JSON.stringify({ headers: opts.headers })
     : raw;
   return `${path},${tail}`;
+}
+
+/** 从 UrlOption POST body 取出 bookId */
+function extractJsonBookIdFromUrlOption(url: string): string {
+  const suffix = extractUrlFetchOptionsSuffix(url);
+  if (!suffix.startsWith(",")) return "";
+  const opts = parseLegadoUrlSuffixJson(suffix.slice(1).trim());
+  const body = opts.body?.trim() ?? "";
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body) as { bookId?: unknown };
+    const id = parsed.bookId;
+    if (id != null && String(id).trim()) return String(id).trim();
+  } catch {
+    /* body 可能仍带未展开模板 */
+  }
+  return body.match(/"bookId"\s*:\s*"(\d+)"/)?.[1] ?? "";
+}
+
+/**
+ * 仅当 book.kind 为空时从 tocUrl/bookUrl 兜底（正常路径靠详情/列表已干净的 kind）。
+ */
+export function resolveBookKindForChapterRules(
+  kind: string | undefined,
+  tocUrl: string,
+  bookUrl: string,
+): string {
+  const fromKind = kind?.trim();
+  if (fromKind) return stripNumericIdPrefix(fromKind);
+  const fromToc =
+    tocUrl.match(/[?&]bookId=([^&]+)/i)?.[1] ??
+    tocUrl.match(/[?&]book_id=([^&]+)/i)?.[1];
+  if (fromToc?.trim()) {
+    return stripNumericIdPrefix(decodeURIComponent(fromToc.trim()));
+  }
+  const fromBookUrl =
+    bookUrl.match(/[?&](?:bookId|book_id|resourceId)=([^&]+)/i)?.[1];
+  if (fromBookUrl?.trim()) {
+    return stripNumericIdPrefix(decodeURIComponent(fromBookUrl.trim()));
+  }
+  return "";
+}
+
+/**
+ * 目录阶段未带 kind 时，章节 URL 里 BookID 可能为空或带 90000001_。
+ * 拉取正文前用短 id 回填。
+ */
+export function repairChapterUrlBookId(chapterUrl: string, bookId: string): string {
+  const id = stripNumericIdPrefix(bookId);
+  if (!id || !/ads-read/i.test(chapterUrl)) return chapterUrl;
+  const comma = chapterUrl.indexOf(",{");
+  if (comma < 0) return chapterUrl;
+  const urlPart = chapterUrl.slice(0, comma);
+  const optRaw = chapterUrl.slice(comma + 1);
+  let opts: Record<string, unknown>;
+  try {
+    opts = JSON.parse(optRaw) as Record<string, unknown>;
+  } catch {
+    return chapterUrl;
+  }
+  const body = opts.body;
+  if (typeof body !== "string" || !body.includes("BookID")) return chapterUrl;
+  const nextBody = body.replace(
+    /"BookID"\s*:\s*(?:""|null|"[^"]*")/,
+    `"BookID":"${id}"`,
+  );
+  if (nextBody === body) return chapterUrl;
+  return `${urlPart},${JSON.stringify({ ...opts, body: nextBody })}`;
 }
 
 function syncLegadoHeadersForRules(
@@ -670,6 +761,21 @@ function isLikelyBadDetailName(parsed: string): boolean {
   const p = parsed.trim().toLowerCase();
   if (!p) return true;
   return /404|not\s*found|403|500|502|503|bad gateway|error|禁止|拒绝|异常/.test(p);
+}
+
+function bookInfoLooksEmpty(body: string): boolean {
+  const t = body.trim();
+  if (!t.startsWith("{")) return !t;
+  try {
+    const j = JSON.parse(t) as {
+      data?: { bookInfo?: { resourceName?: string; author?: string; summary?: string } };
+    };
+    const info = j.data?.bookInfo;
+    if (!info) return true;
+    return !String(info.resourceName ?? "").trim() && !String(info.author ?? "").trim();
+  } catch {
+    return false;
+  }
 }
 
 function bookInfoInitFailed(body: string, initRule?: string | null): boolean {
@@ -759,14 +865,14 @@ export async function getBookInfo(
   author: string,
   logs: string[] = [],
   seed: BookInfoSeed = {},
-): Promise<BookDetail> {
+): Promise<Book> {
   const host = createJsExtensionHost(source, logs);
   runJsLib(source, host);
   const resolvedBookUrl = ensureBookUrlWithHeaders(bookUrl, host);
   const { url: bookPageUrl, variables } = splitUrlAndRuleVariables(resolvedBookUrl);
   const listIntro = seed.intro?.trim() ?? "";
   if (listIntro) variables.intro = listIntro;
-  const book = {
+  const book: Book = {
     name,
     author,
     bookUrl,
@@ -779,7 +885,7 @@ export async function getBookInfo(
     variable: { ...variables },
   };
   const ar = new AnalyzeRule(source, logs, host)
-    .setBook(book)
+    .setBook(toEngineBook(book))
     .setRuleData({ variable: { ...variables } });
   syncLegadoHeadersForRules(ar, host, resolvedBookUrl, variables);
   ar.setRuleData({ variable: { ...variables } });
@@ -791,7 +897,27 @@ export async function getBookInfo(
     logs,
     ruleVariables: variables,
   });
-  const res = await analyzeUrl.getStrResponse();
+  let res = await analyzeUrl.getStrResponse();
+  // resourceId 为 90000001_数字 时 bookInfo 常空，去掉前缀重试
+  if (
+    /[?&]resourceId=\d+_\d+/i.test(resolvedBookUrl) &&
+    bookInfoLooksEmpty(res.body)
+  ) {
+    const stripped = resolvedBookUrl.replace(/([?&]resourceId=)\d+_/i, "$1");
+    if (stripped !== resolvedBookUrl) {
+      logs.push(`详情 resourceId 含前缀且响应空，重试: ${stripped.slice(0, 120)}`);
+      res = await new AnalyzeUrl({
+        mUrl: stripped,
+        baseUrl: source.bookSourceUrl,
+        source,
+        host,
+        logs,
+        ruleVariables: variables,
+      }).getStrResponse();
+      // 后续 tocUrl 拼 $..resourceID 须用短 id
+      book.bookUrl = stripped;
+    }
+  }
   const base = res.url;
   const redirectUrl = res.url;
   const rule = source.ruleBookInfo ?? {};
@@ -812,7 +938,12 @@ export async function getBookInfo(
   detailName = stripEmbeddedAuthorFromDetailName(detailName, detailAuthor);
   const kindParts = rule.kind ? await resolveBookInfoKindParts(ar, rule.kind) : [];
   const parsedKind = kindParts.length ? kindParts.join(",") : "";
-  const kind = parsedKind || book.kind;
+  // 详情落地一次规范化 kind
+  const kind = stripNumericIdPrefix(parsedKind || book.kind || "");
+  book.kind = kind;
+  book.name = detailName;
+  book.author = detailAuthor;
+  ar.setBook(toEngineBook(book));
   const rawWordCount = await resolveBookInfoField(ar, rule.wordCount);
   const wordCount =
     wordCountFormat(rawWordCount) || book.wordCount || undefined;
@@ -823,13 +954,14 @@ export async function getBookInfo(
   let intro = parsedIntro || listIntro || book.intro;
   intro = ensureLegadoIntroLeadingTitle(intro, detailName);
   const rawCover = await resolveBookInfoField(ar, rule.coverUrl);
+  const coverFetchRaw = rawCover.trim() || book.coverUrl || "";
   const coverSourceUrl =
     resolveCoverSourceUrl(source, rawCover, redirectUrl, logs) ||
     resolveCoverSourceUrl(source, book.coverUrl, redirectUrl, logs) ||
     undefined;
   const resolvedCover =
     (coverSourceUrl
-      ? await resolveBookCoverDisplayUrl(source, rawCover, redirectUrl, logs)
+      ? await resolveBookCoverDisplayUrl(source, coverFetchRaw, redirectUrl, logs)
       : undefined) ?? "";
   const coverUrl = resolvedCover || book.coverUrl;
   let updateTime = (await resolveBookInfoField(ar, rule.updateTime)).trim();
@@ -846,9 +978,23 @@ export async function getBookInfo(
     );
     if (m?.[1]) updateTime = m[1].replace(/-/g, "/");
   }
-  let tocUrl = rule.tocUrl?.trim()
-    ? (await resolveBookInfoField(ar, rule.tocUrl)).trim()
-    : "";
+  // Legado BookInfo：tocUrl 用 getString(..., isUrl=true) → 多 URL 时取首条
+  let tocUrl = "";
+  if (rule.tocUrl?.trim()) {
+    const rawToc = (await resolveBookInfoField(ar, rule.tocUrl)).trim();
+    if (rawToc) {
+      if (/,\s*\{/.test(rawToc)) {
+        tocUrl = ar.resolveAbsoluteRuleUrl(rawToc);
+      } else {
+        const first =
+          rawToc
+            .split(/[\r\n]+/)
+            .map((s) => s.trim())
+            .find(Boolean) ?? "";
+        tocUrl = first ? ar.resolveAbsoluteRuleUrl(first) : "";
+      }
+    }
+  }
   if (tocUrl && /[?&]bid=$/i.test(tocUrl)) {
     const bidFromBookUrl =
       bookPageUrl.match(/[?&]bid=([^&]+)/i)?.[1] ??
@@ -867,6 +1013,20 @@ export async function getBookInfo(
       resolvedBookUrl.match(/[?&]bookid=(\d+)/i)?.[1];
     if (bookIdFromUrl) {
       tocUrl = tocUrl.replace(/([?&]bookId=)$/i, `$1${bookIdFromUrl}`);
+    }
+  }
+  // POST body 里 `"bookId":""`（UrlOption）：从详情 URL 选项回填
+  if (tocUrl && /"bookId"\s*:\s*""/.test(tocUrl)) {
+    const bookId =
+      extractJsonBookIdFromUrlOption(resolvedBookUrl) ||
+      extractJsonBookIdFromUrlOption(bookUrl) ||
+      (typeof ar.currentContent === "object" &&
+      ar.currentContent &&
+      "bookId" in (ar.currentContent as object)
+        ? String((ar.currentContent as { bookId?: unknown }).bookId ?? "")
+        : "");
+    if (bookId) {
+      tocUrl = tocUrl.replace(/"bookId"\s*:\s*""/g, `"bookId":"${bookId}"`);
     }
   }
   if (/^@js:/i.test(tocUrl) || /^<js>/i.test(tocUrl)) {
@@ -889,7 +1049,7 @@ export async function getBookInfo(
   if (bid) {
     ar.putStored("bid", bid);
   }
-  const detail: BookDetail = {
+  const detail: Book = {
     name: detailName,
     author: detailAuthor,
     intro,
@@ -900,10 +1060,13 @@ export async function getBookInfo(
     lastChapter,
     updateTime: updateTime || undefined,
     tocUrl: tocUrl ? ensureBookUrlWithHeaders(tocUrl, host) : tocUrl,
-    bookUrl: resolvedBookUrl,
+    bookUrl: String(book.bookUrl || resolvedBookUrl),
+    origin: seed.origin,
+    originName: seed.originName,
+    variable: book.variable,
   };
   if (!detail.tocUrl?.trim()) {
-    detail.tocUrl = ensureBookUrlWithHeaders(resolvedBookUrl, host);
+    detail.tocUrl = ensureBookUrlWithHeaders(String(book.bookUrl || resolvedBookUrl), host);
   }
   return detail;
 }
@@ -1086,20 +1249,32 @@ async function fetchContentPage(
 
 export async function getChapterList(
   source: BookSourceRecord,
-  tocUrl: string,
-  bookUrl: string,
+  bookInput: Book,
   logs: string[] = [],
 ): Promise<BookChapter[]> {
   const host = createJsExtensionHost(source, logs);
   runJsLib(source, host);
   const rule = source.ruleToc ?? {};
+  const bookUrl = bookInput.bookUrl?.trim() || "";
+  const tocUrl = (bookInput.tocUrl || bookUrl).trim();
   const resolvedBookUrl = ensureBookUrlWithHeaders(bookUrl, host);
   let resolvedTocUrl = ensureBookUrlWithHeaders(tocUrl, host);
   const { url: bookPageUrl, variables } = splitUrlAndRuleVariables(resolvedBookUrl);
   const { url: fetchTocUrl, variables: tocVars } =
     splitUrlAndRuleVariables(resolvedTocUrl);
   Object.assign(variables, tocVars);
-  const book = { bookUrl: bookPageUrl, tocUrl: fetchTocUrl };
+  let kind = stripNumericIdPrefix(bookInput.kind);
+  if (!kind) {
+    kind = resolveBookKindForChapterRules("", fetchTocUrl, bookPageUrl);
+  }
+  const book = toEngineBook(
+    coerceBook({
+      ...bookInput,
+      kind,
+      bookUrl: bookPageUrl,
+      tocUrl: fetchTocUrl,
+    }),
+  );
   const ar = new AnalyzeRule(source, logs, host)
     .setBook(book)
     .setRuleData({ variable: { ...variables } });
@@ -1145,7 +1320,33 @@ export async function getChapterList(
   });
   const res = await analyzeUrl.getStrResponse();
   let body = res.body;
-  const redirectUrl = res.url;
+  let redirectUrl = res.url;
+  // bookId 误带 90000001_ 前缀时 all-chapter 返回空 rows，去掉前缀再试
+  if (
+    body.trim().startsWith("{") &&
+    /"rows"\s*:\s*\[\s*\]/.test(body) &&
+    /[?&]bookId=\d+_\d+/i.test(fetchTocUrl)
+  ) {
+    const stripped = fetchTocUrl.replace(
+      /([?&]bookId=)\d+_/i,
+      "$1",
+    );
+    if (stripped !== fetchTocUrl) {
+      logs.push(`目录 bookId 含前缀且 rows 为空，重试: ${stripped.slice(0, 120)}`);
+      const retry = await new AnalyzeUrl({
+        mUrl: stripped,
+        baseUrl: bookPageUrl,
+        source,
+        host,
+        logs,
+        ruleVariables: variables,
+      }).getStrResponse();
+      body = retry.body;
+      redirectUrl = retry.url;
+      resolvedTocUrl = stripped;
+      book.tocUrl = stripped;
+    }
+  }
   const chapters: BookChapter[] = [];
   const { listRule, reversePrefix } = parseTocListRule(rule.chapterList ?? "");
   const collect = async (b: string, base: string, redirect: string) => {
@@ -1261,20 +1462,40 @@ export async function getChapterList(
 export async function getChapterContent(
   source: BookSourceRecord,
   chapterUrl: string,
-  book: Record<string, unknown>,
+  bookInput: Book | Record<string, unknown>,
   chapter: Record<string, unknown>,
   logs: string[] = [],
   nextChapterUrl?: string,
 ): Promise<string> {
   const host = createJsExtensionHost(source, logs);
   runJsLib(source, host);
-  const resolvedBookUrl = ensureBookUrlWithHeaders(String(book.bookUrl ?? ""), host);
-  const resolvedTocUrl = ensureBookUrlWithHeaders(String(book.tocUrl ?? ""), host);
+  const coerced = coerceBook(bookInput as Partial<Book>);
+  const resolvedBookUrl = ensureBookUrlWithHeaders(coerced.bookUrl, host);
+  const resolvedTocUrl = ensureBookUrlWithHeaders(
+    coerced.tocUrl || coerced.bookUrl,
+    host,
+  );
   const { url: bookPageUrl, variables } = splitUrlAndRuleVariables(resolvedBookUrl);
   const { variables: tocVars } = splitUrlAndRuleVariables(resolvedTocUrl);
   Object.assign(variables, tocVars);
+  let kind = stripNumericIdPrefix(coerced.kind);
+  if (!kind) {
+    kind = resolveBookKindForChapterRules("", resolvedTocUrl, bookPageUrl);
+  }
+  const book = toEngineBook(
+    coerceBook({
+      ...coerced,
+      kind,
+      bookUrl: bookPageUrl,
+      tocUrl: resolvedTocUrl,
+    }),
+  );
+  const fetchChapterUrl = repairChapterUrlBookId(chapterUrl, kind);
+  if (fetchChapterUrl !== chapterUrl) {
+    chapter = { ...chapter, url: fetchChapterUrl };
+  }
   const arInit = new AnalyzeRule(source, logs, host)
-    .setBook({ ...book, bookUrl: bookPageUrl, tocUrl: resolvedTocUrl })
+    .setBook(book)
     .setChapter(chapter)
     .setRuleData({ variable: { ...variables } });
   syncLegadoHeadersForRules(arInit, host, resolvedBookUrl, variables);
@@ -1292,7 +1513,7 @@ export async function getChapterContent(
   const rule = source.ruleContent ?? {};
   const titleRule = rule.title?.trim() || rule.chapterName?.trim() || "";
   const analyzeUrl = new AnalyzeUrl({
-    mUrl: chapterUrl,
+    mUrl: fetchChapterUrl,
     baseUrl: source.bookSourceUrl,
     source,
     host,
@@ -1314,7 +1535,7 @@ export async function getChapterContent(
     body,
     res.url,
     redirectUrl,
-    { ...book, bookUrl: bookPageUrl, tocUrl: resolvedTocUrl },
+    { ...book, kind, bookUrl: bookPageUrl, tocUrl: resolvedTocUrl },
     chapter,
     variables,
     nextChapterUrl,
@@ -1471,7 +1692,9 @@ export function stripLeadingDuplicateChapterTitle(
   }
 }
 
+/** 对齐 Legado `String.isTrue()`：非空且非 false/no/not/0 */
 function isTruthy(s: string): boolean {
   const v = s.trim().toLowerCase();
-  return v === "true" || v === "1" || v === "yes";
+  if (!v) return false;
+  return v !== "false" && v !== "no" && v !== "not" && v !== "0";
 }

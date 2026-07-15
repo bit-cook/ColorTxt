@@ -10,7 +10,7 @@ import {
   splitMakeUpRegexSuffix,
   type MakeUpRuleResult,
 } from "./legadoCompositeRule";
-import { applyRuleRegex, splitRuleRegexSuffix, type RuleRegexSuffix } from "./legadoDefaultRule";
+import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoRulePreservingRegexReplace, type RuleRegexSuffix } from "./legadoDefaultRule";
 import { splitSourceRule } from "./legadoRuleSplit";
 import { evalJsExpression } from "./rhinoRuntime";
 import { coerceJavaString } from "./legadoJavaShims";
@@ -232,12 +232,13 @@ async function expandBookInfoMakeUpRule(
     if (part.type === "get") {
       out += ar.lookupStored(part.expr);
     } else if (isLegadoInlineRule(part.expr)) {
-      if (/&&|\|\||%%/.test(part.expr)) {
-        out += await ar.getPlainString(part.expr, content);
+      const expr = trimLegadoRulePreservingRegexReplace(part.expr);
+      if (/&&|\|\||%%/.test(expr)) {
+        out += await ar.getPlainString(expr, content);
       } else if (isPlainRuleObject(content)) {
-        out += readJsonField(content, part.expr);
+        out += readJsonField(content, expr);
       } else {
-        out += await ar.getPlainString(part.expr, content);
+        out += await ar.getPlainString(expr, content);
       }
     } else {
       const jsOut = evalJsExpression(part.expr, {
@@ -368,14 +369,26 @@ function formatLegadoHtmlContent(html: string, keepImg = false): string {
     .replace(/<\/?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>/gi, "\n")
     .replace(/<!--[^>]*-->/g, "")
     .replace(tagStrip, "")
-    .replace(/\s*\n+\s*/g, "\n")
-    .replace(/^[\n\s]+/, "")
+    // 对齐 Legado indent1/indent2：段间换行并补全角缩进
+    .replace(/\s*\n+\s*/g, "\n　　")
+    .replace(/^[\n\s]+/, "　　")
     .replace(/[\n\s]+$/, "");
+}
+
+/**
+ * @text 会丢掉 &lt;br&gt;；爱下等规则用 `## 　　##\n` 按全角缩进还原。
+ * - 句中「非缩进全角」前的 `　　` → 换行（不动行首缩进）
+ * - 若 ## 误把全角删光，再按段间 6+ 空格兜底
+ */
+function recoverIntroBreaksFromFullwidthIndent(text: string): string {
+  return text
+    .replace(/([^\n\u3000])[ \t\u00a0\f\v]*\u3000{2}/g, "$1\n")
+    .replace(/([^\s\n])[ \t]{6,}(?=\S)/g, "$1\n");
 }
 
 /** Legado HtmlFormatter.format：简介中的 <br> 等转为可读文本 */
 export function formatLegadoBookIntro(html: string): string {
-  return formatLegadoHtmlContent(html, false);
+  return formatLegadoHtmlContent(recoverIntroBreaksFromFullwidthIndent(html), false);
 }
 
 /** Legado HtmlFormatter.formatKeepImg：章节正文 HTML 转纯文本（保留 img） */

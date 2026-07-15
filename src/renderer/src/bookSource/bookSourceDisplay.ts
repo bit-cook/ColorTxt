@@ -16,9 +16,20 @@ export {
   splitBookMetaTags,
 } from "@shared/bookSource/bookMetaTags";
 
-/** 简介展示：保留 Legado 段首全角缩进，仅去掉末尾空白 */
+/** 简介展示：保留段首全角缩进；换行转 &lt;br&gt;，不依赖 CSS white-space */
 export function formatBookIntroForDisplay(intro: string | undefined | null): string {
   const raw = intro ?? "";
   if (!raw.trim()) return "";
   return raw.trimEnd();
+}
+
+/** 详情简介 HTML（转义 + 换行），供 v-html 使用 */
+export function formatBookIntroHtmlForDisplay(intro: string | undefined | null): string {
+  const text = formatBookIntroForDisplay(intro);
+  if (!text) return "";
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r\n|\r|\n/g, "<br>");
 }

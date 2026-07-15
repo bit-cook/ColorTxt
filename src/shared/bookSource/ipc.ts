@@ -5,7 +5,7 @@ import type {
   BookSourceListItem,
   BookSourceRecord,
   BookSourceSearchEvent,
-  BookDetail,
+  Book,
   BookChapter,
   BookSourceGetBookInfoPayload,
   BookSourceGetChapterListPayload,
@@ -227,7 +227,7 @@ export type BookSourceIpcApi = {
   ) => Promise<{ ok: boolean }>;
   bookSourceGetBookInfo: (
     payload: BookSourceGetBookInfoPayload,
-  ) => Promise<{ detail?: BookDetail; logs?: string[]; message?: string }>;
+  ) => Promise<{ detail?: Book; logs?: string[]; message?: string }>;
   bookSourceResolveCoverDisplay: (
     payload: BookSourceResolveCoverPayload,
   ) => Promise<BookSourceResolveCoverResult>;

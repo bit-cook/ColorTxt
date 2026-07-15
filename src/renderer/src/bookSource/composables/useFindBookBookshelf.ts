@@ -25,11 +25,18 @@ export function useFindBookBookshelf() {
     syncFromStorage();
   }
 
-  function isInBookshelf(bookUrl: string, origin: string): boolean {
+  function findBookshelfBook(
+    bookUrl: string,
+    origin: string,
+  ): BookshelfBook | undefined {
     const key = bookshelfBookKey(bookUrl, origin);
-    return booksRef.value.some(
+    return booksRef.value.find(
       (b) => bookshelfBookKey(b.bookUrl, b.origin) === key,
     );
+  }
+
+  function isInBookshelf(bookUrl: string, origin: string): boolean {
+    return Boolean(findBookshelfBook(bookUrl, origin));
   }
 
   function add(item: SearchBookItem, options?: BookshelfAddOptions) {
@@ -85,6 +92,7 @@ export function useFindBookBookshelf() {
   return {
     books,
     refresh,
+    findBookshelfBook,
     isInBookshelf,
     add,
     remove,

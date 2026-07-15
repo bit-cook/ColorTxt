@@ -226,6 +226,18 @@ export function ensureLegadoScriptReturn(script: string): string {
     return trimmed;
   }
 
+  /**
+   * 尾部 IIFE：`(()=>{...})();` 末行是 `})();`。
+   * 若写成 `return })();`，ASI 会变成 `return;`，IIFE 结果被丢掉。
+   */
+  if (/^[)}\]]*\s*\)\s*\(\s*\)\s*;?\s*$/.test(last)) {
+    const expr = trimmed.replace(/;\s*$/, "");
+    if (/^\(/.test(expr) && !/^\s*return\b/.test(expr)) {
+      return `return ${expr};`;
+    }
+    return trimmed;
+  }
+
   // 单行模板字符串：`${...}` 含 `}`，不可当多行表达式回溯（否则会误 return 上一句变量）
   const lastExpr = last.replace(/;\s*$/, "");
   if (lastExpr.startsWith("`") && lastExpr.endsWith("`")) {
@@ -354,6 +366,8 @@ function injectTrailingReturnInBraceBlock(
       break;
     }
     if (t.startsWith("return ")) break;
+    // continue/break 是控制流语句，不是返回值（误写成 return continue 会 SyntaxError）
+    if (/^(continue|break)\b/.test(t)) break;
 
     const indent = innerLines[li]?.match(/^\s*/)?.[0] ?? "";
     const expr = t.replace(/;\s*$/, "");
@@ -362,6 +376,14 @@ function injectTrailingReturnInBraceBlock(
     const simpleIdent = /^[\w$]+$/.test(expr);
     const simpleString = /^(["'`])(?:\\.|(?!\1).)*\1$/.test(expr);
     if (!simpleIdent && !simpleString) {
+      break;
+    }
+    // 保留字/字面量可作表达式；排除不可出现在 return 后的标识符式关键字
+    if (
+      /^(continue|break|case|default|else|catch|finally|do|while|for|function|class|import|export|throw|yield|await)$/.test(
+        expr,
+      )
+    ) {
       break;
     }
     innerLines[li] = `${indent}return ${expr};`;
@@ -557,7 +579,7 @@ const JAVA_HTTP_CHAIN_MEMBER =
   /^(matchAll|match|trim|replace|split|slice|substring|indexOf|includes|startsWith|body|header|headers|code|url|raw)\s*\(/;
 
 function wrapAwaitJavaHttpMemberAccess(script: string): string {
-  const methods = ["ajax", "connect"] as const;
+  const methods = ["ajax", "connect", "post"] as const;
   let s = script;
 
   for (const method of methods) {
@@ -610,7 +632,9 @@ export function prepareLegadoAsyncJs(script: string): string {
     "ajax",
     "ajaxAll",
     "connect",
-    // 注意：勿把 get/post 算作异步 HTTP——java.get/put 是变量 API；
+    // java.post 是 HTTP POST（与 java.put 变量存储不同，可安全 await）
+    "post",
+    // 注意：勿把 get 算作异步 HTTP——java.get 兼变量 API；
     // 误 await java.get('url') 且替换串含 `$` 时还会污染后续脚本（如 resul）。
     "getVerificationCode",
   ] as const;

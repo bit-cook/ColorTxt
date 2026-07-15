@@ -5,8 +5,9 @@ import type {
   BookSourceImportCommitPayload,
   BookSourceResolveCoverPayload,
 } from "@shared/bookSource/ipc";
-import type { BookSourceRecord, BookSourceGetBookInfoPayload } from "@shared/bookSource/types";
+import type { BookSourceRecord, BookSourceGetBookInfoPayload, BookSourceGetChapterListPayload, BookSourceGetChapterContentPayload } from "@shared/bookSource/types";
 import { parseBookSourceJson } from "@shared/bookSource/types";
+import { coerceBook } from "@shared/bookSource/bookModel";
 import {
   applyBookSourceCustomOrders,
   deleteBookSources,
@@ -497,15 +498,14 @@ export function registerBookSourceIpcHandlers(): void {
   );
 
   ipcMain.handle(BOOK_SOURCE_IPC.getChapterList, async (_e, payload: unknown) => {
-    const p = payload as {
-      bookSourceUrl?: string;
-      bookUrl?: string;
-      tocUrl?: string;
-    };
+    const p = payload as BookSourceGetChapterListPayload;
+    const book = p?.book;
     if (
       typeof p?.bookSourceUrl !== "string" ||
-      typeof p?.bookUrl !== "string" ||
-      typeof p?.tocUrl !== "string"
+      !book ||
+      typeof book !== "object" ||
+      typeof book.bookUrl !== "string" ||
+      !book.bookUrl.trim()
     ) {
       return { message: "参数无效" };
     }
@@ -515,8 +515,7 @@ export function registerBookSourceIpcHandlers(): void {
     try {
       const chapters = await getChapterList(
         source,
-        p.tocUrl,
-        p.bookUrl,
+        coerceBook(book),
         logs,
       );
       return { chapters, logs };
@@ -526,7 +525,7 @@ export function registerBookSourceIpcHandlers(): void {
           phase: "章节目录",
           sourceName: source.bookSourceName,
           sourceUrl: source.bookSourceUrl,
-          url: p.tocUrl,
+          url: book.tocUrl || book.bookUrl,
         });
       }
       return { message: summarizeBookSourceError(e), logs };
@@ -534,23 +533,14 @@ export function registerBookSourceIpcHandlers(): void {
   });
 
   ipcMain.handle(BOOK_SOURCE_IPC.getChapterContent, async (_e, payload: unknown) => {
-    const p = payload as {
-      bookSourceUrl?: string;
-      bookUrl?: string;
-      tocUrl?: string;
-      name?: string;
-      author?: string;
-      chapterUrl?: string;
-      chapterTitle?: string;
-      chapterIndex?: number;
-      nextChapterUrl?: string;
-      cacheDir?: string;
-      preferCache?: boolean;
-    };
+    const p = payload as BookSourceGetChapterContentPayload;
+    const book = p?.book;
     if (
       typeof p?.bookSourceUrl !== "string" ||
-      typeof p?.bookUrl !== "string" ||
-      typeof p?.tocUrl !== "string" ||
+      !book ||
+      typeof book !== "object" ||
+      typeof book.bookUrl !== "string" ||
+      !book.bookUrl.trim() ||
       typeof p?.chapterUrl !== "string" ||
       typeof p?.chapterTitle !== "string" ||
       typeof p?.chapterIndex !== "number"
@@ -561,12 +551,6 @@ export function registerBookSourceIpcHandlers(): void {
     if (!source) return { message: "书源不存在" };
     const logs: string[] = [];
     try {
-      const book = {
-        name: p.name ?? "",
-        author: p.author ?? "",
-        bookUrl: p.bookUrl,
-        tocUrl: p.tocUrl,
-      };
       const chapter = {
         title: p.chapterTitle,
         url: p.chapterUrl,
@@ -580,7 +564,7 @@ export function registerBookSourceIpcHandlers(): void {
       const { content, fromCache, displayTitle } = await getChapterContentWithCache(
         source,
         p.chapterUrl,
-        book,
+        coerceBook(book),
         chapter,
         logs,
         p.nextChapterUrl,

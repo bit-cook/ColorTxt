@@ -1,4 +1,6 @@
 import { formatLegadoBookAuthor } from "@shared/bookSource/formatBookAuthor";
+import type { BookChapter } from "@shared/bookSource/types";
+import { resolveFirstChapterContentIndex } from "@shared/bookSource/chapterReadingOrder";
 
 /** 从 kind 标签中提取日期作为更新时间兜底 */
 export function extractUpdateTimeFromKind(kind?: string): string {
@@ -21,7 +23,14 @@ export function resolveBookshelfUpdateTime(book: BookshelfDisplayFields): string
   return book.updateTime?.trim() || extractUpdateTimeFromKind(book.kind);
 }
 
-/** 「最新章节：xxx（更新时间：xxx）」中的章节段 */
+/** 目录内容章首章标题（最新在前）；供写回 lastChapter，对齐 Legado */
+export function resolveLatestChapterTitleFromToc(
+  chapters: BookChapter[] | undefined,
+): string {
+  return bookshelfContentChapters({ chapters })[0]?.title?.trim() ?? "";
+}
+
+/** 「最新章节：xxx（更新时间：xxx）」中的章节段（对齐 Legado：读落库 lastChapter） */
 export function formatBookshelfLatestChapter(book: BookshelfDisplayFields): string {
   const chapter = book.lastChapter?.trim();
   if (!chapter) return "暂无";
@@ -57,25 +66,69 @@ export function isBookshelfCaughtUpToLatest(
   return read === latest;
 }
 
-/** 作者行：对齐 Legado 作者净化 */
-export function formatBookshelfAuthor(author: string | undefined): string {
-  return formatLegadoBookAuthor(author) || "未知";
+/** 书架内容章（已过滤分卷）；目录约定「最新在前」 */
+export function bookshelfContentChapters(
+  book: { chapters?: BookChapter[] },
+): BookChapter[] {
+  return (book.chapters ?? []).filter((ch) => !ch.isVolume);
 }
 
-/** 书架继续阅读：有进度用保存的下标，否则从目录数组末尾（第一章） */
-export function resolveBookshelfReadChapterIndex(
-  book: { lastReadChapterIndex?: number },
-  contentChapterCount: number,
-): number {
-  if (contentChapterCount <= 0) return 0;
+function chapterIsPaid(ch: BookChapter | undefined): boolean {
+  return Boolean(ch?.isVip || ch?.isPay);
+}
+
+/** 最新章节是否付费（需有目录缓存） */
+export function isBookshelfLatestChapterVip(book: {
+  chapters?: BookChapter[];
+}): boolean {
+  return chapterIsPaid(bookshelfContentChapters(book)[0]);
+}
+
+/** 最后阅读章节是否付费（需有目录缓存） */
+export function isBookshelfLastReadChapterVip(book: {
+  chapters?: BookChapter[];
+  lastReadChapterIndex?: number;
+  lastReadChapterTitle?: string;
+}): boolean {
+  const list = bookshelfContentChapters(book);
+  if (!list.length) return false;
   const idx = book.lastReadChapterIndex;
   if (
     typeof idx === "number" &&
     Number.isFinite(idx) &&
     idx >= 0 &&
-    idx < contentChapterCount
+    idx < list.length
+  ) {
+    return chapterIsPaid(list[idx]);
+  }
+  const title = book.lastReadChapterTitle?.trim();
+  if (!title) return false;
+  return chapterIsPaid(list.find((ch) => ch.title?.trim() === title));
+}
+
+/** 作者行：对齐 Legado 作者净化 */
+export function formatBookshelfAuthor(author: string | undefined): string {
+  return formatLegadoBookAuthor(author) || "未知";
+}
+
+/**
+ * 书架打开阅读：有进度 → 继续阅读下标；无进度 → 第一章（同详情页「开始阅读」）。
+ * `contentChapters` 为已过滤分卷的内容章列表。
+ */
+export function resolveBookshelfReadChapterIndex(
+  book: { lastReadChapterIndex?: number },
+  contentChapters: BookChapter[],
+): number {
+  const n = contentChapters.length;
+  if (n <= 0) return 0;
+  const idx = book.lastReadChapterIndex;
+  if (
+    typeof idx === "number" &&
+    Number.isFinite(idx) &&
+    idx >= 0 &&
+    idx < n
   ) {
     return idx;
   }
-  return contentChapterCount - 1;
+  return resolveFirstChapterContentIndex(contentChapters);
 }

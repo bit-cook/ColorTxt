@@ -67,8 +67,7 @@ export function useBookshelfLastReadTitles(
 
       const tocRes = await window.colorTxt.bookSourceGetChapterList({
         bookSourceUrl: book.origin,
-        bookUrl: detail.bookUrl,
-        tocUrl: detail.tocUrl,
+        book: detail,
       });
       const contentChapters = (tocRes.chapters ?? []).filter((ch) => !ch.isVolume);
       const title = contentChapters[idx]?.title?.trim();

@@ -37,6 +37,15 @@ export type RuleRegexSuffix = {
 };
 
 /**
+ * 去掉规则首部空白；含 `##` 时不 trimEnd，以免裁掉 `##pat##\n` 的换行替换值。
+ */
+export function trimLegadoRulePreservingRegexReplace(rule: string): string {
+  const start = rule.replace(/^\s+/, "");
+  if (!start.includes("##")) return start.trimEnd();
+  return start;
+}
+
+/**
  * Legado 常见误用/惯用：用 `<js>` 包住纯 `##正则` 段，实际不是 JS。
  * - `title<js>##正则##</js>`（字段 + 替换）
  * - `<js>##正则</js>` / `@js:##正则`（链式段，七猫 lastChapter 等）
@@ -54,7 +63,8 @@ export function splitRuleRegexSuffix(rule: string): {
   baseRule: string;
   regex?: RuleRegexSuffix;
 } {
-  const normalized = stripLegadoJsRegexWrapper(rule.trim());
+  // 只去首部空白：末尾可能是 ##pat##\n，trim() 会裁掉替换用的换行
+  const normalized = stripLegadoJsRegexWrapper(rule.replace(/^\s+/, ""));
   let braceDepth = 0;
   let inJsBlock = false;
   for (let i = 0; i < normalized.length - 1; i++) {
@@ -86,7 +96,7 @@ export function splitRuleRegexSuffix(rule: string): {
     const end = tail.indexOf("##");
     if (end < 0) {
       return {
-        baseRule: normalized.slice(0, i),
+        baseRule: normalized.slice(0, i).trimEnd(),
         regex: { pattern: tail.replace(/<\/js>$/i, ""), replacement: "" },
       };
     }
@@ -104,7 +114,7 @@ export function splitRuleRegexSuffix(rule: string): {
     }
     replacement = replacement.replace(/<\/js>$/i, "");
     return {
-      baseRule: normalized.slice(0, i),
+      baseRule: normalized.slice(0, i).trimEnd(),
       regex: {
         pattern: tail.slice(0, end),
         replacement,
@@ -112,7 +122,7 @@ export function splitRuleRegexSuffix(rule: string): {
       },
     };
   }
-  return { baseRule: normalized };
+  return { baseRule: normalized.trimEnd() };
 }
 
 export function applyRuleRegex(value: string, regex?: RuleRegexSuffix): string {
@@ -191,6 +201,42 @@ export function splitLegadoPathAndIndex(s: string): {
   return { path: s };
 }
 
+/**
+ * 规则末段结果提取：`@src` / `@href` / `@data-src`，以及结果索引 `@src.0`（取列表第 0 条）。
+ * 与 `img.0@src`（先筛元素再取属性）等价于常见写法 `img@src.0`。
+ */
+export type LegadoResultExtract = {
+  /** `text`/`src`/`href`/`[data-src]` 等，供 extractFromElement */
+  extract: string;
+  /** 多结果时的索引；缺省保留全部（getString 再换行拼接） */
+  resultIndex?: number;
+};
+
+export function parseLegadoResultExtract(lastPart: string): LegadoResultExtract | null {
+  const t = lastPart.trim();
+  if (!t || t.startsWith("js:") || t.startsWith("@js:")) return null;
+  const { path, index } = splitLegadoPathAndIndex(t);
+  if (!path) return null;
+  if (isLegadoExtractType(path)) {
+    return { extract: path, resultIndex: index };
+  }
+  if (isLegadoAttrExtract(path)) {
+    return { extract: `[${path}]`, resultIndex: index };
+  }
+  return null;
+}
+
+/** 从多条规则结果中取下标（支持负数） */
+export function pickLegadoResultByIndex(
+  parts: string[],
+  index: number | undefined,
+): string[] {
+  if (index == null || !parts.length) return parts;
+  const i = index < 0 ? parts.length + index : index;
+  if (i < 0 || i >= parts.length) return [];
+  return [parts[i]!];
+}
+
 /** Legado 方括号索引区间 [start:end:step] */
 export type LegadoIndexRange = {
   start: number;
@@ -244,44 +290,39 @@ function parseLegadoBracketIndex(raw: string): Omit<LegadoSegmentIndexSplit, "be
   return { index };
 }
 
-/** Legado findIndexSet：从段末解析 .N / :N / .N:N:N / !N / [1:2] / [1,2] 索引 */
+/** Legado findIndexSet：从段末解析 .N / !N / .N:N:N / !N:N / [1:2] / [1,2] 索引 */
 function splitLegadoSegmentIndex(segment: string): LegadoSegmentIndexSplit {
-  let raw = segment.trim();
-  let excludeIndex: number | undefined;
-  const bang = raw.indexOf("!");
-  if (bang > 0) {
-    const ex = raw.slice(bang + 1);
-    if (/^-?\d+$/.test(ex)) {
-      excludeIndex = Number.parseInt(ex, 10);
-      raw = raw.slice(0, bang);
-    }
-  }
+  const raw = segment.trim();
 
+  // 方括号索引优先：tag.div[1:2] / tag.div[!0,1]
   const bracketEnd = raw.match(/^(.*?)\[([^\]]+)\]$/);
   if (bracketEnd?.[1] != null && bracketEnd[1] !== "") {
     const parsed = parseLegadoBracketIndex(bracketEnd[2]!);
     if (parsed) {
-      return { beforeRule: bracketEnd[1], ...parsed, excludeIndex };
+      return { beforeRule: bracketEnd[1], ...parsed };
     }
   }
 
-  const multi = raw.match(/^(.*?)([.:])(-?\d+(?::-?\d+)+)$/);
-  if (multi?.[1] != null && multi[1] !== "") {
-    return {
-      beforeRule: multi[1],
-      indices: multi[3]!.split(":").map((n) => Number.parseInt(n, 10)),
-      excludeIndex,
-    };
+  /**
+   * 阅读原写法：`tag.div!0:1:2`（`!` 排除）或 `tag.div.0:1:2`（`.` 选取）。
+   * 须整段识别；不可先把 `!0:1:2` 误拆成 `.`/`:` 多选索引（会把 before 变成 `tag.dd!0`）。
+   */
+  const classic = raw.match(/^(.*?)([!.])(-?\d+(?::-?\d+)*)$/);
+  if (classic?.[1] != null && classic[1] !== "" && classic[2] && classic[3]) {
+    const nums = classic[3].split(":").map((n) => Number.parseInt(n, 10));
+    if (!nums.some((n) => Number.isNaN(n))) {
+      if (classic[2] === "!") {
+        return nums.length === 1
+          ? { beforeRule: classic[1], excludeIndex: nums[0] }
+          : { beforeRule: classic[1], excludeIndices: nums };
+      }
+      return nums.length === 1
+        ? { beforeRule: classic[1], index: nums[0] }
+        : { beforeRule: classic[1], indices: nums };
+    }
   }
-  const m = raw.match(/^(.*?)([.!:])(-?\d+)$/);
-  if (m?.[1] != null && m[1] !== "") {
-    return {
-      beforeRule: m[1],
-      index: Number.parseInt(m[3]!, 10),
-      excludeIndex,
-    };
-  }
-  return { beforeRule: raw, excludeIndex };
+
+  return { beforeRule: raw };
 }
 
 export type LegadoSelectorSegment = {
@@ -402,13 +443,13 @@ export function legadoCollectResultTexts(
 
   const atParts = trimmed.split("@").filter(Boolean);
   let extract: string | null = null;
+  let resultIndex: number | undefined;
   let selectorSegs = atParts;
   const lastPart = atParts[atParts.length - 1];
-  if (lastPart && isLegadoExtractType(lastPart)) {
-    extract = lastPart;
-    selectorSegs = atParts.slice(0, -1);
-  } else if (lastPart && isLegadoAttrExtract(lastPart)) {
-    extract = `[${lastPart}]`;
+  const parsedExtract = lastPart ? parseLegadoResultExtract(lastPart) : null;
+  if (parsedExtract) {
+    extract = parsedExtract.extract;
+    resultIndex = parsedExtract.resultIndex;
     selectorSegs = atParts.slice(0, -1);
   }
   if (!extract || !selectorSegs.length) return [];
@@ -441,7 +482,7 @@ export function legadoCollectResultTexts(
     if (tagListContainerText) v = v.replace(/\s+/g, " ").trim();
     if (v) out.push(v);
   }
-  return out;
+  return pickLegadoResultByIndex(out, resultIndex);
 }
 
 /** Legado getString：多条结果用换行拼接 */

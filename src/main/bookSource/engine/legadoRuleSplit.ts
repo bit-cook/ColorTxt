@@ -143,7 +143,18 @@ function isLegadoRuleLineAfterJs(line: string): boolean {
   if (/^\/(?:\\.|[^/\n])+\/[gimsuyd]*\s*[,;]?\s*$/i.test(t.trimEnd())) {
     return false;
   }
-  if (/^\$[\.\[]/.test(t)) return true;
+  /**
+   * 纯 JSONPath 续行：`$.a` / `$..a` / `$[0]` / `$['k']`。
+   * 勿匹配 `$[i].select(...)` 等 JS（Legado `@js:([\w\W]*)` 贪婪吃到规则末尾）。
+   */
+  if (/^\$/.test(t)) {
+    const lineOnly = t.trimEnd();
+    if (/^\$\[[A-Za-z_$]/.test(lineOnly)) return false;
+    if (/^\$\.[.\w\[\]*'"]+$/.test(lineOnly)) return true;
+    if (/^\$\[[0-9]+\]$/.test(lineOnly)) return true;
+    if (/^\$\[['\"][^'\"]+['\"]\]$/.test(lineOnly)) return true;
+    return false;
+  }
   if (/^@(?:json|Json|XPath|xpath|css|Css):/.test(t)) return true;
   if (/^\/[^/\s]/.test(t)) return true;
   if (t.startsWith("//")) {

@@ -3,6 +3,10 @@ import { normalizeBookSourceBaseUrl } from "@shared/bookSource/url";
 import { getLoginHeader } from "../store/bookSourceStore";
 import { createJsExtensionHost, type JsExtensionHost } from "./jsExtensions";
 import { evalJsAsync } from "./rhinoRuntime";
+import {
+  normalizeLegadoLooseJson,
+  parseLegadoLooseJsonObject,
+} from "./legadoLooseJson";
 
 type HeaderResolveContext = {
   baseUrl?: string;
@@ -12,29 +16,17 @@ type HeaderResolveContext = {
 
 /** Legado 书源 header 常用单引号 / 无引号键，GSON 可解析但标准 JSON 不行 */
 export function parseLegadoHeaderJson(raw: string): Record<string, string> | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, string>;
-    }
-  } catch {
-    /* try Legado loose format */
+  const parsed = parseLegadoLooseJsonObject(raw);
+  if (!parsed) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (v == null) continue;
+    out[k] = typeof v === "string" ? v : String(v);
   }
-  try {
-    const normalized = trimmed
-      .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, '"$1"')
-      .replace(/(\{|,)\s*([a-zA-Z_-][\w-]*)\s*:/g, '$1"$2":');
-    const parsed = JSON.parse(normalized) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, string>;
-    }
-  } catch {
-    return null;
-  }
-  return null;
+  return out;
 }
+
+export { normalizeLegadoLooseJson };
 
 function parseStaticHeaderJson(raw: string | undefined | null): Record<string, string> {
   if (!raw?.trim()) return {};

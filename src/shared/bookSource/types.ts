@@ -135,7 +135,11 @@ export type SearchBookItem = {
   originName: string;
 };
 
-export type BookDetail = {
+/**
+ * 对齐 Legado `Book`：搜索/发现 `searchBookToBook` 起即为 Book，
+ * 详情完善同一对象，目录/正文/书架全程携带。
+ */
+export type Book = {
   name: string;
   author: string;
   intro: string;
@@ -147,6 +151,9 @@ export type BookDetail = {
   updateTime?: string;
   tocUrl: string;
   bookUrl: string;
+  origin?: string;
+  originName?: string;
+  variable?: Record<string, string>;
 };
 
 export type BookChapter = {
@@ -173,20 +180,19 @@ export type BookSourceGetBookInfoPayload = {
 export type BookInfoSeed = Pick<
   BookSourceGetBookInfoPayload,
   "kind" | "wordCount" | "intro" | "lastChapter" | "coverUrl"
->;
+> & {
+  origin?: string;
+  originName?: string;
+};
 
 export type BookSourceGetChapterListPayload = {
   bookSourceUrl: string;
-  bookUrl: string;
-  tocUrl: string;
+  book: Book;
 };
 
 export type BookSourceGetChapterContentPayload = {
   bookSourceUrl: string;
-  bookUrl: string;
-  tocUrl: string;
-  name: string;
-  author: string;
+  book: Book;
   chapterUrl: string;
   chapterTitle: string;
   chapterIndex: number;

@@ -1,6 +1,7 @@
 import { applyRuleRegex, splitRuleRegexSuffix } from "./legadoDefaultRule";
 import { JSONPath } from "jsonpath-plus";
 import { looksLikeLegadoJs } from "./legadoRuleSplit";
+import { parseLegadoLooseJsonObject } from "./legadoLooseJson";
 import { parseLegadoHeaderJson } from "./sourceRequestHeaders";
 
 const PUT_PATTERN = /@put:\s*(\{[^}]+\})/gi;
@@ -71,7 +72,15 @@ export function legadoJsonPathFromRule(rule: string): string | null {
   const path = rule.split("##")[0]?.trim() ?? rule.trim();
   if (!path) return null;
   if (path.startsWith("$.") || path.startsWith("$..") || path.startsWith("$[")) return path;
-  if (/[\[\]]/.test(path)) return `$.${path}`;
+  /**
+   * 对齐 byJsonPath：`path = rule.startsWith("$") ? rule : \`$.\${rule}\``
+   * - `.contentsize` → `$..contentsize`
+   * - `.rows[*]` → `$..rows[*]`
+   * - `rows[*]` → `$.rows[*]`
+   */
+  if (path.startsWith(".") || /[\[\]]/.test(path)) {
+    return `$.${path}`;
+  }
   return null;
 }
 
@@ -223,59 +232,58 @@ function isLegadoFlatHeaderMap(obj: Record<string, unknown>): boolean {
 }
 
 export function parseLegadoUrlSuffixJson(raw: string): LegadoUrlFetchOptions {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-
-    const pickUrlOptionFields = (
-      headers?: Record<string, string>,
-    ): LegadoUrlFetchOptions => ({
-      headers,
-      method: typeof parsed.method === "string" ? parsed.method : undefined,
-      body: parsed.body != null ? String(parsed.body) : undefined,
-      charset: typeof parsed.charset === "string" ? parsed.charset : undefined,
-      type: typeof parsed.type === "string" ? parsed.type : undefined,
-    });
-
-    if (
-      parsed.headers &&
-      typeof parsed.headers === "object" &&
-      !Array.isArray(parsed.headers)
-    ) {
-      return pickUrlOptionFields(
-        stringifyLegadoHeaderMap(parsed.headers as Record<string, unknown>),
-      );
-    }
-
-    // Lofter 等常见仅有 method/body 的 UrlOption（无 headers）
-    const hasReservedOptionKey = [
-      "method",
-      "body",
-      "charset",
-      "type",
-      "webView",
-      "webJs",
-      "js",
-      "retry",
-      "webViewDelayTime",
-      "serverID",
-      "origin",
-    ].some((k) => Object.prototype.hasOwnProperty.call(parsed, k));
-    if (hasReservedOptionKey) {
-      return pickUrlOptionFields();
-    }
-
-    if (isLegadoFlatHeaderMap(parsed)) {
-      return { headers: stringifyLegadoHeaderMap(parsed) };
-    }
-    return {};
-  } catch {
+  // 书源常见 body: '{"a":1}'（单引号包着内层双引号 JSON）；标准 JSON.parse 会失败
+  let parsed = parseLegadoLooseJsonObject(raw);
+  if (!parsed) {
     const loose = parseLegadoHeaderJson(raw);
     if (loose && Object.keys(loose).length > 0) {
       return { headers: loose };
     }
     return {};
   }
+
+  const pickUrlOptionFields = (
+    headers?: Record<string, string>,
+  ): LegadoUrlFetchOptions => ({
+    headers,
+    method: typeof parsed!.method === "string" ? parsed!.method : undefined,
+    body: parsed!.body != null ? String(parsed!.body) : undefined,
+    charset: typeof parsed!.charset === "string" ? parsed!.charset : undefined,
+    type: typeof parsed!.type === "string" ? parsed!.type : undefined,
+  });
+
+  if (
+    parsed.headers &&
+    typeof parsed.headers === "object" &&
+    !Array.isArray(parsed.headers)
+  ) {
+    return pickUrlOptionFields(
+      stringifyLegadoHeaderMap(parsed.headers as Record<string, unknown>),
+    );
+  }
+
+  // Lofter 等常见仅有 method/body 的 UrlOption（无 headers）
+  const hasReservedOptionKey = [
+    "method",
+    "body",
+    "charset",
+    "type",
+    "webView",
+    "webJs",
+    "js",
+    "retry",
+    "webViewDelayTime",
+    "serverID",
+    "origin",
+  ].some((k) => Object.prototype.hasOwnProperty.call(parsed!, k));
+  if (hasReservedOptionKey) {
+    return pickUrlOptionFields();
+  }
+
+  if (isLegadoFlatHeaderMap(parsed)) {
+    return { headers: stringifyLegadoHeaderMap(parsed) };
+  }
+  return {};
 }
 
 export function splitUrlAndRuleVariables(url: string): {
@@ -468,9 +476,21 @@ export function readJsonField(content: Record<string, unknown>, fieldRule: strin
     try {
       const results = JSONPath({ path, json: content, wrap: false });
       if (Array.isArray(results)) {
-        const joinMulti = path.includes("..") || path.includes("[*]");
+        // 对齐 Legado getString：标量数组整表 join（如 $.tagList），勿只取 [0]
+        const allScalar = results.every(
+          (v) =>
+            v == null ||
+            typeof v === "string" ||
+            typeof v === "number" ||
+            typeof v === "boolean",
+        );
+        const joinMulti =
+          allScalar || path.includes("..") || path.includes("[*]");
         if (joinMulti) {
-          const sep = path.includes("[*]") && !path.includes("..") ? "," : "\n";
+          const sep =
+            path.includes("[*]") && !path.includes("..") && !allScalar
+              ? ","
+              : "\n";
           val = results
             .map((v) => coerceLegadoMediaUrl(v))
             .filter(Boolean)
@@ -492,7 +512,12 @@ export function readJsonField(content: Record<string, unknown>, fieldRule: strin
       cur = (cur as Record<string, unknown>)[p];
     }
     if (cur == null) return "";
-    if (typeof cur === "object") val = JSON.stringify(cur);
+    if (Array.isArray(cur)) {
+      val = cur
+        .map((v) => coerceLegadoMediaUrl(v))
+        .filter(Boolean)
+        .join("\n");
+    } else if (typeof cur === "object") val = JSON.stringify(cur);
     else val = String(cur);
   }
   if (regex) val = applyRuleRegex(val, regex);

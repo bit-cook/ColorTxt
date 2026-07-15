@@ -10,6 +10,7 @@ import {
   splitUrlFetchOptions,
   type UrlFetchOptions,
 } from "./analyzeUrl";
+import { getBookSourceDispatcher } from "./httpProxy";
 
 const COVER_FETCH_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -204,7 +205,12 @@ export async function fetchCoverDisplayUrl(
   }
 
   try {
-    const res = await fetch(url, { headers, redirect: "follow" });
+    const res = await fetch(url, {
+      headers,
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+      dispatcher: getBookSourceDispatcher(),
+    } as RequestInit & { dispatcher?: unknown });
     if (!res.ok) {
       logs.push(`封面 HTTP ${res.status}: ${url.slice(0, 96)}`);
       return undefined;

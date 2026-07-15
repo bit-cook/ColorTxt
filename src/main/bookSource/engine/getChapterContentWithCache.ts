@@ -3,19 +3,15 @@
  * 阅读与整书下载共用。
  * 返回缓存/联网原文；全局「替换净化」在渲染展示管线（与「转换」同路径）或导出时再套用。
  */
-import type { BookSourceRecord } from "@shared/bookSource/types";
+import type { Book, BookSourceRecord } from "@shared/bookSource/types";
+import { coerceBook } from "@shared/bookSource/bookModel";
 import {
   getChapterContent,
   stripLeadingDuplicateChapterTitle,
 } from "./webBook";
 import { readChapterCache, saveChapterCache } from "./chapterCache";
 
-export type ChapterContentBook = {
-  name: string;
-  author?: string;
-  bookUrl: string;
-  tocUrl: string;
-};
+export type ChapterContentBook = Book;
 
 export type ChapterContentChapter = {
   title: string;
@@ -26,7 +22,7 @@ export type ChapterContentChapter = {
 export async function getChapterContentWithCache(
   source: BookSourceRecord,
   chapterUrl: string,
-  book: ChapterContentBook,
+  bookInput: ChapterContentBook | Partial<Book>,
   chapter: ChapterContentChapter,
   logs: string[] = [],
   nextChapterUrl?: string,
@@ -37,6 +33,7 @@ export async function getChapterContentWithCache(
 ): Promise<{ content: string; fromCache: boolean; displayTitle: string }> {
   const preferCache = options?.preferCache !== false;
   const cacheDir = options?.cacheDir;
+  const book = coerceBook(bookInput);
   const bookName = book.name || "";
   const bookUrl = book.bookUrl || "";
 

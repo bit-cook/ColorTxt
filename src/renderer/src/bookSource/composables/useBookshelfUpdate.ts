@@ -6,6 +6,7 @@ import {
   type BookshelfBook,
   type BookshelfBookInfoPatch,
 } from "../findBookBookshelf";
+import { resolveLatestChapterTitleFromToc } from "../findBookshelfDisplay";
 
 const updatingKeys = ref(new Set<string>());
 
@@ -82,11 +83,6 @@ function formatLastChapter(raw: string | undefined): string {
     .trim();
 }
 
-function resolveLatestChapterTitle(chapters: BookChapter[]): string {
-  const list = chapters.filter((ch) => !ch.isVolume);
-  return list[0]?.title?.trim() ?? "";
-}
-
 function buildInfoPatch(
   book: BookshelfBook,
   detail: NonNullable<
@@ -94,8 +90,8 @@ function buildInfoPatch(
   >,
   chapters: BookChapter[],
 ): BookshelfBookInfoPatch {
-  // 对齐 Legado：有目录时以最新章节标题为准
-  const tocTitle = resolveLatestChapterTitle(chapters);
+  // 对齐 Legado：有目录时以最新章节标题为准（写入 chapters 时还会再覆盖一次）
+  const tocTitle = resolveLatestChapterTitleFromToc(chapters);
   const lastChapter =
     tocTitle || formatLastChapter(detail.lastChapter) || book.lastChapter;
   const patch: BookshelfBookInfoPatch = {
@@ -168,8 +164,7 @@ export function useBookshelfUpdate(onBooksChanged?: (books: BookshelfBook[]) => 
       const detail = infoRes.detail;
       const tocRes = await window.colorTxt.bookSourceGetChapterList({
         bookSourceUrl: book.origin,
-        bookUrl: detail.bookUrl,
-        tocUrl: detail.tocUrl,
+        book: detail,
       });
       if (tocRes.message?.trim() && !(tocRes.chapters?.length)) {
         appendBookshelfUpdateLog(

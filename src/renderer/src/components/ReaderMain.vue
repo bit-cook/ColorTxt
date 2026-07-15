@@ -3397,6 +3397,12 @@ watch(
     }
     if (!phys) readerEditLoadedPhysicalKey = "";
     applyReaderMonacoModeOptions(true);
+    // 找书等内存正文：进入编辑时清阅读态章节标题样式，保留章节快照供粘性标题
+    chapterTitleDecorationsCollection.value?.clear();
+    lastChapterTitleDecorationsLineKey = "";
+    syncChapterMinimapSectionHeaderDecorations();
+    notifyChapterStickyFoldingRanges?.();
+    scheduleStickyChapterScrollRefresh();
     teardownReaderEditContentListener();
     const m = model.value;
     if (m) {
