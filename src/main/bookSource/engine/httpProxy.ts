@@ -1,5 +1,8 @@
 import { Agent, ProxyAgent, type Dispatcher } from "undici";
-import { SocksProxyAgent } from "socks-proxy-agent";
+import {
+  SocksProxyAgent,
+  type SocksProxyAgentOptions,
+} from "socks-proxy-agent";
 
 export type ParsedProxy = {
   uri: string;
@@ -57,10 +60,11 @@ export function getProxyDispatcher(proxy?: string | null): Dispatcher | undefine
           uri: parsed.uri,
           requestTls: { ...INSECURE_TLS },
         })
-      : (new SocksProxyAgent(parsed.uri, {
-          // socks-proxy-agent → https.Agent 选项
-          rejectUnauthorized: false,
-        }) as unknown as Dispatcher);
+      : (new SocksProxyAgent(
+          parsed.uri,
+          // 运行时可进 https.Agent；类型仅并了 http.AgentOptions，需断言
+          { ...INSECURE_TLS } as SocksProxyAgentOptions,
+        ) as unknown as Dispatcher);
   dispatcherCache.set(parsed.uri, dispatcher);
   return dispatcher;
 }

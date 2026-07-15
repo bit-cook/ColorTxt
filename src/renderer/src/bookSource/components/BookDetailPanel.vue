@@ -310,7 +310,7 @@ function onToggleBookshelf() {
   // 放入时同步目录缓存，触发 lastChapter 写回最新章标题（对齐 Legado）
   if (added && chapters.value.length && item.bookUrl && item.origin) {
     const next = updateFindBookBookshelfBookInfo(item.bookUrl, item.origin, {
-      tocUrl: detail.value?.tocUrl || item.tocUrl,
+      tocUrl: detail.value?.tocUrl,
       chapters: chapters.value,
       lastChapter: item.lastChapter,
     });

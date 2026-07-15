@@ -255,8 +255,23 @@ function rerunSearchIfNeeded() {
   void search(k, buildSearchOptions());
 }
 
-const { searching, pageLoading, searchPage, searchHasMore, searchPhase, searchKey, progress, results, searchLogs, searchSourceErrors, searchSourceStats, noEnabledSearchSources, search, loadMore, cancel, clearShortCircuitSearch } =
-  useBookSourceSearch();
+const {
+  searching,
+  pageLoading,
+  searchPage,
+  searchHasMore,
+  searchPhase,
+  searchKey,
+  progress,
+  results,
+  searchLogs,
+  searchSourceErrors,
+  searchSourceStats,
+  search,
+  loadMore,
+  cancel,
+  clearShortCircuitSearch,
+} = useBookSourceSearch();
 const { getCoverUrl, isCoverPending } = useBookshelfCoverUrls(results);
 
 /** 全局是否有可搜索的启用书源（未限定单一源时的空状态用） */
