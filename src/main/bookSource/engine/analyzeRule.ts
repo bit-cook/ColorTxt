@@ -890,7 +890,8 @@ export class AnalyzeRule {
       src: this.content,
       baseUrl: this.baseUrl,
       host: this.host,
-      java: this.buildRuleJava(content),
+      // 对齐 Legado：java.getString 默认读 AnalyzeRule.content（src），不是链式 result
+      java: this.buildRuleJava(),
       bookVariableSync: {
         putVariable: (key, value) => this.putBookVariable(key, value),
         getVariable: (key) => this.readBookVariable(key),

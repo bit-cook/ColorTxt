@@ -245,6 +245,87 @@ function legadoDeclAssignReturnName(line: string): string | null {
   return m?.[1] ?? null;
 }
 
+/**
+ * 单行内多个顶层语句（如 `java.put(...);java.put(...);result`）时，
+ * 返回最后一句起始下标；无顶层 `;` 则返回 0。
+ */
+function findLastTopLevelStatementStart(line: string): number {
+  let lastSemi = -1;
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let escape = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inSingle) {
+      if (ch === "\\") escape = true;
+      else if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inTemplate) {
+      if (ch === "\\") escape = true;
+      else if (ch === "`") inTemplate = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === "`") {
+      inTemplate = true;
+      continue;
+    }
+    if (ch === "/" && i + 1 < line.length) {
+      const next = line[i + 1]!;
+      if (next === "/") break;
+      if (next === "*") {
+        const end = line.indexOf("*/", i + 2);
+        if (end < 0) break;
+        i = end + 1;
+        continue;
+      }
+      if (canStartRegexLiteral(line, i)) {
+        i = skipRegexLiteral(line, i) - 1;
+        continue;
+      }
+    }
+    if (ch === "(") depthParen++;
+    else if (ch === ")") depthParen = Math.max(0, depthParen - 1);
+    else if (ch === "[") depthBracket++;
+    else if (ch === "]") depthBracket = Math.max(0, depthBracket - 1);
+    else if (ch === "{") depthBrace++;
+    else if (ch === "}") depthBrace = Math.max(0, depthBrace - 1);
+    else if (
+      ch === ";" &&
+      depthParen === 0 &&
+      depthBracket === 0 &&
+      depthBrace === 0
+    ) {
+      lastSemi = i;
+    }
+  }
+  if (lastSemi < 0) return 0;
+  let start = lastSemi + 1;
+  while (start < line.length && /\s/.test(line[start]!)) start++;
+  return start;
+}
+
 /** 让 Node 与 Rhino eval 一样返回脚本最终结果 */
 export function ensureLegadoScriptReturn(script: string): string {
   const trimmed = script.trim();
@@ -276,6 +357,31 @@ export function ensureLegadoScriptReturn(script: string): string {
   const last = lines[i].trim();
   // 仅看最后一行：函数体内的 return 不影响顶层表达式作返回值（Legado/Rhino 行为）
   if (!last || last.startsWith("return ")) return trimmed;
+
+  /**
+   * 单行多语句须先于「整行 var x=… → return x」处理。
+   * 否则 `var l=…;if(…){a+l}else{b}` 会被收成 `return l`，丢掉 if 里的真正返回值。
+   */
+  const lastStmtStartInLine = findLastTopLevelStatementStart(last);
+  if (lastStmtStartInLine > 0) {
+    const indent = lines[i].match(/^\s*/)?.[0] ?? "";
+    const before = last.slice(0, lastStmtStartInLine);
+    let stmt = last.slice(lastStmtStartInLine).replace(/;\s*$/, "").trim();
+    if (!stmt || stmt.startsWith("return ")) return trimmed;
+    // if/else / for / while：交给 ensureLegadoIfElseBranchReturn，勿写成 `return if`
+    if (/^(if|for|while|switch|try|with)\b/.test(stmt)) {
+      lines[i] = `${indent}${before}${stmt}`;
+      return lines.join("\n");
+    }
+    const declName = legadoDeclAssignReturnName(stmt);
+    if (declName) {
+      lines[i] = `${indent}${before}${stmt}; return ${declName};`;
+    } else {
+      lines[i] = `${indent}${before}return ${stmt};`;
+    }
+    return lines.join("\n");
+  }
+
   const declNameFromLast = legadoDeclAssignReturnName(last);
   if (declNameFromLast) {
     const indent = lines[i].match(/^\s*/)?.[0] ?? "";
@@ -434,11 +540,8 @@ function injectTrailingReturnInBraceBlock(
 
     const indent = innerLines[li]?.match(/^\s*/)?.[0] ?? "";
     const expr = t.replace(/;\s*$/, "");
-    // 仅对简单返回值补 return，避免误改 intro 等含模板字符串 / 长表达式的分支
-    // （Lofter 目录：`result` / `"[{'title':'暂无目录'}]"`）
-    const simpleIdent = /^[\w$]+$/.test(expr);
-    const simpleString = /^(["'`])(?:\\.|(?!\1).)*\1$/.test(expr);
-    if (!simpleIdent && !simpleString) {
+    // 分支内单表达式（含 `java.get('x')+l`）补 return；排除控制流与多语句
+    if (/[;\n]/.test(expr) || /\b(if|for|while|switch|try|function|class)\b/.test(expr)) {
       break;
     }
     // 保留字/字面量可作表达式；排除不可出现在 return 后的标识符式关键字

@@ -784,11 +784,19 @@ function bookInfoInitFailed(body: string, initRule?: string | null): boolean {
   if (t.startsWith("<") && /404|not\s*found|error/i.test(t.slice(0, 800))) return true;
   const init = initRule?.trim() ?? "";
   if (!init) return false;
-  // JS init（如 Lofter `<js>…</js>`）由 init 规则处理，不能按 JSONPath 校验
+  // JS init（如 `<js>…</js>`）由 init 规则处理，不能按 JSONPath 校验
   if (/^<js>/i.test(init) || /^@js:/i.test(init)) {
     // data:;base64 + UrlOption.type 会先得到 hex 正文，交由 init JS hexDecode，不能当失败
     if (/^[0-9a-fA-F]+$/.test(t) && t.length % 2 === 0) return false;
-    if (!t.startsWith("{") && !t.startsWith("[")) return true;
+    // SPA hash 书链（如 uc.cn/#!/…）请求不到片段，只会拿到站点 HTML；
+    // init 常只用 java.get('bid') 拼 tocUrl，不依赖正文 → 勿当失败
+    if (!t.startsWith("{") && !t.startsWith("[")) {
+      if (!t) return true;
+      if (t.startsWith("<") && /404|not\s*found|error/i.test(t.slice(0, 800))) {
+        return true;
+      }
+      return false;
+    }
     try {
       const data = JSON.parse(t) as Record<string, unknown>;
       const meta = data.meta as Record<string, unknown> | undefined;

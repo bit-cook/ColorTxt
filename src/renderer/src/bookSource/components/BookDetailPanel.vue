@@ -978,6 +978,7 @@ async function onDownloadOrStop() {
             class="btn bookDetailBookshelfBtn"
             :class="{ 'bookDetailBookshelfBtn--remove': inBookshelf }"
             size="large"
+            :disabled="!inBookshelf && !canStartReading"
             @click="onToggleBookshelf"
           >
             <span class="bookDetailFooterBtnIcon" aria-hidden="true" v-html="icons.bookshelf" />
@@ -999,7 +1000,7 @@ async function onDownloadOrStop() {
               class="btn"
               size="large"
               :class="downloading ? 'danger' : 'primary'"
-              :disabled="!downloading && !downloadDir.trim()"
+              :disabled="!downloading && (!downloadDir.trim() || !canStartReading)"
               @click="onDownloadOrStop"
             >
               <span
