@@ -12,6 +12,10 @@ import {
 } from "./windowBounds";
 import { attachWindowCloseRequestGuard } from "./windowCloseGuard";
 import { attachWebContentsExternalLinkPolicy } from "./webContentsExternalLinks";
+import {
+  destroyAllBackstageWebViews,
+  isBackstageWebViewWindow,
+} from "./bookSource/engine/backstageWebView";
 
 export type CreateMainWindow = (options?: {
   openTxtPath?: string | null;
@@ -95,6 +99,13 @@ export function createMainWindowFactory(maps: MainWindowMaps): CreateMainWindow 
       pendingOpenTxtByWindowId.delete(win.id);
       findBookWindowByWindowId.delete(win.id);
       findBookInitialTabByWindowId.delete(win.id);
+      // 后台 webView 是 show:false 的 BrowserWindow；若不拆掉，关可见窗后进程不退
+      const stillUserWindows = BrowserWindow.getAllWindows().some(
+        (w) => !w.isDestroyed() && !isBackstageWebViewWindow(w),
+      );
+      if (!stillUserWindows) {
+        destroyAllBackstageWebViews();
+      }
     });
 
     const findBookTitle = FIND_BOOK_WINDOW_TITLE;

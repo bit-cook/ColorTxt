@@ -165,6 +165,28 @@ export class AnalyzeRule {
     return this;
   }
 
+  /**
+   * 对齐 Legado `AnalyzeRule.evalJS`（购买 `payAction`、自定义脚本等）。
+   * 与规则链 `evalRuleJs` 不同：不回退整页正文，错误向上抛出。
+   */
+  async evalJS(jsStr: string, result: unknown = null): Promise<unknown> {
+    const script = stripLegadoJsRuleMarkers(jsStr);
+    const title =
+      this.chapter && typeof this.chapter.title === "string"
+        ? this.chapter.title
+        : "";
+    const prefixes: string[] = [`var title=${JSON.stringify(title)};`];
+    if (this.nextChapterUrl) {
+      prefixes.push(
+        `var nextChapterUrl=${JSON.stringify(this.nextChapterUrl)};`,
+      );
+    }
+    return await evalJsAsync(
+      `${prefixes.join("\n")}\n${script}`,
+      this.buildJsEvalContext(result),
+    );
+  }
+
   setRuleData(data: RuleData): this {
     this.ruleData = data;
     return this;

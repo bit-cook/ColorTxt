@@ -10,6 +10,10 @@ import {
   argvHasFindBookFlag,
   openFindBookLaunchWindow,
 } from "./findBookLaunch";
+import {
+  destroyAllBackstageWebViews,
+  isBackstageWebViewWindow,
+} from "./bookSource/engine/backstageWebView";
 
 /** 须在 `app.ready` 之前注册，否则自定义协议无法在渲染进程用于 `<img>` 等 */
 protocol.registerSchemesAsPrivileged([
@@ -78,8 +82,15 @@ app.whenReady().then(async () => {
   registerGlobalShortcuts();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow({});
+    const userWindows = BrowserWindow.getAllWindows().filter(
+      (w) => !w.isDestroyed() && !isBackstageWebViewWindow(w),
+    );
+    if (userWindows.length === 0) createWindow({});
   });
+});
+
+app.on("before-quit", () => {
+  destroyAllBackstageWebViews();
 });
 
 app.on("will-quit", () => {
@@ -87,6 +98,7 @@ app.on("will-quit", () => {
 });
 
 app.on("window-all-closed", () => {
+  destroyAllBackstageWebViews();
   // 末窗关闭后须再次 quit；macOS 上 Cmd+Q 首次 quit 常被关窗拦截 cancel，靠此路径收尾
   markAppQuittingForClose();
   app.quit();

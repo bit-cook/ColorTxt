@@ -141,6 +141,10 @@ export function splitUrlFetchOptions(ruleUrl: string): {
     body: parsed.body,
     charset: parsed.charset,
     type: parsed.type,
+    webView: parsed.webView,
+    webJs: parsed.webJs ?? parsed.js,
+    bodyJs: parsed.bodyJs,
+    webViewDelayTime: parsed.webViewDelayTime,
   });
   return { urlPart: ruleUrl.slice(0, m.index), options };
 }
@@ -659,7 +663,8 @@ export class AnalyzeUrl {
     if (useWebView && this.method === "GET") {
       const webBody = await runBackstageWebView({
         url: this.url,
-        js: webJs || "document.documentElement.outerHTML",
+        // 无自定义 webJs 时取 outerHTML；延时由 backstageWebView 对齐 Legado：1000 + webViewDelayTime
+        js: webJs,
         source: this.source,
         host: this.host,
         delayMs: this.urlFetchOptions.webViewDelayTime ?? undefined,

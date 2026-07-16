@@ -135,6 +135,23 @@ export async function filterCachedChapterUrls(
   return out;
 }
 
+/** 删除单章正文离线缓存（对齐 Legado `BookHelp.delContent`） */
+export async function deleteChapterCache(
+  bookName: string,
+  bookUrl: string,
+  chapterUrl: string,
+  cacheDir?: string,
+): Promise<{ cleared: boolean }> {
+  if (!bookUrl.trim() || !chapterUrl.trim()) return { cleared: false };
+  const file = chapterCachePath(bookName, bookUrl, chapterUrl, cacheDir);
+  try {
+    await rm(file, { force: true });
+    return { cleared: true };
+  } catch {
+    return { cleared: false };
+  }
+}
+
 /** 删除某本书的章节正文离线缓存目录 */
 export async function clearBookChapterCache(
   bookName: string,

@@ -128,6 +128,8 @@ const sourceNeedsLogin = ref(false);
 const refreshingChapter = ref(false);
 /** 侧栏「重新获取目录」 */
 const refreshingToc = ref(false);
+/** 购买操作进行中 */
+const payingChapter = ref(false);
 
 const topMoreBtnRef = ref<HTMLElement | null>(null);
 const topMoreMenu = useAnchoredAppShellMenu({
@@ -483,6 +485,14 @@ watch(
 const displayChapters = computed(() =>
   sortContentChaptersDisplay(contentChapters.value, chapterSortDesc.value),
 );
+
+/** 对齐 Legado ReadMenu：有 loginUrl 且当前章 VIP 未购买时显示「购买」 */
+const showChapterPayBtn = computed(() => {
+  if (!sourceNeedsLogin.value) return false;
+  const ch = displayChapters.value[currentDisplayIndex.value];
+  if (!ch) return false;
+  return Boolean(ch.isVip) && !ch.isPay;
+});
 
 const convertedChapterTitlesByIndex = ref(new Map<number, string>());
 let convertedChapterTitlesGen = 0;
@@ -1252,6 +1262,63 @@ async function onLogin() {
   showLogin.value = true;
 }
 
+/** 对齐 Legado ReadBookActivity.payAction：确认购买 → 执行 payAction */
+async function onChapterPay() {
+  if (payingChapter.value) return;
+  const origin = props.item.origin?.trim();
+  const ch = displayChapters.value[currentDisplayIndex.value];
+  if (!origin || !ch) {
+    appToast("当前没有可购买的章节", { kind: "warning" });
+    return;
+  }
+  // 对齐 Legado alert(购买) + chapter.title
+  const confirmed = await appConfirm(ch.title || "（无标题）", "购买");
+  if (!confirmed) return;
+
+  payingChapter.value = true;
+  try {
+    const bookUrl = props.detail.bookUrl?.trim() || props.item.bookUrl?.trim() || "";
+    // IPC 只能传可结构化克隆的纯对象，需剥离 Vue 响应式代理
+    const r = await window.colorTxt.bookSourcePayAction(
+      JSON.parse(
+        JSON.stringify({
+          bookSourceUrl: origin,
+          book: {
+            ...props.detail,
+            bookUrl,
+            tocUrl: props.detail.tocUrl || bookUrl,
+            kind: props.detail.kind || props.item.kind || "",
+            name: props.detail.name || props.item.name,
+            author: props.detail.author || props.item.author,
+            origin,
+            originName: props.item.originName,
+          },
+          chapter: ch,
+          cacheDir: effectiveCacheDir.value.trim() || undefined,
+        }),
+      ),
+    );
+    if (r.logs?.length) logs.value = r.logs;
+    if (!r.ok) {
+      if (!r.cancelled && r.message) {
+        appToast(r.message, { kind: "danger" });
+      }
+      return;
+    }
+    if (r.refresh) {
+      await refreshTocAfterPay();
+      await loadChapterAtDisplayIndex(currentDisplayIndex.value, {
+        smoothScroll: false,
+        preferCache: false,
+      });
+    }
+  } catch (e) {
+    appToast(e instanceof Error ? e.message : "购买失败", { kind: "danger" });
+  } finally {
+    payingChapter.value = false;
+  }
+}
+
 async function onRefresh() {
   if (
     readerBootLoading.value ||
@@ -1276,6 +1343,15 @@ async function onRefresh() {
 }
 
 async function onRefreshToc() {
+  await refreshTocInternal({ announce: true });
+}
+
+/** 购买成功后刷新目录（对齐 Legado loadChapterList，不弹「无更新」） */
+async function refreshTocAfterPay() {
+  await refreshTocInternal({ announce: false });
+}
+
+async function refreshTocInternal(opts: { announce: boolean }) {
   if (refreshingToc.value || props.tocLoading || offlineCaching.value) {
     return;
   }
@@ -1348,12 +1424,14 @@ async function onRefreshToc() {
     }
     currentDisplayIndex.value = idx;
     void nextTick(() => scrollChapterListToCurrent({ smooth: false }));
-    if (latestUnchanged) {
-      appToast("无更新", { kind: "info" });
-    } else {
-      appToast(`目录已更新，最新章节：${latestTitle || "（无标题）"}`, {
-        kind: "success",
-      });
+    if (opts.announce) {
+      if (latestUnchanged) {
+        appToast("无更新", { kind: "info" });
+      } else {
+        appToast(`目录已更新，最新章节：${latestTitle || "（无标题）"}`, {
+          kind: "success",
+        });
+      }
     }
   } catch {
     appToast("刷新目录失败", { kind: "warning" });
@@ -1735,11 +1813,13 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
               <RefreshIcon :spinning="refreshingChapter" />
             </IconButton>
             <IconButton
-              :icon-html="icons.edit"
-              title="编辑书源"
-              aria-label="编辑书源"
-              :disabled="!item.origin?.trim()"
-              @click="onEditBookSource"
+              v-if="showChapterPayBtn"
+              :icon-html="icons.buy"
+              title="购买"
+              aria-label="购买"
+              :disabled="payingChapter || readerBootLoading || chapterContentBusy"
+              :aria-busy="payingChapter || undefined"
+              @click="onChapterPay"
             />
             <IconButton
               v-if="sourceNeedsLogin"
@@ -1775,6 +1855,15 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
             @click="onOpenBookDetail"
           >
             <span class="appShellMenuLabel">书籍信息</span>
+          </button>
+          <button
+            type="button"
+            class="appShellMenuItem"
+            role="menuitem"
+            :disabled="!item.origin?.trim()"
+            @click="onEditBookSource"
+          >
+            <span class="appShellMenuLabel">编辑书源</span>
           </button>
           <button
             type="button"

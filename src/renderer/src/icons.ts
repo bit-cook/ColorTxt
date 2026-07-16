@@ -101,6 +101,7 @@ import speakIcon from "./assets/speak.svg?raw";
 import speak0Icon from "./assets/speak_0.svg?raw";
 import speak1Icon from "./assets/speak_1.svg?raw";
 import loginIcon from "./assets/login.svg?raw";
+import buyIcon from "./assets/buy.svg?raw";
 import okIcon from "./assets/ok.svg?raw";
 import lockIcon from "./assets/lock.svg?raw";
 import disclaimerIcon from "./assets/disclaimer.svg?raw";
@@ -124,6 +125,8 @@ export const icons = {
   more: moreIcon,
   /** 书源列表行「登录」 */
   login: loginIcon,
+  /** VIP 章节购买 */
+  buy: buyIcon,
   ok: okIcon,
   /** 思维导图面板标题 */
   mindmap: mindmapIcon,

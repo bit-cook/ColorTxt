@@ -192,6 +192,12 @@ export type LegadoUrlFetchOptions = {
   charset?: string;
   /** Legado UrlOption.type：非空时 getStrResponse 返回 hex 编码正文 */
   type?: string;
+  webView?: boolean;
+  webJs?: string;
+  /** 兼容 UrlOption.js（部分源写作 js 而非 webJs） */
+  js?: string;
+  bodyJs?: string;
+  webViewDelayTime?: number;
 };
 
 function stringifyLegadoHeaderMap(obj: Record<string, unknown>): Record<string, string> {
@@ -244,13 +250,36 @@ export function parseLegadoUrlSuffixJson(raw: string): LegadoUrlFetchOptions {
 
   const pickUrlOptionFields = (
     headers?: Record<string, string>,
-  ): LegadoUrlFetchOptions => ({
-    headers,
-    method: typeof parsed!.method === "string" ? parsed!.method : undefined,
-    body: parsed!.body != null ? String(parsed!.body) : undefined,
-    charset: typeof parsed!.charset === "string" ? parsed!.charset : undefined,
-    type: typeof parsed!.type === "string" ? parsed!.type : undefined,
-  });
+  ): LegadoUrlFetchOptions => {
+    const webViewRaw = parsed!.webView;
+    const webView =
+      webViewRaw === true ||
+      webViewRaw === "true" ||
+      webViewRaw === 1 ||
+      webViewRaw === "1";
+    const delayRaw = parsed!.webViewDelayTime;
+    const webViewDelayTime =
+      typeof delayRaw === "number" && Number.isFinite(delayRaw)
+        ? delayRaw
+        : typeof delayRaw === "string" && delayRaw.trim()
+          ? Number(delayRaw)
+          : undefined;
+    return {
+      headers,
+      method: typeof parsed!.method === "string" ? parsed!.method : undefined,
+      body: parsed!.body != null ? String(parsed!.body) : undefined,
+      charset: typeof parsed!.charset === "string" ? parsed!.charset : undefined,
+      type: typeof parsed!.type === "string" ? parsed!.type : undefined,
+      webView: webView || undefined,
+      webJs: typeof parsed!.webJs === "string" ? parsed!.webJs : undefined,
+      js: typeof parsed!.js === "string" ? parsed!.js : undefined,
+      bodyJs: typeof parsed!.bodyJs === "string" ? parsed!.bodyJs : undefined,
+      webViewDelayTime:
+        webViewDelayTime != null && Number.isFinite(webViewDelayTime)
+          ? webViewDelayTime
+          : undefined,
+    };
+  };
 
   if (
     parsed.headers &&

@@ -706,13 +706,6 @@ async function onDownloadOrStop() {
           <RefreshIcon :spinning="refreshing" />
         </IconButton>
         <IconButton
-          :icon-html="icons.edit"
-          title="编辑书源"
-          aria-label="编辑书源"
-          :disabled="!item?.origin"
-          @click="onEditBookSource"
-        />
-        <IconButton
           v-if="sourceNeedsLogin"
           :icon-html="icons.login"
           title="登录"
@@ -756,6 +749,15 @@ async function onDownloadOrStop() {
         @click="onCopyTocUrl"
       >
         <span class="appShellMenuLabel">复制目录 URL</span>
+      </button>
+      <button
+        type="button"
+        class="appShellMenuItem"
+        role="menuitem"
+        :disabled="!item?.origin"
+        @click="onEditBookSource"
+      >
+        <span class="appShellMenuLabel">编辑书源</span>
       </button>
       <button
         type="button"

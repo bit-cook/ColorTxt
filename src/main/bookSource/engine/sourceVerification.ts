@@ -21,6 +21,10 @@ import {
   setCookieFromResponse,
   cookieHeaderForUrl,
 } from "./cookieManager";
+import {
+  clearLoginSessionAck,
+  setLoginSessionAck,
+} from "../store/bookSourceStore";
 import { WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT } from "../../windowBounds";
 
 const FOOTER_PADDING = 10;
@@ -173,7 +177,7 @@ function verificationToolbarHtml(): string {
 <body>
   <div class="bar">
     <button type="button" id="cancel">取消</button>
-    <button type="button" class="primary" id="ok">完成验证</button>
+    <button type="button" class="primary" id="ok">完成</button>
   </div>
   <script>
     const { ipcRenderer } = require("electron");
@@ -270,6 +274,17 @@ function settlePending(sourceKey: string, body: string, confirmed = true): void 
   }
 }
 
+function syncLoginSessionAckAfterVerification(
+  sourceKey: string,
+  confirmed: boolean,
+): void {
+  if (!confirmed || !sourceKey.trim()) return;
+  // 登录窗点确认后：有 Cookie 记为已确认；登出后 Cookie 被清空则清除标记
+  const ck = cookieHeaderForUrl(sourceKey);
+  if (ck.trim()) setLoginSessionAck(sourceKey);
+  else clearLoginSessionAck(sourceKey);
+}
+
 async function finishVerification(
   content: WebContents,
   sourceKey: string,
@@ -280,6 +295,7 @@ async function finishVerification(
   confirmed = true,
 ): Promise<void> {
   if (content.isDestroyed()) {
+    syncLoginSessionAckAfterVerification(sourceKey, confirmed);
     settlePending(sourceKey, "", confirmed);
     return;
   }
@@ -291,8 +307,10 @@ async function finishVerification(
       source,
       host,
     );
+    syncLoginSessionAckAfterVerification(sourceKey, confirmed);
     settlePending(sourceKey, body, confirmed);
   } catch {
+    syncLoginSessionAckAfterVerification(sourceKey, confirmed);
     settlePending(sourceKey, "", confirmed);
   }
 }

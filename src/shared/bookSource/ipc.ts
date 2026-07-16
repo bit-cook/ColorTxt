@@ -35,8 +35,12 @@ export const BOOK_SOURCE_IPC = {
   setLoginInfo: "bookSource:setLoginInfo",
   browserLogin: "bookSource:browserLogin",
   login: "bookSource:login",
+  /** 执行正文规则 payAction（对齐 Legado ReadBookActivity.payAction） */
+  payAction: "bookSource:payAction",
   getLoginHeader: "bookSource:getLoginHeader",
   removeLoginHeader: "bookSource:removeLoginHeader",
+  /** 清除书源域名下 Cookie（对齐 Legado CookieStore.removeCookie） */
+  clearCookie: "bookSource:clearCookie",
   reorder: "bookSource:reorder",
   applyCustomOrders: "bookSource:applyCustomOrders",
   exploreKinds: "bookSource:exploreKinds",
@@ -137,6 +141,22 @@ export type BookSourceLoginResult = {
   logs?: string[];
 };
 
+export type BookSourcePayActionPayload = {
+  bookSourceUrl: string;
+  book: Book;
+  chapter: BookChapter;
+  cacheDir?: string;
+};
+
+export type BookSourcePayActionResult = {
+  ok: boolean;
+  message?: string;
+  cancelled?: boolean;
+  /** 购买成功：主进程已删该章缓存，渲染层应刷新目录并重载正文 */
+  refresh?: boolean;
+  logs?: string[];
+};
+
 export type BookSourceResolveCoverPayload = {
   bookSourceUrl: string;
   /** 已规范化的封面 HTTP URL（优先） */
@@ -205,8 +225,14 @@ export type BookSourceIpcApi = {
     loginData: Record<string, string>,
     options?: BookSourceLoginOptions,
   ) => Promise<BookSourceLoginResult>;
+  bookSourcePayAction: (
+    payload: BookSourcePayActionPayload,
+  ) => Promise<BookSourcePayActionResult>;
   bookSourceGetLoginHeader: (sourceUrl: string) => Promise<string>;
   bookSourceRemoveLoginHeader: (sourceUrl: string) => Promise<{ ok: boolean }>;
+  bookSourceClearCookie: (
+    sourceUrl: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
   bookSourceReorder: (
     url: string,
     position: "top" | "bottom",

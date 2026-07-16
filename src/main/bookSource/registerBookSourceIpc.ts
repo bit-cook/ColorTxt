@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import { BOOK_SOURCE_IPC } from "@shared/bookSource/ipc";
 import type {
   BookSourceImportCommitPayload,
+  BookSourcePayActionPayload,
   BookSourceResolveCoverPayload,
 } from "@shared/bookSource/ipc";
-import type { BookSourceRecord, BookSourceGetBookInfoPayload, BookSourceGetChapterListPayload, BookSourceGetChapterContentPayload } from "@shared/bookSource/types";
+import type { BookSourceRecord, BookSourceGetBookInfoPayload, BookSourceGetChapterListPayload, BookSourceGetChapterContentPayload, BookChapter } from "@shared/bookSource/types";
 import { parseBookSourceJson } from "@shared/bookSource/types";
 import { coerceBook } from "@shared/bookSource/bookModel";
 import {
@@ -22,6 +23,7 @@ import {
   moveBookSourceToBottom,
   moveBookSourceToTop,
   removeLoginHeader,
+  clearLoginSessionAck,
   saveBookSource,
   setBookCustomVariable,
   setLoginInfo,
@@ -41,6 +43,7 @@ import {
   runLoginUiButton,
   runSourceLogin,
 } from "./engine/loginCheck";
+import { runChapterPayAction } from "./engine/payAction";
 import { clearExploreKindsCache, getExploreKinds } from "./engine/exploreKinds";
 import {
   exploreBook,
@@ -55,6 +58,10 @@ import {
   saveChapterCache,
 } from "./engine/chapterCache";
 import { fetchCoverDisplayUrl } from "./engine/coverImage";
+import {
+  getDomainFromUrl,
+  removeDomainCookies,
+} from "./engine/cookieManager";
 import {
   appendBookSourceErrorLog,
   summarizeBookSourceError,
@@ -296,6 +303,31 @@ export function registerBookSourceIpcHandlers(): void {
     },
   );
 
+  ipcMain.handle(BOOK_SOURCE_IPC.payAction, async (_e, payload: unknown) => {
+    if (!payload || typeof payload !== "object") {
+      return { ok: false, message: "参数无效" };
+    }
+    const p = payload as BookSourcePayActionPayload;
+    if (typeof p.bookSourceUrl !== "string" || !p.bookSourceUrl.trim()) {
+      return { ok: false, message: "书源无效" };
+    }
+    if (!p.book || typeof p.book !== "object") {
+      return { ok: false, message: "书籍无效" };
+    }
+    if (!p.chapter || typeof p.chapter !== "object") {
+      return { ok: false, message: "章节无效" };
+    }
+    const source = getBookSource(p.bookSourceUrl);
+    if (!source) return { ok: false, message: "书源不存在" };
+    return await runChapterPayAction({
+      source,
+      book: coerceBook(p.book),
+      chapter: p.chapter as BookChapter,
+      cacheDir:
+        typeof p.cacheDir === "string" ? p.cacheDir : undefined,
+    });
+  });
+
   ipcMain.handle(BOOK_SOURCE_IPC.getLoginHeader, (_e, sourceUrl: unknown) => {
     if (typeof sourceUrl !== "string") return "";
     return getLoginHeader(sourceUrl) ?? "";
@@ -305,6 +337,16 @@ export function registerBookSourceIpcHandlers(): void {
     if (typeof sourceUrl === "string") {
       removeLoginHeader(sourceUrl);
     }
+    return { ok: true };
+  });
+
+  ipcMain.handle(BOOK_SOURCE_IPC.clearCookie, (_e, sourceUrl: unknown) => {
+    if (typeof sourceUrl !== "string" || !sourceUrl.trim()) {
+      return { ok: false, message: "书源 URL 无效" };
+    }
+    const url = sourceUrl.trim();
+    removeDomainCookies(getDomainFromUrl(url));
+    clearLoginSessionAck(url);
     return { ok: true };
   });
 

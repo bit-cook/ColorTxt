@@ -643,9 +643,20 @@ export function extractFromContentRoot(
   return extractFromElement(root, extract);
 }
 
-/** Legado/JSoup Element.text()：忽略 script / style / noscript 内文本 */
+/**
+ * 对齐 Legado/JSoup `Element.text()`：
+ * - 忽略 script / style / noscript
+ * - 空白（含源码换行）归一为单个空格并 trim
+ * Cheerio `.text()` 会保留 HTML 源码换行，`div.tags` / `p.bookDesc` 等会多出无换行段。
+ */
 function legadoElementText(el: Cheerio<any>): string {
-  return el.clone().find("script, style, noscript").remove().end().text().trim();
+  const raw = el
+    .clone()
+    .find("script, style, noscript")
+    .remove()
+    .end()
+    .text();
+  return raw.replace(/\s+/g, " ").trim();
 }
 
 /**

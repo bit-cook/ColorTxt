@@ -989,6 +989,12 @@ const api = {
     ipcRenderer.invoke(BOOK_SOURCE_IPC.login, sourceUrl, loginData, options) as ReturnType<
       BookSourceIpcApi["bookSourceLogin"]
     >,
+  bookSourcePayAction: (
+    payload: Parameters<BookSourceIpcApi["bookSourcePayAction"]>[0],
+  ) =>
+    ipcRenderer.invoke(BOOK_SOURCE_IPC.payAction, payload) as ReturnType<
+      BookSourceIpcApi["bookSourcePayAction"]
+    >,
   bookSourceGetLoginHeader: (sourceUrl: string) =>
     ipcRenderer.invoke(BOOK_SOURCE_IPC.getLoginHeader, sourceUrl) as ReturnType<
       BookSourceIpcApi["bookSourceGetLoginHeader"]
@@ -996,6 +1002,10 @@ const api = {
   bookSourceRemoveLoginHeader: (sourceUrl: string) =>
     ipcRenderer.invoke(BOOK_SOURCE_IPC.removeLoginHeader, sourceUrl) as ReturnType<
       BookSourceIpcApi["bookSourceRemoveLoginHeader"]
+    >,
+  bookSourceClearCookie: (sourceUrl: string) =>
+    ipcRenderer.invoke(BOOK_SOURCE_IPC.clearCookie, sourceUrl) as ReturnType<
+      BookSourceIpcApi["bookSourceClearCookie"]
     >,
   bookSourceReorder: (url: string, position: "top" | "bottom") =>
     ipcRenderer.invoke(BOOK_SOURCE_IPC.reorder, url, position) as ReturnType<

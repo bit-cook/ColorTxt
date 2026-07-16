@@ -302,6 +302,24 @@ export function removeLoginHeader(sourceUrl: string): void {
     .run(sourceUrl, LOGIN_HEADER_KEY);
 }
 
+/**
+ * 书源级「已完成登录确认」标记（非域名 Cookie）。
+ * 搜索启发式弹窗依赖此标记，避免匿名 Set-Cookie 被误判为已登录。
+ */
+const LOGIN_SESSION_ACK_KEY = "loginSessionAck";
+
+export function getLoginSessionAck(sourceUrl: string): boolean {
+  return getCacheValue(sourceUrl, LOGIN_SESSION_ACK_KEY) === "1";
+}
+
+export function setLoginSessionAck(sourceUrl: string): void {
+  putCacheValue(sourceUrl, LOGIN_SESSION_ACK_KEY, "1");
+}
+
+export function clearLoginSessionAck(sourceUrl: string): void {
+  removeCacheValue(sourceUrl, LOGIN_SESSION_ACK_KEY);
+}
+
 /** Legado BaseSource：sourceVariable_${getKey()} */
 const SOURCE_VARIABLE_CACHE_KEY = "sourceVariable";
 
