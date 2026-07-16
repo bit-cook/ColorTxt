@@ -410,6 +410,76 @@ export function persistFileMetaRecords(
   }
 }
 
+export type MergeFileMetaRecordsOptions = {
+  /**
+   * 本窗口正在阅读的路径：合并时始终保留其 progress / editorViewState /
+   * viewportTopPhysicalLine（滚动常原地改进度且不刷新 updatedAt）。
+   */
+  preferLocalReadingPath?: string | null;
+  /** 同 updatedAt 时偏向哪一侧；写盘用 local，storage 同步用 remote */
+  tieBreak?: "local" | "remote";
+};
+
+function fileMetaRecordsByPathKey(
+  items: FileMetaRecord[],
+): Map<string, FileMetaRecord> {
+  const map = new Map<string, FileMetaRecord>();
+  for (const r of items) {
+    map.set(normalizeFileMetaPathKey(r.path), r);
+  }
+  return map;
+}
+
+/**
+ * 多窗口共用 localStorage 时合并两侧 file.meta：按路径、以 updatedAt 决胜；
+ * 正在阅读的文件保留本窗口阅读位置，避免他窗整表写入冲掉未落盘进度。
+ */
+export function mergeFileMetaRecords(
+  local: FileMetaRecord[],
+  remote: FileMetaRecord[],
+  opts?: MergeFileMetaRecordsOptions,
+): FileMetaRecord[] {
+  const tieBreak = opts?.tieBreak ?? "local";
+  const preferKey = opts?.preferLocalReadingPath
+    ? normalizeFileMetaPathKey(opts.preferLocalReadingPath)
+    : "";
+  const localMap = fileMetaRecordsByPathKey(local);
+  const remoteMap = fileMetaRecordsByPathKey(remote);
+  const keys = new Set<string>([...localMap.keys(), ...remoteMap.keys()]);
+  const out: FileMetaRecord[] = [];
+
+  for (const key of keys) {
+    const L = localMap.get(key);
+    const R = remoteMap.get(key);
+    if (!L) {
+      out.push(R!);
+      continue;
+    }
+    if (!R) {
+      out.push(L);
+      continue;
+    }
+
+    let pick: FileMetaRecord;
+    if (L.updatedAt > R.updatedAt) pick = L;
+    else if (R.updatedAt > L.updatedAt) pick = R;
+    else pick = tieBreak === "remote" ? R : L;
+
+    if (key === preferKey) {
+      out.push({
+        ...pick,
+        progress: L.progress,
+        editorViewState: L.editorViewState,
+        viewportTopPhysicalLine: L.viewportTopPhysicalLine,
+      });
+    } else {
+      out.push(pick);
+    }
+  }
+
+  return out;
+}
+
 export function findFileMetaRecord(items: FileMetaRecord[], path: string) {
   const fullKey = normalizeFileMetaPathKey(path);
   const exact = items.find(
