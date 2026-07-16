@@ -28,11 +28,11 @@ export type ReplaceRule = {
   group?: string;
   pattern: string;
   replacement: string;
-  /** 书名 / 书源 URL 作用域（Legado 导入兼容；UI 已不展示，有值时保留） */
+  /** 替换范围：可选，书名或书源 URL（空=全部；对齐 Legado scope） */
   scope?: string;
   scopeTitle: boolean;
   scopeContent: boolean;
-  /** Legado 导入兼容；UI 已不展示，有值时保留 */
+  /** 排除范围：可选，书名或书源 URL（命中则跳过；对齐 Legado excludeScope） */
   excludeScope?: string;
   isEnabled: boolean;
   isRegex: boolean;

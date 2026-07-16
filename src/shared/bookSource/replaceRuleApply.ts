@@ -28,17 +28,19 @@ export function excludeMatches(
   return s.includes(name) || s.includes(origin);
 }
 
-/** 对齐 Legado `findEnabledByContentScope` / `findEnabledByTitleScope`（书名/URL 作用域已弃用，始终全局） */
+/** 对齐 Legado `findEnabledByContentScope` / `findEnabledByTitleScope` */
 export function filterEnabledReplaceRules(
   rules: ReplaceRule[],
-  _bookName: string,
-  _bookOrigin: string,
+  bookName: string,
+  bookOrigin: string,
   kind: "content" | "title",
 ): ReplaceRule[] {
   return rules.filter((rule) => {
     if (!rule.isEnabled) return false;
     if (kind === "content" && !rule.scopeContent) return false;
     if (kind === "title" && !rule.scopeTitle) return false;
+    if (!scopeMatches(rule.scope, bookName, bookOrigin)) return false;
+    if (excludeMatches(rule.excludeScope, bookName, bookOrigin)) return false;
     return true;
   });
 }

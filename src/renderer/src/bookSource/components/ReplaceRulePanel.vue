@@ -219,7 +219,11 @@ function openCreate() {
 
 function openEdit(item: ReplaceRule) {
   editingRuleId.value = item.id;
-  editing.value = { ...item };
+  editing.value = {
+    ...item,
+    scope: item.scope ?? "",
+    excludeScope: item.excludeScope ?? "",
+  };
   showEdit.value = true;
 }
 
@@ -575,6 +579,30 @@ function ruleReplacePreview(item: ReplaceRule): string {
           <AppCheckbox class="editCheck" v-model="editing.scopeTitle" label="作用于标题" />
           <AppCheckbox class="editCheck" v-model="editing.scopeContent" label="作用于正文" />
         </div>
+        <template v-if="bucket === 'findBook'">
+          <label class="editField">
+            <span class="editFieldLabel">
+              <span class="editFieldLabelTitle">替换范围</span>
+              <span class="editFieldLabelKey">（可选）</span>
+            </span>
+            <AutoResizeTextarea
+              class="editFieldInput"
+              v-model="editing.scope"
+              placeholder="书名或书源 URL"
+            />
+          </label>
+          <label class="editField">
+            <span class="editFieldLabel">
+              <span class="editFieldLabelTitle">排除范围</span>
+              <span class="editFieldLabelKey">（可选）</span>
+            </span>
+            <AutoResizeTextarea
+              class="editFieldInput"
+              v-model="editing.excludeScope"
+              placeholder="书名或书源 URL"
+            />
+          </label>
+        </template>
       </div>
     </div>
     <template #footer>
