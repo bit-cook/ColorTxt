@@ -125,8 +125,8 @@ export type SearchBookItem = {
   author: string;
   kind?: string;
   wordCount?: string;
-  lastChapter?: string;
   intro?: string;
+  lastChapter?: string;
   coverUrl?: string;
   /** 封面原始 HTTP URL（持久化；colortxt-local 失效时可重新代理） */
   coverSourceUrl?: string;
@@ -135,6 +135,18 @@ export type SearchBookItem = {
   originName: string;
   /** 搜索 @put 写入的变量（如 id），须随书带入详情/目录 */
   variable?: Record<string, string>;
+  /**
+   * 对齐 Legado `SearchBook.infoHtml`：
+   * `getInfoItem`（列表空/链接即详情）时缓存详情 HTML，供 `getBookInfo` 免二次请求。
+   */
+  infoHtml?: string;
+  /**
+   * 搜索 getInfoItem 时响应最终 URL（对齐 Legado `analyzeBookList` 的 baseUrl/redirectUrl=res.url）。
+   * 供 `java.refreshBookUrl()` 得到真实书籍页，而非仍停在搜索接口的地址。
+   */
+  infoUrl?: string;
+  /** 对齐 Legado：getInfoItem 阶段已解析的 tocUrl */
+  tocUrl?: string;
 };
 
 /**
@@ -156,6 +168,15 @@ export type Book = {
   origin?: string;
   originName?: string;
   variable?: Record<string, string>;
+  /** 对齐 Legado `Book.infoHtml`：详情页 HTML 缓存 */
+  infoHtml?: string;
+  /**
+   * 搜索 getInfoItem 时响应最终 URL（对齐 Legado redirectUrl）。
+   * 正文同页解析时用于绝对化 `nextContentUrl`，避免仍用搜索页 URL。
+   */
+  infoUrl?: string;
+  /** 对齐 Legado `Book.tocHtml`：目录与详情同页时缓存正文供 `getChapterList` */
+  tocHtml?: string;
 };
 
 export type BookChapter = {
@@ -179,11 +200,25 @@ export type BookSourceGetBookInfoPayload = {
   coverUrl?: string;
   /** 搜索 @put 变量（对齐 Legado Book.variable） */
   variable?: Record<string, string>;
+  /** 对齐 Legado SearchBook.infoHtml */
+  infoHtml?: string;
+  /** 搜索详情响应最终 URL（res.url） */
+  infoUrl?: string;
+  /** 搜索 getInfoItem 已解析的 tocUrl */
+  tocUrl?: string;
 };
 
 export type BookInfoSeed = Pick<
   BookSourceGetBookInfoPayload,
-  "kind" | "wordCount" | "intro" | "lastChapter" | "coverUrl" | "variable"
+  | "kind"
+  | "wordCount"
+  | "intro"
+  | "lastChapter"
+  | "coverUrl"
+  | "variable"
+  | "infoHtml"
+  | "infoUrl"
+  | "tocUrl"
 > & {
   origin?: string;
   originName?: string;
@@ -201,6 +236,11 @@ export type BookSourceGetChapterContentPayload = {
   chapterTitle: string;
   chapterIndex: number;
   nextChapterUrl?: string;
+  /**
+   * 全书章节 URL 列表（内容章，阅读序）。
+   * 对齐 Legado：nextContentUrl 若已是目录中其它章则停止翻页。
+   */
+  chapterUrls?: string[];
   /** 章节正文离线缓存根目录；空则用默认 userData/book_cache */
   cacheDir?: string;
   /** 默认 true；false 时忽略本地缓存，重新联网拉取并覆盖写入 */

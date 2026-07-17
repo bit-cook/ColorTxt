@@ -25,11 +25,13 @@ export function searchBookToBook(item: SearchBookItem): Book {
     kind: item.kind?.trim() ?? "",
     wordCount: item.wordCount,
     lastChapter: item.lastChapter,
-    tocUrl: "",
+    tocUrl: item.tocUrl?.trim() || "",
     bookUrl,
     origin: item.origin,
     originName: item.originName,
     variable: item.variable ? { ...item.variable } : undefined,
+    infoHtml: item.infoHtml,
+    infoUrl: item.infoUrl,
   };
 }
 
@@ -69,5 +71,8 @@ export function coerceBook(raw: Partial<Book> & { bookUrl?: string }): Book {
     origin: raw.origin,
     originName: raw.originName,
     variable: raw.variable,
+    infoHtml: raw.infoHtml,
+    infoUrl: raw.infoUrl,
+    tocHtml: raw.tocHtml,
   };
 }

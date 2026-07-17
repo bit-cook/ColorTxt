@@ -10,7 +10,7 @@
   - 设置：找书窗口「更多 → 设置」可配置「下载」「代理」等相关选项
 
 > [!NOTE]
-> `开源阅读` 书源用到了一些 `Java` 接口，彩读移植了一套 `JavaScript` 实现，大概率会有错漏，目前算是测试版，如发现问题，请提交 [issue](https://github.com/ssnangua/ColorTxt/issues/new)
+> `开源阅读` 书源用到了一些 `Java` 接口，彩读移植了一套 `JavaScript` 实现，具体见 [§ 规则能力与兼容范围](https://github.com/ssnangua/ColorTxt/blob/main/docs/%E4%B9%A6%E6%BA%90%E6%89%BE%E4%B9%A6.md#7-%E8%A7%84%E5%88%99%E8%83%BD%E5%8A%9B%E4%B8%8E%E5%85%BC%E5%AE%B9%E8%8C%83%E5%9B%B4)，大概率有错漏，只能通过迭代不断纠错兼容，目前算是测试版，如发现问题，请提交 [issue](https://github.com/ssnangua/ColorTxt/issues/new)
 
 - **文本替换**：全局替换文本，可用于替换人名、去广告文本等
 - **章节导航工具栏**：可在「设置 → 阅读」中启用，会在阅读区底部显示「上一章 / 下一章」快捷跳转

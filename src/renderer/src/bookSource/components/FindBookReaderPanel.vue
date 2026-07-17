@@ -84,6 +84,7 @@ import {
 } from "../../stores/cacheStore";
 import { READER_SIDEBAR_ROW_STRIDE } from "../../composables/useReaderSidebarLists";
 import {
+  contentChaptersInReadingOrder,
   displayIndexForReadingOrder,
   readingOrderIndexFromDisplay,
 } from "../chapterReadingOrder";
@@ -938,6 +939,9 @@ async function loadChapterAtDisplayIndex(
     readingIdx + 1 < listLen
       ? displayChapters.value[nextDisplayIdx]
       : undefined;
+  const chapterUrlsInReadingOrder = contentChaptersInReadingOrder(
+    contentChapters.value,
+  ).map((c) => c.url);
   try {
     const loaded = await loadChapterContent({
       bookSourceUrl: props.item.origin,
@@ -951,6 +955,7 @@ async function loadChapterAtDisplayIndex(
       chapterTitle: ch.title,
       chapterIndex: contentIndex,
       nextChapterUrl: nextInReadingOrder?.url,
+      chapterUrls: chapterUrlsInReadingOrder,
       cacheDir: effectiveCacheDir.value.trim() || undefined,
       preferCache,
     });
@@ -1225,6 +1230,26 @@ async function onBack() {
 function onOpenBookDetail() {
   closeTopMoreMenu();
   emit("openBookDetail");
+}
+
+async function copyText(label: string, text: string) {
+  const value = text.trim();
+  if (!value) {
+    appToast(`${label}为空`, { kind: "warning" });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    appToast(`已复制${label}`, { kind: "success", duration: 1200 });
+  } catch {
+    appToast(`复制${label}失败`, { kind: "warning" });
+  }
+}
+
+async function onCopyChapterUrl() {
+  closeTopMoreMenu();
+  const ch = displayChapters.value[currentDisplayIndex.value];
+  await copyText("正文 URL", ch?.url ?? "");
 }
 
 function onEditBookSource() {
@@ -1866,6 +1891,15 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
             @click="onOpenBookDetail"
           >
             <span class="appShellMenuLabel">书籍信息</span>
+          </button>
+          <button
+            type="button"
+            class="appShellMenuItem"
+            role="menuitem"
+            :disabled="!displayChapters[currentDisplayIndex]?.url?.trim()"
+            @click="onCopyChapterUrl"
+          >
+            <span class="appShellMenuLabel">复制正文 URL</span>
           </button>
           <button
             type="button"

@@ -27,10 +27,6 @@ import {
   setLoginInfo,
 } from "../store/bookSourceStore";
 import { evalJs, evalJsAsync } from "./rhinoRuntime";
-import {
-  needsWebViewHtmlFallback,
-  runBackstageWebView,
-} from "./backstageWebView";
 
 function buildLoginJava(
   analyzeUrl: AnalyzeUrl,
@@ -38,27 +34,6 @@ function buildLoginJava(
   source: BookSourceRecord,
 ): Record<string, unknown> {
   const base = { ...host.javaBindings };
-  const fetchAfterCheck = async (): Promise<StrResponse> => {
-    // AnalyzeUrl 已对挑战页自动 webView；此处再兜底：刷 Cookie 后仍可能是 404/WAF 壳
-    let res = await analyzeUrl.getStrResponse();
-    if (!needsWebViewHtmlFallback(res.body, res.statusCode)) return res;
-    const html = await runBackstageWebView({
-      url: analyzeUrl.url || analyzeUrl.ruleUrl,
-      js: "document.documentElement.outerHTML",
-      source,
-      host,
-    });
-    if (
-      html?.trim() &&
-      (!needsWebViewHtmlFallback(html) ||
-        html.includes("chapter-item") ||
-        html.includes("og:novel") ||
-        html.length > 4096)
-    ) {
-      return { ...res, body: html, statusCode: 200 };
-    }
-    return res;
-  };
   return {
     ...base,
     // 与 AnalyzeUrl 同步：initUrl() 后须读到新 ruleUrl/url（勿快照）
@@ -74,11 +49,11 @@ function buildLoginJava(
     },
     getHeaderMap: () => ({ ...analyzeUrl.headerMap }),
     getStrResponse: async () => {
-      const res = await fetchAfterCheck();
+      const res = await analyzeUrl.getStrResponse();
       return toLegadoStrResponse(res, { statusCode: res.statusCode });
     },
     getResponse: async () => {
-      const res = await fetchAfterCheck();
+      const res = await analyzeUrl.getStrResponse();
       return toLegadoConnectionResponse(res, { statusCode: res.statusCode });
     },
     startBrowser: (url: string, title: string) => {
@@ -135,32 +110,7 @@ export async function runLoginCheckJs(
       },
       { legadoAsync: true },
     );
-    let out = fromLegadoCheckResult(checked, res);
-    // 脚本未调用 getStrResponse / 或仍返回挑战/WAF 壳时，再 webView 拉一次正文
-    if (needsWebViewHtmlFallback(out.body, out.statusCode)) {
-      logs.push("loginCheckJs 后仍为挑战/WAF 壳，改用 webView 拉取正文");
-      try {
-        const html = await runBackstageWebView({
-          url: analyzeUrl.url || analyzeUrl.ruleUrl,
-          js: "document.documentElement.outerHTML",
-          source,
-          host,
-        });
-        if (
-          html?.trim() &&
-          (!needsWebViewHtmlFallback(html) ||
-            html.includes("chapter-item") ||
-            html.includes("og:novel") ||
-            html.length > 4096)
-        ) {
-          out = { ...out, body: html, statusCode: 200 };
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        logs.push(`loginCheckJs webView 回退失败: ${msg}`);
-      }
-    }
-    return out;
+    return fromLegadoCheckResult(checked, res);
   } catch (e) {
     if (isVerificationCancelled(e)) throw e;
     const msg = e instanceof Error ? e.message : String(e);

@@ -400,6 +400,26 @@ function elementsContainingOwnText(
   });
 }
 
+/**
+ * 对齐 Jsoup Element.select：相对查询须包含 scope 自身（若匹配）。
+ * Cheerio 的 find() 不含自身，会导致 `.category-div@h3@…` 在已是 category-div 的条目上取空。
+ */
+function queryInScope(
+  $: CheerioAPI,
+  scope: Cheerio<any>,
+  sel: string,
+  fromRoot: boolean,
+): Cheerio<any> {
+  if (fromRoot) return $(sel);
+  try {
+    const self = scope.filter(sel);
+    const descendants = scope.find(sel);
+    return self.length ? descendants.add(self) : descendants;
+  } catch {
+    return scope.find(sel);
+  }
+}
+
 /** 在 scope 内按 Legado 单段规则查询元素 */
 export function queryLegadoSelectorSegment(
   $: CheerioAPI,
@@ -412,18 +432,18 @@ export function queryLegadoSelectorSegment(
     let found: Cheerio<any>;
     if (parsed.className != null) {
       const sel = legadoClassSelector(parsed.className);
-      found = fromRoot ? $(sel) : scope.find(sel);
+      found = queryInScope($, scope, sel, fromRoot);
     } else if (parsed.tagName != null) {
-      found = fromRoot ? $(parsed.tagName) : scope.find(parsed.tagName);
+      found = queryInScope($, scope, parsed.tagName, fromRoot);
     } else if (parsed.elementId != null) {
       const sel = `#${parsed.elementId}`;
-      found = fromRoot ? $(sel) : scope.find(sel);
+      found = queryInScope($, scope, sel, fromRoot);
     } else if (parsed.ownText != null) {
       found = elementsContainingOwnText($, scope, parsed.ownText, fromRoot);
     } else if (parsed.children) {
       found = fromRoot ? $.root().children() : scope.children();
     } else if (parsed.css) {
-      found = fromRoot ? $(parsed.css) : scope.find(parsed.css);
+      found = queryInScope($, scope, parsed.css, fromRoot);
     } else {
       return $("");
     }
@@ -852,8 +872,12 @@ export function extractFromElement(
   const attrMatch = t.match(/^\[(.+)]$/);
   if (attrMatch) return el.attr(attrMatch[1]) ?? "";
 
-  const attr = el.attr(t);
-  if (attr != null) return attr;
+  // 属性名提取（如 isVip 误写 `true`、或 `@data-id`）：无该属性时返回空。
+  // 不可回退成元素 text，否则 `isVip:"true"` 会变成章节名 → 全部误判 VIP。
+  if (el.attr(t) != null) return el.attr(t)!;
+  if (isLegadoAttrExtract(t) || /^[a-zA-Z_][\w:-]*$/.test(t)) {
+    return "";
+  }
 
   return legadoElementText(el);
 }

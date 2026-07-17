@@ -24,6 +24,10 @@ export type BackstageWebViewOptions = {
   injectResult?: unknown;
   overrideUrlRegex?: string | null;
   cacheFirst?: boolean;
+  /** 对齐 Electron loadURL：搜索等 POST 表单（如 charset:gbk） */
+  method?: string;
+  /** POST 原始 body（已按书源 charset 编码） */
+  postData?: string | Buffer | Uint8Array | null;
 };
 
 const WEBVIEW_CONTEXT = `
@@ -147,28 +151,6 @@ export function isJsChallengeHtml(text: string): boolean {
   return false;
 }
 
-/**
- * 普通 HTTP 拉到的页是否仍须改用 webView 取正文。
- * 刷 Cookie 后 Node fetch 常见：404 + probev3.js 壳、无目录/书信息（浏览器 WebView 则正常）。
- */
-export function needsWebViewHtmlFallback(
-  body: string,
-  statusCode?: number,
-): boolean {
-  if (isJsChallengeHtml(body)) return true;
-  const head = body.slice(0, 12000);
-  const hasBookDom =
-    body.includes("chapter-item") ||
-    body.includes("og:novel") ||
-    body.includes("book-img-text") ||
-    body.includes("catalog-volume") ||
-    body.includes("y-list__item");
-  if (hasBookDom) return false;
-  if (/probev\d*\.js/i.test(head)) return true;
-  if (statusCode != null && statusCode >= 400 && /probe/i.test(head)) return true;
-  return false;
-}
-
 function shouldRetryWebViewResult(text: string, userScript: string): boolean {
   if (isEmptyEvalResult(text)) return true;
   if (/^\s*document\.cookie\s*$/i.test(userScript.trim())) return false;
@@ -281,7 +263,10 @@ export async function runBackstageWebView(
         };
         wc.on("will-navigate", onNav);
         wc.on("did-navigate", onNav);
-        void loadWebViewContent(wc, pageUrl, html, headers).catch((err) => {
+        void loadWebViewContent(wc, pageUrl, html, headers, timeoutMs, {
+          method: opts.method,
+          postData: opts.postData,
+        }).catch((err) => {
           clearTimeout(timer);
           cleanup();
           reject(err);
@@ -289,7 +274,10 @@ export async function runBackstageWebView(
       });
     }
 
-    await loadWebViewContent(wc, pageUrl, html, headers, timeoutMs);
+    await loadWebViewContent(wc, pageUrl, html, headers, timeoutMs, {
+      method: opts.method,
+      postData: opts.postData,
+    });
 
     if (delayMs > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
@@ -353,26 +341,50 @@ export async function runBackstageWebView(
   }
 }
 
+/** Chromium net errors：-3 ABORTED；-7 TIMED_OUT 上偶发仍会随后 did-finish-load */
+function isSoftWebViewLoadError(code: number, err?: unknown): boolean {
+  if (code === -3 || code === -7) return true;
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /ERR_TIMED_OUT|ERR_ABORTED/i.test(msg);
+}
+
 async function loadWebViewContent(
   wc: Electron.WebContents,
   pageUrl: string,
   html: string,
   headers: Record<string, string>,
   timeoutMs = 60_000,
+  loadOpts?: {
+    method?: string;
+    postData?: string | Buffer | Uint8Array | null;
+  },
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error("webView 页面加载超时")),
       timeoutMs,
     );
+    let settled = false;
     const done = () => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       resolve();
     };
-    const fail = (_: unknown, code: number, desc: string) => {
-      if (code === -3) return;
+    const failHard = (err: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(new Error(`webView 加载失败: ${desc || code}`));
+      reject(err);
+    };
+    const fail = (_: unknown, code: number, desc: string) => {
+      // 软失败：等 did-finish-load 或总超时（部分站 TIMED_OUT 后仍出正文）
+      if (isSoftWebViewLoadError(code)) return;
+      failHard(new Error(`webView 加载失败: ${desc || code}`));
+    };
+    const onLoadUrlCatch = (err: unknown) => {
+      if (isSoftWebViewLoadError(0, err)) return;
+      failHard(err instanceof Error ? err : new Error(String(err)));
     };
     wc.once("did-finish-load", done);
     wc.once("did-fail-load", fail);
@@ -382,29 +394,43 @@ async function loadWebViewContent(
         .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`, {
           baseURLForDataURL: pageUrl.startsWith("http") ? pageUrl : undefined,
         })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
+        .catch(onLoadUrlCatch);
       return;
     }
     if (pageUrl.startsWith("http")) {
-      const extraHeaders = headersToLoadUrlExtraHeaders(
-        Object.fromEntries(
-          Object.entries(headers).filter(([k]) => !/^user-agent$/i.test(k)),
-        ),
+      const method = (loadOpts?.method ?? "GET").toUpperCase();
+      const postRaw = loadOpts?.postData;
+      const headerMap = Object.fromEntries(
+        Object.entries(headers).filter(([k]) => !/^user-agent$/i.test(k)),
       );
+      if (
+        method === "POST" &&
+        postRaw != null &&
+        !(typeof postRaw === "string" && !postRaw) &&
+        !headerMap["Content-Type"] &&
+        !headerMap["content-type"]
+      ) {
+        headerMap["Content-Type"] = "application/x-www-form-urlencoded";
+      }
+      const extraHeaders = headersToLoadUrlExtraHeaders(headerMap);
+      const loadOptions: Electron.LoadURLOptions = {};
+      if (extraHeaders) loadOptions.extraHeaders = extraHeaders;
+      if (method === "POST" && postRaw != null) {
+        const bytes = Buffer.isBuffer(postRaw)
+          ? postRaw
+          : typeof postRaw === "string"
+            ? Buffer.from(postRaw)
+            : Buffer.from(postRaw);
+        loadOptions.postData = [{ type: "rawData", bytes }];
+      }
       void wc
-        .loadURL(pageUrl, extraHeaders ? { extraHeaders } : undefined)
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
+        .loadURL(
+          pageUrl,
+          Object.keys(loadOptions).length > 0 ? loadOptions : undefined,
+        )
+        .catch(onLoadUrlCatch);
       return;
     }
-    void wc.loadURL("about:blank").catch((err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    void wc.loadURL("about:blank").catch(onLoadUrlCatch);
   });
 }

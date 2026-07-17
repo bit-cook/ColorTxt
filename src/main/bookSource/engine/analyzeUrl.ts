@@ -1,6 +1,5 @@
 import iconv from "iconv-lite";
 import type { BookSourceRecord } from "@shared/bookSource/types";
-import { decodeHttpResponseBody } from "../../detectTextEncoding";
 import {
   normalizeBookSourceBaseUrl,
   normalizeHttpUrlPath,
@@ -14,11 +13,12 @@ import {
 } from "./sourceRequestHeaders";
 import { appendBookSourceErrorLog } from "./bookSourceErrorLog";
 import { toLegadoStrResponse } from "./legadoStrResponse";
-import { cookieHeaderForUrl, setCookieFromResponse } from "./cookieManager";
+import { cookieHeaderForUrl } from "./cookieManager";
 import { DEFAULT_BOOK_SOURCE_USER_AGENT } from "./bookSourceUserAgent";
 import { evalJs, evalJsAsync } from "./rhinoRuntime";
 import { legadoJsonValueToString } from "./legadoJavaApi";
-import { runBackstageWebView, needsWebViewHtmlFallback } from "./backstageWebView";
+import { runBackstageWebView } from "./backstageWebView";
+import { fetchViaChromiumNet } from "./chromiumNetFetch";
 import { splitAtJsRule } from "./legadoRuleSplit";
 import {
   isLegadoEmbeddedRuleExpr,
@@ -26,10 +26,7 @@ import {
   parseLegadoUrlSuffixJson,
 } from "./legadoCompositeRule";
 import { withSourceRateLimit } from "./concurrentRateLimiter";
-import {
-  extractProxyFromHeaders,
-  getBookSourceDispatcher,
-} from "./httpProxy";
+import { extractProxyFromHeaders } from "./httpProxy";
 
 export type StrResponse = {
   url: string;
@@ -247,79 +244,6 @@ function buildFormBody(
   return body;
 }
 
-/** fetch BodyInit 不接受 Node Buffer，需转为 Uint8Array */
-function toFetchBody(body: string | Buffer | undefined): BodyInit | undefined {
-  if (body == null) return undefined;
-  if (Buffer.isBuffer(body)) return new Uint8Array(body);
-  return body;
-}
-
-/** 书源 HTTP 正文上限，防止异常响应把主进程内存撑爆（界面卡死） */
-const BOOK_SOURCE_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-
-async function readResponseBytesCapped(
-  res: Response,
-  maxBytes: number,
-  meta: { logs?: string[]; url?: string; sourceName?: string },
-): Promise<Buffer> {
-  const lenHeader = res.headers.get("content-length");
-  if (lenHeader) {
-    const n = Number(lenHeader);
-    if (Number.isFinite(n) && n > maxBytes) {
-      try {
-        res.body?.cancel();
-      } catch {
-        /* ignore */
-      }
-      const msg = `响应过大 (${n} > ${maxBytes} bytes): ${meta.url ?? ""}`;
-      meta.logs?.push(`[HTTP] ${msg}`);
-      throw new Error(msg);
-    }
-  }
-
-  if (!res.body) {
-    return Buffer.from(await res.arrayBuffer());
-  }
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value?.byteLength) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          /* ignore */
-        }
-        const msg = `响应超过 ${maxBytes} bytes，已中止: ${meta.url ?? ""}`;
-        meta.logs?.push(`[HTTP] ${msg}`);
-        throw new Error(msg);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      /* ignore */
-    }
-  }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
-}
-
-function decodeResponseBody(
-  raw: Buffer,
-  charset?: string,
-  contentType?: string | null,
-): string {
-  return decodeHttpResponseBody(raw, { charset, contentType });
-}
-
 export type AnalyzeUrlOptions = {
   mUrl: string;
   key?: string;
@@ -352,6 +276,8 @@ export class AnalyzeUrl {
   private page?: number;
   private baseUrl: string;
   private urlFetchOptions: UrlFetchOptions = {};
+  /** 不含 UrlOption 的请求路径（Legado `url`；`ruleUrl` 可仍带 `,{}`） */
+  private urlPartForFetch = "";
   private method = "GET";
   private urlNoQuery = "";
   private fieldMap = new Map<string, string>();
@@ -389,6 +315,10 @@ export class AnalyzeUrl {
 
   /** 供 bookList 中 java.ajax(u) 使用：含 fetch 选项的完整 URL 字符串 */
   getAjaxUrl(): string {
+    // Legado：`ruleUrl` 在切 UrlOption 后仍保留 `,{}`；优先原串
+    if (/,\s*\{/.test(this.ruleUrl)) {
+      return resolveAbsoluteUrl(this.baseUrl || this.url, this.ruleUrl);
+    }
     const opts = this.urlFetchOptions;
     if (!opts || Object.keys(opts).length === 0) return this.url;
     return `${this.url},${JSON.stringify(opts)}`;
@@ -572,11 +502,14 @@ export class AnalyzeUrl {
      * 阶段切 UrlOption。若先 `splitUrlFetchOptions`，会把
      * `{{String(java.connect(\`…search.html,{…}\`))}}` 在模板内的 `,{}` 处截断，
      * `{{…}}` 永不执行，相对路径变成字面 `{{String(java.connect…`。
+     *
+     * Legado `analyzeUrl()` 只从 `ruleUrl` 解析出 `url`/`UrlOption`，**不改写** `ruleUrl`；
+     * `BookList.getInfoItem` 用 `ruleUrl`（可含 `,{}`）作为 bookUrl。勿把 `ruleUrl` 剥成 path。
      */
     this.ruleUrl = await this.applyTemplateAsync(this.ruleUrl);
     const split = splitUrlFetchOptions(this.ruleUrl);
     this.urlFetchOptions = { ...split.options };
-    this.ruleUrl = split.urlPart;
+    this.urlPartForFetch = split.urlPart;
     if (typeof this.urlFetchOptions.body === "string" && this.urlFetchOptions.body) {
       this.urlFetchOptions.body = await this.applyTemplateAsync(
         this.urlFetchOptions.body,
@@ -585,7 +518,7 @@ export class AnalyzeUrl {
   }
 
   private analyzeUrl(): void {
-    let u = this.ruleUrl.trim();
+    let u = (this.urlPartForFetch || this.ruleUrl).trim();
     if (u.startsWith("data:")) {
       this.parseDataUrl(u);
       return;
@@ -660,6 +593,41 @@ export class AnalyzeUrl {
     return Buffer.from(body, "utf8").toString("hex");
   }
 
+  /** POST 表单体：与 fetchStrResponse 同编码，供 webView loadURL.postData */
+  private buildWebViewRequestPayload(): {
+    method?: string;
+    postData?: string | Buffer;
+    headers: Record<string, string>;
+  } {
+    const headers: Record<string, string> = {
+      ...this.headerMap,
+      ...this.urlFetchOptions.headers,
+    };
+    if (this.method !== "POST") return { headers };
+    const charset = this.urlFetchOptions.charset;
+    let requestBody: string | Buffer | undefined;
+    if (this.fieldMap.size > 0 && this.body == null) {
+      requestBody = buildFormBody(this.fieldMap, charset);
+    } else if (this.body != null) {
+      requestBody = !isUtf8Charset(charset)
+        ? iconv.encode(String(this.body), charset!.trim())
+        : String(this.body);
+    }
+    if (
+      requestBody != null &&
+      !headers["Content-Type"] &&
+      !headers["content-type"]
+    ) {
+      const bodyText =
+        typeof requestBody === "string" ? requestBody.trim() : "";
+      headers["Content-Type"] =
+        bodyText.startsWith("{") || bodyText.startsWith("[")
+          ? "application/json; charset=UTF-8"
+          : "application/x-www-form-urlencoded";
+    }
+    return { method: "POST", postData: requestBody, headers };
+  }
+
   async getStrResponse(opts?: { skipRateLimit?: boolean }): Promise<StrResponse> {
     return withSourceRateLimit(
       this.source,
@@ -686,8 +654,9 @@ export class AnalyzeUrl {
       this.urlFetchOptions.webJs?.trim() ||
       undefined;
     const useWebView = this.urlFetchOptions.webView === true;
+    const webPayload = this.buildWebViewRequestPayload();
 
-    if (useWebView && this.method === "GET") {
+    if (useWebView && (this.method === "GET" || this.method === "POST")) {
       const webBody = await runBackstageWebView({
         url: this.url,
         // 无自定义 webJs 时取 outerHTML；延时由 backstageWebView 对齐 Legado：1000 + webViewDelayTime
@@ -695,6 +664,9 @@ export class AnalyzeUrl {
         source: this.source,
         host: this.host,
         delayMs: this.urlFetchOptions.webViewDelayTime ?? undefined,
+        method: webPayload.method,
+        postData: webPayload.postData,
+        headers: webPayload.headers,
       });
       const body = this.urlFetchOptions.type?.trim()
         ? this.applyTypeHexBody(webBody)
@@ -714,32 +686,6 @@ export class AnalyzeUrl {
       logs: this.host.logs,
       skipRateLimit: true,
     });
-    // 普通 HTTP 遇 JS 挑战 / WAF 壳时，改用 webView（与 UrlOption webView:true 同路径）。
-    // 仅刷 Cookie 再 fetch 在 Electron 里常仍 404+probev3、无目录；浏览器 WebView 可过。
-    if (
-      this.method === "GET" &&
-      needsWebViewHtmlFallback(res.body, res.statusCode)
-    ) {
-      this.host.logs?.push(
-        `普通请求为 JS 挑战/WAF 壳 (HTTP ${res.statusCode ?? "?"})，改用 webView`,
-      );
-      const webBody = await runBackstageWebView({
-        url: this.url,
-        js: webJs,
-        source: this.source,
-        host: this.host,
-        delayMs: this.urlFetchOptions.webViewDelayTime ?? undefined,
-      });
-      if (webBody?.trim() && !needsWebViewHtmlFallback(webBody)) {
-        res = { ...res, body: webBody, statusCode: 200, headers: {} };
-      } else if (
-        webBody?.includes("chapter-item") ||
-        webBody?.includes("og:novel") ||
-        (webBody && webBody.length > (res.body?.length ?? 0))
-      ) {
-        res = { ...res, body: webBody, statusCode: 200, headers: {} };
-      }
-    }
     const bodyJs = this.urlFetchOptions.bodyJs?.trim();
     if (bodyJs) {
       const nextBody = await evalJsAsync(bodyJs, {
@@ -858,7 +804,6 @@ async function fetchStrResponseInner(
   const extracted = extractProxyFromHeaders(headers);
   headers = extracted.headers;
   const proxy = opts.proxy?.trim() || extracted.proxy;
-  const dispatcher = getBookSourceDispatcher(proxy);
 
   const split = splitUrlFetchOptions(url);
   if (split.options && Object.keys(split.options).length > 0) {
@@ -928,60 +873,51 @@ async function fetchStrResponseInner(
     }
   }
 
-  const res = await (async () => {
-    try {
-      return await fetch(requestUrl, {
-        method,
-        headers,
-        body: toFetchBody(requestBody),
-        redirect: opts.redirect ?? "follow",
-        signal: AbortSignal.timeout(15_000),
-        dispatcher,
-      } as RequestInit & { dispatcher?: unknown });
-    } catch (e) {
-      appendBookSourceErrorLog(opts.logs ?? [], e, {
-        phase: "HTTP 请求",
-        sourceName: opts.source?.bookSourceName,
-        sourceUrl: opts.source?.bookSourceUrl,
-        url: requestUrl,
-        method,
-      });
-      throw e;
+  try {
+    const netRes = await fetchViaChromiumNet({
+      url: requestUrl,
+      method,
+      headers,
+      body: requestBody,
+      charset,
+      proxy,
+      useCookieJar: false,
+      redirect: opts.redirect,
+      timeoutMs: 15_000,
+    });
+    if (!netRes.body.trim() && hasGorgonHeader(headers)) {
+      opts.logs?.push(
+        `[HTTP] X-Gorgon 请求返回空响应 (${netRes.statusCode})：${requestUrl.slice(0, 120)}`,
+      );
     }
-  })();
-  const raw = await readResponseBytesCapped(res, BOOK_SOURCE_MAX_RESPONSE_BYTES, {
-    logs: opts.logs,
-    url: requestUrl,
-    sourceName: opts.source?.bookSourceName,
-  });
-  const text = decodeResponseBody(
-    raw,
-    charset,
-    res.headers.get("content-type"),
-  );
-  if (!text.trim() && hasGorgonHeader(headers)) {
-    opts.logs?.push(
-      `[HTTP] X-Gorgon 请求返回空响应 (${res.status})：${requestUrl.slice(0, 120)}`,
-    );
+    if (netRes.statusCode !== 200) {
+      const reason = netRes.statusMessage?.trim()
+        ? ` ${netRes.statusMessage.trim()}`
+        : "";
+      const bodyHint = netRes.body.trim()
+        ? `，正文 ${netRes.body.length} 字`
+        : "，正文为空";
+      opts.logs?.push(
+        `[HTTP] ${method} ${requestUrl.slice(0, 160)} → ${netRes.statusCode}${reason}${bodyHint}`,
+      );
+    }
+    return {
+      url: netRes.url,
+      body: netRes.body,
+      headers: netRes.headers,
+      statusCode: netRes.statusCode,
+      statusMessage: netRes.statusMessage,
+    };
+  } catch (e) {
+    appendBookSourceErrorLog(opts.logs ?? [], e, {
+      phase: "HTTP 请求",
+      sourceName: opts.source?.bookSourceName,
+      sourceUrl: opts.source?.bookSourceUrl,
+      url: requestUrl,
+      method,
+    });
+    throw e;
   }
-  const resHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    resHeaders[k] = v;
-  });
-  const setCookie = res.headers.getSetCookie?.() ?? [];
-  if (setCookie.length > 0) {
-    setCookieFromResponse(requestUrl, setCookie);
-  } else {
-    const sc = res.headers.get("set-cookie");
-    if (sc) setCookieFromResponse(requestUrl, sc);
-  }
-  return {
-    url: res.url,
-    body: text,
-    headers: resHeaders,
-    statusCode: res.status,
-    statusMessage: res.statusText,
-  };
 }
 
 function emptySource(): BookSourceRecord {

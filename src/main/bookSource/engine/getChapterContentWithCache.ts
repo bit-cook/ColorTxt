@@ -29,6 +29,7 @@ export async function getChapterContentWithCache(
   options?: {
     preferCache?: boolean;
     cacheDir?: string;
+    chapterUrls?: string[];
   },
 ): Promise<{ content: string; fromCache: boolean; displayTitle: string }> {
   const preferCache = options?.preferCache !== false;
@@ -81,6 +82,7 @@ export async function getChapterContentWithCache(
     chapter,
     logs,
     nextChapterUrl,
+    options?.chapterUrls,
   );
 
   if (bookUrl && chapterUrl && typeof content === "string" && content.length) {

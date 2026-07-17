@@ -461,6 +461,9 @@ export function registerBookSourceIpcHandlers(): void {
           lastChapter: p.lastChapter,
           coverUrl: p.coverUrl,
           variable: p.variable,
+          infoHtml: p.infoHtml,
+          infoUrl: p.infoUrl,
+          tocUrl: p.tocUrl,
         },
       );
       return { detail, logs };
@@ -618,7 +621,13 @@ export function registerBookSourceIpcHandlers(): void {
         chapter,
         logs,
         p.nextChapterUrl,
-        { cacheDir, preferCache },
+        {
+          cacheDir,
+          preferCache,
+          chapterUrls: Array.isArray(p.chapterUrls)
+            ? p.chapterUrls.filter((u): u is string => typeof u === "string")
+            : undefined,
+        },
       );
       return { content, fromCache, displayTitle, logs };
     } catch (e) {

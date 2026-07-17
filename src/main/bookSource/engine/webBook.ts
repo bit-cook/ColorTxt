@@ -36,7 +36,7 @@ import {
   bookInfoSelectorNeedsCompositeResolver,
   stripLegadoKindLabelNoise,
 } from "./bookInfoRules";
-import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoAsciiWhitespace } from "./legadoDefaultRule";
+import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoAsciiWhitespace, loadCheerioHtml } from "./legadoDefaultRule";
 import { AnalyzeRule } from "./analyzeRule";
 import {
   AnalyzeUrl,
@@ -311,6 +311,12 @@ export async function searchBook(
     );
     return [];
   }
+  // Legado：isRedirect = res.raw.priorResponse?.isRedirect；无 priorResponse 时用最终 URL 与请求 URL 比较
+  const isRedirect = Boolean(
+    res.url?.trim() &&
+      analyzeUrl.url?.trim() &&
+      normalizeHttpUrlPath(res.url) !== normalizeHttpUrlPath(analyzeUrl.url),
+  );
   return await analyzeBookList(
     source,
     res.body,
@@ -321,6 +327,8 @@ export async function searchBook(
     logs,
     host,
     "search",
+    res.statusCode,
+    isRedirect,
   ).catch((e) => {
     if (isVerificationCancelled(e)) {
       logs.push("用户取消登录，跳过该书源");
@@ -370,6 +378,11 @@ export async function exploreBook(
     }
     throw e;
   }
+  const isRedirect = Boolean(
+    res.url?.trim() &&
+      analyzeUrl.url?.trim() &&
+      normalizeHttpUrlPath(res.url) !== normalizeHttpUrlPath(analyzeUrl.url),
+  );
   return analyzeBookList(
     source,
     res.body,
@@ -380,6 +393,8 @@ export async function exploreBook(
     logs,
     host,
     "explore",
+    res.statusCode,
+    isRedirect,
   ).catch((e) => {
     if (isVerificationCancelled(e)) {
       logs.push("用户取消登录，跳过该书源");
@@ -408,6 +423,8 @@ async function analyzeBookList(
   logs: string[],
   host: ReturnType<typeof createJsExtensionHost>,
   mode: "search" | "explore" = "search",
+  statusCode?: number,
+  isRedirect = false,
 ): Promise<SearchBookItem[]> {
   let rule: BookListRuleBlock;
   if (mode === "explore") {
@@ -436,6 +453,7 @@ async function analyzeBookList(
           requestUrl,
           ruleUrl,
           logs,
+          isRedirect,
         );
         return item ? [item] : [];
       }
@@ -454,8 +472,12 @@ async function analyzeBookList(
   }
   const elements = await ar.getElements(bookListRule, body);
   if (elements.length === 0) {
+    const httpHint =
+      statusCode != null && statusCode !== 200
+        ? `，HTTP ${statusCode}`
+        : "";
     logs.push(
-      `[${mode}] bookList 未解析到书籍条目（请求 ${requestUrl || baseUrl}）`,
+      `[${mode}] bookList 未解析到书籍条目（请求 ${requestUrl || baseUrl}${httpHint}）`,
     );
   }
   const items: SearchBookItem[] = [];
@@ -469,6 +491,7 @@ async function analyzeBookList(
       requestUrl,
       ruleUrl,
       logs,
+      isRedirect,
     );
     if (item) items.push(item);
     return items;
@@ -498,7 +521,11 @@ async function analyzeBookList(
   return deduped;
 }
 
-/** 列表为空或链接即详情页时，按 ruleBookInfo 解析（对齐 Legado BookList.getInfoItem） */
+/**
+ * 列表为空或链接即详情页时，按 ruleBookInfo 解析（对齐 Legado BookList.getInfoItem）。
+ * `isRedirect`：重定向时用最终 `baseUrl`；否则用 `getAbsoluteURL(analyzeUrl.url, ruleUrl)`
+ *（`ruleUrl` 可含 POST UrlOption，勿剥成无选项的裸路径）。
+ */
 async function parseInfoSearchItem(
   source: BookSourceRecord,
   ar: AnalyzeRule,
@@ -507,6 +534,7 @@ async function parseInfoSearchItem(
   requestUrl: string,
   ruleUrl: string,
   logs: string[],
+  isRedirect = false,
 ): Promise<SearchBookItem | null> {
   const rule = source.ruleBookInfo ?? {};
   ar.setContent(body, baseUrl).setRedirectUrl(baseUrl);
@@ -522,14 +550,13 @@ async function parseInfoSearchItem(
       ? formatLegadoBookAuthor(authorRaw) || "未知"
       : "未知";
   const name = stripEmbeddedAuthorFromDetailName(nameRaw, author);
-  const requestedAbs = resolveAbsoluteUrl(
-    requestUrl || normalizeBookSourceBaseUrl(source.bookSourceUrl),
-    ruleUrl,
-  );
-  const bookUrl =
-    baseUrl && requestedAbs && baseUrl !== requestedAbs
-      ? baseUrl
-      : requestedAbs || baseUrl;
+  // Legado: if (isRedirect) baseUrl else NetworkUtils.getAbsoluteURL(analyzeUrl.url, analyzeUrl.ruleUrl)
+  const bookUrl = isRedirect
+    ? baseUrl
+    : resolveAbsoluteUrl(
+        requestUrl || normalizeBookSourceBaseUrl(source.bookSourceUrl),
+        ruleUrl,
+      ) || baseUrl;
   const kindParts = await resolveBookInfoKindParts(ar, rule.kind);
   const kind = kindParts.length ? kindParts.join(",") : undefined;
   const rawWordCount = await resolveBookInfoField(ar, rule.wordCount);
@@ -546,6 +573,38 @@ async function parseInfoSearchItem(
   const lastChapter =
     formatLegadoLastChapterDisplay(await resolveBookInfoField(ar, rule.lastChapter)) ||
     undefined;
+  const infoHtml = typeof body === "string" && body.trim() ? body : undefined;
+  // 对齐 Legado getInfoItem → BookInfo：tocUrl 用 res.url 作 redirectUrl（可含重定向后的书籍页）
+  ar.setRedirectUrl(baseUrl);
+  ar.setBook({
+    name,
+    author,
+    bookUrl,
+    tocUrl: "",
+    kind: kind ?? "",
+  });
+  let tocUrl = "";
+  if (rule.tocUrl?.trim()) {
+    const rawToc = (await resolveBookInfoField(ar, rule.tocUrl)).trim();
+    if (rawToc && !/^@js:/i.test(rawToc) && !/^<js>/i.test(rawToc)) {
+      if (/,\s*\{/.test(rawToc)) {
+        tocUrl = ar.resolveAbsoluteRuleUrl(rawToc);
+      } else {
+        const first =
+          rawToc
+            .split(/[\r\n]+/)
+            .map((s) => s.trim())
+            .find(Boolean) ?? "";
+        tocUrl = first ? ar.resolveAbsoluteRuleUrl(first) : "";
+      }
+    }
+  }
+  if (!tocUrl.trim()) tocUrl = baseUrl;
+  // 仍是搜索址时，尝试从详情 HTML 章节链接推断书籍目录页
+  if (infoHtml && isLikelySearchArticleUrl(tocUrl)) {
+    const inferred = inferBookDirUrlFromDetailHtml(infoHtml, baseUrl || bookUrl);
+    if (inferred) tocUrl = inferred;
+  }
   return {
     id: `${source.bookSourceUrl}::${bookUrl}::info`,
     name,
@@ -559,6 +618,9 @@ async function parseInfoSearchItem(
     bookUrl,
     origin: source.bookSourceUrl,
     originName: source.bookSourceName,
+    infoHtml,
+    infoUrl: baseUrl || undefined,
+    tocUrl: tocUrl || undefined,
   };
 }
 
@@ -973,59 +1035,73 @@ export async function getBookInfo(
   const book: Book = {
     name,
     author,
-    bookUrl,
-    tocUrl: "",
+    bookUrl: resolvedBookUrl,
+    tocUrl: seed.tocUrl?.trim() || "",
     intro: listIntro,
     kind: seed.kind?.trim() ?? "",
     coverUrl: seed.coverUrl?.trim() ?? "",
     wordCount: seed.wordCount?.trim() ?? "",
     lastChapter: seed.lastChapter?.trim() ?? "",
     variable: { ...variables },
+    infoHtml: seed.infoHtml,
   };
   const ar = new AnalyzeRule(source, logs, host)
     .setBook(toEngineBook(book))
     .setRuleData({ variable: { ...variables } });
   syncLegadoHeadersForRules(ar, host, resolvedBookUrl, variables);
   ar.setRuleData({ variable: { ...variables } });
-  const analyzeUrl = new AnalyzeUrl({
-    mUrl: resolvedBookUrl,
-    baseUrl: source.bookSourceUrl,
-    source,
-    host,
-    logs,
-    ruleVariables: variables,
-  });
-  let res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
-  // resourceId 为 90000001_数字 时 bookInfo 常空，去掉前缀重试
-  if (
-    /[?&]resourceId=\d+_\d+/i.test(resolvedBookUrl) &&
-    bookInfoLooksEmpty(res.body)
-  ) {
-    const stripped = resolvedBookUrl.replace(/([?&]resourceId=)\d+_/i, "$1");
-    if (stripped !== resolvedBookUrl) {
-      logs.push(`详情 resourceId 含前缀且响应空，重试: ${stripped.slice(0, 120)}`);
-      const retryUrl = new AnalyzeUrl({
-        mUrl: stripped,
-        baseUrl: source.bookSourceUrl,
-        source,
-        host,
-        logs,
-        ruleVariables: variables,
-      });
-      res = await fetchWithLoginCheck(retryUrl, source, "", logs);
-      // 后续 tocUrl 拼 $..resourceID 须用短 id
-      book.bookUrl = stripped;
+
+  // Legado WebBook.getBookInfoAwait：有 infoHtml 则免二次请求；
+  // redirectUrl 优先用搜索响应最终 URL（getInfoItem 的 res.url），以便 refreshBookUrl 得到书籍页。
+  const cachedInfoHtml = seed.infoHtml?.trim() ?? "";
+  let body: string;
+  let redirectUrl: string;
+  const bookInfoBaseUrl = resolvedBookUrl;
+  if (cachedInfoHtml) {
+    body = cachedInfoHtml;
+    redirectUrl = seed.infoUrl?.trim() || resolvedBookUrl;
+    logs.push("使用搜索缓存的 infoHtml 解析详情");
+  } else {
+    const analyzeUrl = new AnalyzeUrl({
+      mUrl: resolvedBookUrl,
+      baseUrl: source.bookSourceUrl,
+      source,
+      host,
+      logs,
+      ruleVariables: variables,
+    });
+    let res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
+    // resourceId 为 90000001_数字 时 bookInfo 常空，去掉前缀重试
+    if (
+      /[?&]resourceId=\d+_\d+/i.test(resolvedBookUrl) &&
+      bookInfoLooksEmpty(res.body)
+    ) {
+      const stripped = resolvedBookUrl.replace(/([?&]resourceId=)\d+_/i, "$1");
+      if (stripped !== resolvedBookUrl) {
+        logs.push(`详情 resourceId 含前缀且响应空，重试: ${stripped.slice(0, 120)}`);
+        const retryUrl = new AnalyzeUrl({
+          mUrl: stripped,
+          baseUrl: source.bookSourceUrl,
+          source,
+          host,
+          logs,
+          ruleVariables: variables,
+        });
+        res = await fetchWithLoginCheck(retryUrl, source, "", logs);
+        // 后续 tocUrl 拼 $..resourceID 须用短 id
+        book.bookUrl = stripped;
+      }
     }
+    body = res.body;
+    redirectUrl = res.url;
   }
-  const base = res.url;
-  const redirectUrl = res.url;
   const rule = source.ruleBookInfo ?? {};
-  const detailInitFailed = bookInfoInitFailed(res.body, rule.init);
+  const detailInitFailed = bookInfoInitFailed(body, rule.init);
   if (detailInitFailed) {
-    logs.push(`详情页响应异常（可能缺少签名 headers），URL: ${base}`);
+    logs.push(`详情页响应异常（可能缺少签名 headers），URL: ${redirectUrl}`);
   }
   ar.setRedirectUrl(redirectUrl);
-  await applyBookInfoInitContent(ar, rule.init, res.body, base);
+  await applyBookInfoInitContent(ar, rule.init, body, bookInfoBaseUrl);
   const detailNameRaw = (await resolveBookInfoField(ar, rule.name)).trim();
   const detailAuthorRaw = (await resolveBookInfoField(ar, rule.author)).trim();
   const detailAuthor = formatLegadoBookAuthor(
@@ -1137,9 +1213,42 @@ export async function getBookInfo(
   }
   if (tocUrl && !/^https?:\/\//i.test(tocUrl) && !tocUrl.startsWith("data:")) {
     tocUrl = resolveAbsoluteUrl(
-      normalizeBookSourceBaseUrl(redirectUrl || base),
+      normalizeBookSourceBaseUrl(redirectUrl || bookInfoBaseUrl),
       tocUrl,
     );
+  }
+  // Legado BookInfo：tocUrl 空则用 baseUrl（book.bookUrl）；同页则缓存 tocHtml
+  if (!tocUrl.trim()) {
+    tocUrl = String(book.bookUrl || bookInfoBaseUrl);
+  }
+  // POST 搜索未重定向时 refreshBookUrl 仍落在搜索页：从详情 HTML 推断真实目录页
+  if (body.trim() && isLikelySearchArticleUrl(tocUrl)) {
+    const inferred = inferBookDirUrlFromDetailHtml(
+      body,
+      redirectUrl || bookInfoBaseUrl || tocUrl,
+    );
+    if (inferred) {
+      tocUrl = inferred;
+      logs.push(`目录 URL 由详情页推断: ${inferred}`);
+    }
+  }
+  // 搜索阶段已解析出更优 tocUrl 时保留（避免 infoHtml 重析又写回搜索页）
+  const seedToc = seed.tocUrl?.trim() ?? "";
+  if (
+    seedToc &&
+    !isLikelySearchArticleUrl(seedToc) &&
+    isLikelySearchArticleUrl(tocUrl)
+  ) {
+    tocUrl = seedToc;
+  }
+  let tocHtml: string | undefined;
+  if (
+    (tocUrl === String(book.bookUrl || bookInfoBaseUrl) ||
+      (cachedInfoHtml && isLikelySearchArticleUrl(String(book.bookUrl || "")))) &&
+    body.trim()
+  ) {
+    // 目录与详情同页（含搜索响应即详情）：缓存 HTML 供 getChapterList
+    tocHtml = body;
   }
   const bidMatch = bookUrl.match(/\/chapters\/([^/?#,]+)/);
   const idFromQuery =
@@ -1168,6 +1277,9 @@ export async function getBookInfo(
     origin: seed.origin,
     originName: seed.originName,
     variable: Object.keys(mergedVariable).length ? mergedVariable : undefined,
+    infoHtml: cachedInfoHtml || undefined,
+    infoUrl: seed.infoUrl?.trim() || redirectUrl || undefined,
+    tocHtml,
   };
   // list/.html 等无效目录址：回退详情页（再由调用方决定是否可用）
   if (
@@ -1176,6 +1288,7 @@ export async function getBookInfo(
     /\/list\/(?:\?|$)/i.test(detail.tocUrl)
   ) {
     detail.tocUrl = ensureBookUrlWithHeaders(String(book.bookUrl || resolvedBookUrl), host);
+    if (body.trim()) detail.tocHtml = body;
   }
   return detail;
 }
@@ -1238,6 +1351,153 @@ function parseTocListRule(chapterListRule: string): {
     listRule = listRule.slice(1);
   }
   return { listRule, reversePrefix };
+}
+
+/**
+ * 对齐 Legado `BookChapterList` 的 `-`/`+` 前缀语义（彩读约定目录数组「最新在前」）：
+ * - 无 `-`：页面多为正序（旧→新），反转一次 → 最新在前
+ * - 有 `-`：页面已是倒序（新→旧），不再反转
+ * （Legado 存正序阅读：无 `-` 时反转两次回到页面序；彩读 UI 正序再反转一次展示，效果一致。）
+ */
+function applyTocReversePrefix(
+  chapters: BookChapter[],
+  reversePrefix: boolean,
+): BookChapter[] {
+  if (!reversePrefix) {
+    chapters.reverse();
+  }
+  return chapters;
+}
+
+/** 去掉 Legado UrlOption（`,` + JSON）再比路径 */
+function stripLegadoUrlOption(u: string): string {
+  const t = u.trim();
+  if (!t) return "";
+  const m = t.match(/^([^,]+?)(?=,\s*\{|$)/);
+  return (m?.[1] ?? t).trim();
+}
+
+/** 正文翻页：宽松同页判断（去 UrlOption / hash / 尾斜杠 / 大小写） */
+function isSameContentPageUrl(a: string, b: string): boolean {
+  const norm = (u: string) => {
+    const t = stripLegadoUrlOption(u);
+    if (!t) return "";
+    try {
+      const url = new URL(t);
+      url.hash = "";
+      const path = url.pathname.replace(/\/+$/, "") || "/";
+      return `${url.protocol}//${url.host}${path}${url.search}`.toLowerCase();
+    } catch {
+      return t.replace(/\/+$/, "").toLowerCase();
+    }
+  };
+  return Boolean(a && b && norm(a) === norm(b));
+}
+
+/** 对齐 Legado `NetworkUtils.getAbsoluteURL`（正文下一页边界比较用） */
+function legadoGetAbsoluteURL(baseURL: string, relativePath: string): string {
+  const base = stripLegadoUrlOption(baseURL);
+  const rel = stripLegadoUrlOption(relativePath);
+  if (!rel) return "";
+  if (!base) return rel;
+  if (/^https?:\/\//i.test(rel) || rel.startsWith("data:")) return rel;
+  if (/^javascript:/i.test(rel)) return "";
+  return resolveAbsoluteUrl(base, rel);
+}
+
+/**
+ * 对齐 Legado BookContent：
+ * `getAbsoluteURL(redirectUrl, next) == getAbsoluteURL(redirectUrl, nextChapterUrl)` 则停止翻页。
+ * 额外：若下一页已是目录中其它章节 URL，也停止（部分站「下一页」实为下一章，且偶发与 toc 字符串不完全一致）。
+ */
+function isContentNextChapterBoundary(
+  redirectUrl: string,
+  nextUrl: string,
+  nextChapterUrl: string | undefined,
+  chapterUrls: string[] | undefined,
+  currentChapterUrl: string,
+): boolean {
+  const absNext = legadoGetAbsoluteURL(redirectUrl, nextUrl);
+  if (!absNext) return false;
+
+  const samePage = (a: string, b: string) => {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return isSameContentPageUrl(a, b);
+  };
+
+  if (nextChapterUrl?.trim()) {
+    const absNextCh = legadoGetAbsoluteURL(redirectUrl, nextChapterUrl);
+    if (samePage(absNext, absNextCh)) return true;
+    if (samePage(absNext, nextChapterUrl.trim())) return true;
+    if (samePage(nextUrl.trim(), absNextCh)) return true;
+  }
+
+  const currentAbs = legadoGetAbsoluteURL(redirectUrl, currentChapterUrl);
+  for (const u of chapterUrls ?? []) {
+    const abs = legadoGetAbsoluteURL(redirectUrl, u);
+    if (!abs || samePage(abs, currentAbs) || samePage(abs, currentChapterUrl)) {
+      continue;
+    }
+    if (samePage(absNext, abs)) return true;
+  }
+  return false;
+}
+
+/** 去重 nextContentUrl（页头/页脚各一个下一页链接时 getUrlList 会返回两条相同 URL） */
+function dedupeContentNextUrls(urls: string[]): string[] {
+  const out: string[] = [];
+  for (const u of urls) {
+    const t = u.trim();
+    if (!t) continue;
+    if (out.some((prev) => prev === t || isSameContentPageUrl(prev, t))) {
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+/** 去掉已是下一章/目录其它章的下一页；去重后再交给串行或并发翻页 */
+function filterContentNextUrls(
+  urls: string[],
+  redirectUrl: string,
+  nextChapterUrl: string | undefined,
+  chapterUrls: string[] | undefined,
+  currentChapterUrl: string,
+  logs: string[],
+): string[] {
+  const deduped = dedupeContentNextUrls(urls);
+  if (deduped.length < urls.length) {
+    logs.push(
+      `正文下一页 URL 去重: ${urls.length} → ${deduped.length}`,
+    );
+  }
+  const kept: string[] = [];
+  for (const u of deduped) {
+    if (
+      isContentNextChapterBoundary(
+        redirectUrl,
+        u,
+        nextChapterUrl,
+        chapterUrls,
+        currentChapterUrl,
+      )
+    ) {
+      logs.push(`正文下一页已是章节边界，停止翻页: ${u.slice(0, 120)}`);
+      continue;
+    }
+    kept.push(u);
+  }
+  return kept;
+}
+
+function isSameBookPageUrl(a: string, b: string): boolean {
+  const pa = (a.split(",")[0] ?? a).trim();
+  const pb = (b.split(",")[0] ?? b).trim();
+  if (!pa || !pb) return false;
+  if (pa === pb) return true;
+  return isSameContentPageUrl(pa, pb);
 }
 
 async function applyContentReplaceRegex(
@@ -1511,6 +1771,61 @@ export async function getChapterList(
     }
     ar.setBook(book).setRuleData({ variable: { ...variables } });
   }
+
+  // Legado：bookUrl == tocUrl 且有 tocHtml 时直接解析，免再请求（搜索响应即详情时常见）
+  const tocHtmlCached = bookInput.tocHtml?.trim() ?? "";
+  const bookUrlForTocCmp = String(bookInput.bookUrl || "").trim();
+  const tocUrlForTocCmp = String(bookInput.tocUrl || bookInput.bookUrl || "").trim();
+  if (tocHtmlCached && bookUrlForTocCmp && bookUrlForTocCmp === tocUrlForTocCmp) {
+    logs.push("使用详情缓存的 tocHtml 解析目录");
+    const chapters: BookChapter[] = [];
+    const { listRule, reversePrefix } = parseTocListRule(rule.chapterList ?? "");
+    const base = tocUrlForTocCmp;
+    const arToc = new AnalyzeRule(source, logs, host)
+      .setContent(tocHtmlCached, base)
+      .setRedirectUrl(base)
+      .setBook(book)
+      .setRuleData({ variable: { ...variables } });
+    const list = await arToc.getElements(listRule, tocHtmlCached);
+    for (const el of list) {
+      arToc.setContent(el, base);
+      const chapterCtx = { title: "", url: "", tag: "" };
+      arToc.setChapter(chapterCtx);
+      const title = await arToc.getString(rule.chapterName, el);
+      let url = rule.chapterUrl
+        ? await arToc.getUrl(rule.chapterUrl, el)
+        : "";
+      const updateTag = rule.updateTime
+        ? await arToc.getString(rule.updateTime, el)
+        : "";
+      if (updateTag && !chapterCtx.tag) chapterCtx.tag = updateTag;
+      const isVolume = isTruthy(await arToc.getString(rule.isVolume, el));
+      if (!title) continue;
+      if (!url) {
+        if (isVolume) url = `${title}${chapters.length}`;
+        else url = base;
+      }
+      if (!url && !isVolume) continue;
+      chapters.push({
+        title,
+        url: url || base,
+        isVolume,
+        isVip: isTruthy(await arToc.getString(rule.isVip, el)),
+        isPay: isTruthy(await arToc.getString(rule.isPay, el)),
+      });
+    }
+    // 须与下方联网拉目录同一套 `-` 语义（修前误写成 reversePrefix 才 reverse）
+    applyTocReversePrefix(chapters, reversePrefix);
+    let out = dedupeChapters(chapters);
+    if (rule.formatJs?.trim()) {
+      await applyTocFormatJs(out, rule.formatJs, source, host);
+    }
+    if (!out.length) {
+      logs.push("未解析到章节（tocHtml 缓存）");
+    }
+    return out;
+  }
+
   const fetchTocUrlFinal = String(book.tocUrl || fetchTocUrl);
   const analyzeUrl = new AnalyzeUrl({
     mUrl: resolvedTocUrl,
@@ -1651,9 +1966,7 @@ export async function getChapterList(
       }
     }
   }
-  if (!reversePrefix) {
-    chapters.reverse();
-  }
+  applyTocReversePrefix(chapters, reversePrefix);
   let list = dedupeChapters(chapters);
   if (rule.formatJs?.trim()) {
     await applyTocFormatJs(list, rule.formatJs, source, host);
@@ -1673,6 +1986,7 @@ export async function getChapterContent(
   chapter: Record<string, unknown>,
   logs: string[] = [],
   nextChapterUrl?: string,
+  chapterUrls?: string[],
 ): Promise<string> {
   const host = createJsExtensionHost(source, logs);
   runJsLib(source, host);
@@ -1728,20 +2042,47 @@ export async function getChapterContent(
   }
   const rule = source.ruleContent ?? {};
   const titleRule = rule.title?.trim() || rule.chapterName?.trim() || "";
-  const analyzeUrl = new AnalyzeUrl({
-    mUrl: fetchChapterUrl,
-    baseUrl: source.bookSourceUrl,
-    source,
-    host,
-    logs,
-    ruleVariables: variables,
-    webJs: rule.webJs?.trim() || undefined,
-    sourceRegex: rule.sourceRegex?.trim() || undefined,
-  });
-  const res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
-  const body = res.body;
-  const redirectUrl = res.url;
+
+  // 对齐 Legado：chapter.url == book.bookUrl 且有 tocHtml 时用缓存，免再请求
+  const tocHtmlCached = coerced.tocHtml?.trim() ?? "";
+  const useTocHtml =
+    Boolean(tocHtmlCached) &&
+    isSameBookPageUrl(fetchChapterUrl, coerced.bookUrl || bookPageUrl);
+
+  let body: string;
+  let redirectUrl: string;
+  let resUrl: string;
+  if (useTocHtml) {
+    logs.push("章节 URL 与书籍页相同，使用 tocHtml 解析正文");
+    body = tocHtmlCached;
+    // 对齐 Legado：绝对化 nextContentUrl 用详情/目录真实页，勿用仍停在搜索页的书链
+    redirectUrl =
+      stripLegadoUrlOption(
+        coerced.infoUrl ||
+          coerced.tocUrl ||
+          bookPageUrl ||
+          fetchChapterUrl,
+      ) || fetchChapterUrl;
+    resUrl = redirectUrl;
+  } else {
+    const analyzeUrl = new AnalyzeUrl({
+      mUrl: fetchChapterUrl,
+      baseUrl: resolvedTocUrl || source.bookSourceUrl,
+      source,
+      host,
+      logs,
+      ruleVariables: variables,
+      webJs: rule.webJs?.trim() || undefined,
+      sourceRegex: rule.sourceRegex?.trim() || undefined,
+    });
+    const res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
+    body = res.body;
+    redirectUrl = res.url;
+    resUrl = res.url;
+  }
+
   const contentParts: string[] = [];
+  const currentChapterUrl = String(chapter.url ?? fetchChapterUrl);
 
   const first = await fetchContentPage(
     source,
@@ -1749,7 +2090,7 @@ export async function getChapterContent(
     logs,
     rule,
     body,
-    res.url,
+    resUrl,
     redirectUrl,
     { ...book, kind, bookUrl: bookPageUrl, tocUrl: resolvedTocUrl },
     chapter,
@@ -1759,23 +2100,39 @@ export async function getChapterContent(
   );
   contentParts.push(first.content);
 
-  if (first.nextUrls.length === 1) {
-    let next = first.nextUrls[0]!;
-    const visited = new Set<string>();
+  // 页头+页脚各一下一页链 → getUrlList 得 2 条相同「下一章」URL；
+  // 旧逻辑走 length>1 并发分支且不做边界判断，会把下一章拼进本章。
+  const nextUrls = filterContentNextUrls(
+    first.nextUrls,
+    redirectUrl,
+    nextChapterUrl,
+    chapterUrls,
+    currentChapterUrl,
+    logs,
+  );
+
+  if (nextUrls.length === 1) {
+    let next = nextUrls[0]!;
+    const visited = new Set<string>([redirectUrl, resUrl]);
     while (next && !visited.has(next)) {
-      if (nextChapterUrl) {
-        const absNext = new AnalyzeRule(source, logs, host)
-          .setRedirectUrl(redirectUrl)
-          .resolveAbsoluteRuleUrl(next);
-        const absChapterNext = new AnalyzeRule(source, logs, host)
-          .setRedirectUrl(redirectUrl)
-          .resolveAbsoluteRuleUrl(nextChapterUrl);
-        if (absNext === absChapterNext) break;
+      if (
+        isContentNextChapterBoundary(
+          redirectUrl,
+          next,
+          nextChapterUrl,
+          chapterUrls,
+          currentChapterUrl,
+        )
+      ) {
+        logs.push(
+          `正文下一页已是章节边界，停止翻页: ${next.slice(0, 120)}`,
+        );
+        break;
       }
       visited.add(next);
       const nextAnalyze = new AnalyzeUrl({
         mUrl: next,
-        baseUrl: source.bookSourceUrl,
+        baseUrl: resolvedTocUrl || source.bookSourceUrl,
         source,
         host,
         logs,
@@ -1799,10 +2156,19 @@ export async function getChapterContent(
         true,
       );
       contentParts.push(page.content);
-      next = page.nextUrls[0] ?? "";
+      next =
+        filterContentNextUrls(
+          page.nextUrls,
+          nextRes.url,
+          nextChapterUrl,
+          chapterUrls,
+          currentChapterUrl,
+          logs,
+        )[0] ?? "";
+      redirectUrl = nextRes.url;
     }
-  } else if (first.nextUrls.length > 1) {
-    const responses = await ajaxAllStrResponses(host, first.nextUrls);
+  } else if (nextUrls.length > 1) {
+    const responses = await ajaxAllStrResponses(host, nextUrls);
     for (const resp of responses) {
       const pageBody = resp.body();
       const pageUrl = resp.url();
@@ -1827,7 +2193,7 @@ export async function getChapterContent(
 
   let content = contentParts.filter(Boolean).join("\n");
   const ar = new AnalyzeRule(source, logs, host)
-    .setContent(body, res.url)
+    .setContent(body, resUrl)
     .setRedirectUrl(redirectUrl)
     .setBook(book)
     .setChapter(chapter)
@@ -1914,4 +2280,43 @@ function isTruthy(s: string): boolean {
   const v = s.trim().toLowerCase();
   if (!v) return false;
   return v !== "false" && v !== "no" && v !== "not" && v !== "0";
+}
+
+/** 常见搜索/列表页路径（详情 HTML 有时仍挂在搜索 URL 上） */
+function isLikelySearchArticleUrl(url: string): boolean {
+  const path = url.split(",")[0]?.trim() ?? "";
+  return /\/search\.php(?:$|\?)/i.test(path) || /\/modules\/article\/search/i.test(path);
+}
+
+/**
+ * 从详情 HTML 推断书籍目录根路径（如 `/数字_数字/`）。
+ * 用于 POST 搜索直接返回详情、HTTP 未重定向时 `java.refreshBookUrl()` 仍停在搜索页的情况。
+ */
+function inferBookDirUrlFromDetailHtml(html: string, pageUrl: string): string {
+  const base = normalizeBookSourceBaseUrl(pageUrl.split(",")[0] || pageUrl);
+  try {
+    const $ = loadCheerioHtml(html);
+    const metaCandidates = [
+      $('meta[property="og:url"]').attr("content"),
+      $('meta[property="og:novel:read_url"]').attr("content"),
+      $('link[rel="canonical"]').attr("href"),
+    ];
+    for (const raw of metaCandidates) {
+      const u = String(raw ?? "").trim();
+      if (!u || isLikelySearchArticleUrl(u)) continue;
+      const abs = resolveAbsoluteUrl(base, u);
+      if (/\/\d+_\d+\/?$/i.test(abs.split("?")[0] ?? "")) return abs.endsWith("/") ? abs : `${abs}/`;
+    }
+    let found = "";
+    $("a[href]").each((_, el) => {
+      if (found) return;
+      const href = String($(el).attr("href") ?? "").trim();
+      const m = href.match(/(\/\d+_\d+)\//);
+      if (!m?.[1]) return;
+      found = resolveAbsoluteUrl(base, `${m[1]}/`);
+    });
+    return found;
+  } catch {
+    return "";
+  }
 }

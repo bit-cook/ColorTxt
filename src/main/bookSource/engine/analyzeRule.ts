@@ -1180,8 +1180,9 @@ export class AnalyzeRule {
       },
       /**
        * Legado AnalyzeRule.refreshBookUrl：
-       * 将 book.bookUrl 更新为当前详情页最终地址（重定向后的 baseUrl），并返回该 URL。
-       * 常见于 tocUrl=`java.refreshBookUrl()`（详情与目录同页）。
+       * 返回当前详情最终 URL（redirectUrl），供 tocUrl 使用。
+       * 若原 bookUrl 带 UrlOption（如搜索 POST）而新地址没有，则不覆盖 bookUrl，
+       * 以免丢掉重新拉详情所需的 POST 参数（bookUrl 与 tocUrl 可指向不同地址）。
        */
       refreshBookUrl: () => {
         const url = String(
@@ -1194,7 +1195,14 @@ export class AnalyzeRule {
             "",
         ).trim();
         if (rule.book && typeof rule.book === "object" && url) {
-          (rule.book as { bookUrl?: string }).bookUrl = url;
+          const prev = String(
+            (rule.book as { bookUrl?: unknown }).bookUrl ?? "",
+          );
+          const prevHasOpt = /,\s*\{/.test(prev);
+          const nextHasOpt = /,\s*\{/.test(url);
+          if (!(prevHasOpt && !nextHasOpt)) {
+            (rule.book as { bookUrl?: string }).bookUrl = url;
+          }
         }
         return url;
       },

@@ -157,7 +157,10 @@ async function runDownload(
           chapter,
           logs,
           nextChapterUrl,
-          { cacheDir: req.cacheDir },
+          {
+            cacheDir: req.cacheDir,
+            chapterUrls: contentChapters.map((c) => c.url),
+          },
         );
       } catch (e) {
         // 单章失败不中断；导出处写占位

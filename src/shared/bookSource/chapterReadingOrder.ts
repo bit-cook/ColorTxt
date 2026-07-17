@@ -3,7 +3,7 @@ import type { BookChapter } from "./types";
 /** 从标题前缀解析章节序号；序章/楔子等视为 0，解析失败返回 null */
 function leadingChapterIndexFromTitle(title: string): number | null {
   const t = title.trim();
-  if (/^(序章|楔子|引子|前言|序言)/.test(t)) return 0;
+  if (/^(序章|楔子|引子|前言|序言|内容简介|作品相关)/.test(t)) return 0;
   if (/^第一章/.test(t) || /^第\s*一\s*章/.test(t)) return 1;
   const digit = t.match(/^第\s*(\d+)\s*章/);
   if (digit?.[1]) return Number.parseInt(digit[1], 10);

@@ -462,6 +462,9 @@ export function useBookSourceDetail() {
         lastChapter: seed.lastChapter,
         coverUrl: seed.coverUrl,
         variable: seed.variable,
+        infoHtml: seed.infoHtml ?? item.infoHtml,
+        infoUrl: item.infoUrl,
+        tocUrl: item.tocUrl ?? seed.tocUrl,
       });
       if (infoRes.logs?.length) logs.value = infoRes.logs;
       if (infoRes.message || !infoRes.detail) {
@@ -523,6 +526,7 @@ export function useBookSourceChapterContent() {
     chapterTitle: string;
     chapterIndex: number;
     nextChapterUrl?: string;
+    chapterUrls?: string[];
     cacheDir?: string;
     /** 默认 true；false 忽略缓存重新拉取 */
     preferCache?: boolean;
