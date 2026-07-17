@@ -26,7 +26,7 @@
 
 |  | 功能 | 说明 |
 | :---: | --- | --- |
-|  | 本地文件阅读 | 支持本地 `.txt`／`.md` 文件 |
+|  | 本地文件阅读 | 支持本地 `.txt` / `.md` 文件 |
 |  | 其他电子书 | 支持常见的电子书格式（如 `.epub`），打开时会转换为 `.md` 进行加载 |
 |  | 自动编码识别 | `UTF-8` 和 `ANSI` 都能正常打开 |
 | <img src="./src/renderer/src/assets/chapter_list.svg" width="18" height="18" alt=""> | 自动章节识别 | 内置常用的章节匹配规则，也支持自定义匹配规则 |
@@ -37,19 +37,19 @@
 | <img src="./src/renderer/src/assets/note.svg" width="18" height="18" alt=""> | **划线笔记** | 可选中文本进行划线标注、记笔记 |
 | <img src="./src/renderer/src/assets/edit.svg" width="18" height="18" alt=""> | **编辑模式** | 方便对小说内容进行修改（_错别字坚决不能忍！_） |
 | <img src="./src/renderer/src/assets/play.svg" width="18" height="18" alt=""> | 定时滚动 | 定时滚动一屏或一行 |
-| <img src="./src/renderer/src/assets/reading.svg" width="18" height="18" alt=""> | **语音朗读** | 支持旁白／对白多音色，配合 AI + 角色卡可实现多角色语音朗读 |
+| <img src="./src/renderer/src/assets/reading.svg" width="18" height="18" alt=""> | **语音朗读** | 支持旁白 / 对白多音色，配合 AI + 角色卡可实现多角色语音朗读 |
 | <img src="./src/renderer/src/assets/replace.svg" width="18" height="18" alt=""> | **文本替换** | 全局替换文本（可用于替换人名、去广告文本等） |
-| <img src="./src/renderer/src/assets/conver.svg" width="18" height="18" alt=""> | **简繁互转** | 简繁互转，字母／数字全半角互转 |
-| <img src="./src/renderer/src/assets/AI_chat.svg" width="18" height="18" alt=""> | **AI 阅读助手** | 可以让 **AI** 帮忙分析剧情、回答小说相关问题（支持生成 <img src="./src/renderer/src/assets/mindmap.svg" width="18" height="18" alt=""> **思维导图**／<img src="./src/renderer/src/assets/wordcloud.svg" width="18" height="18" alt=""> **词云图**） |
+| <img src="./src/renderer/src/assets/conver.svg" width="18" height="18" alt=""> | **简繁互转** | 简繁互转，字母 / 数字全半角互转 |
+| <img src="./src/renderer/src/assets/AI_chat.svg" width="18" height="18" alt=""> | **AI 阅读助手** | 可以让 **AI** 帮忙分析剧情、回答小说相关问题（支持生成 <img src="./src/renderer/src/assets/mindmap.svg" width="18" height="18" alt=""> **思维导图** / <img src="./src/renderer/src/assets/wordcloud.svg" width="18" height="18" alt=""> **词云图**） |
 | <img src="./src/renderer/src/assets/character.svg" width="18" height="18" alt=""> | **角色卡生成** | 借助 **AI** 检索小说中角色的相关信息生成摘要，通过 **文生图** 生成角色立绘 |
 | <img src="./src/renderer/src/assets/AI_compose.svg" width="18" height="18" alt=""> | **AI 智能排版** | 让 **AI** 对文本进行排版，可自动处理硬换行、修正标点符号等 |
 | <img src="./src/renderer/src/assets/findBook.svg" width="18" height="18" alt=""> | 书源找书 | 可多源搜索，支持在线阅读或整书下载 |
 | <img src="./src/renderer/src/assets/compress.svg" width="18" height="18" alt=""> | 空行压缩 | 压缩多余空行 |
 | <img src="./src/renderer/src/assets/indent.svg" width="18" height="18" alt=""> | 行首缩进 | 在行首添加全角缩进 |
-| <img src="./src/renderer/src/assets/ebook.svg" width="18" height="18" alt=""> | 文件列表 | 拖放添加文件／目录（会递归读取子目录），支持分类／排序／过滤 |
+| <img src="./src/renderer/src/assets/ebook.svg" width="18" height="18" alt=""> | 文件列表 | 拖放添加文件 / 目录（会递归读取子目录），支持分类 / 排序 / 过滤 |
 | <img src="./src/renderer/src/assets/find.svg" width="18" height="18" alt=""> | 全文搜索 | 检索所有匹配项并给出结果列表（区别于阅读区的逐个查找） |
-| <img src="./src/renderer/src/assets/font_family.svg" width="18" height="18" alt=""> | 字体／字号／行高 | 内置 `京華老宋体`，也可以选择系统中安装的任意字体 |
-| <img src="./src/renderer/src/assets/dark.svg" width="18" height="18" alt=""> | 主题切换 | 内置明亮／暗黑两种主题 |
+| <img src="./src/renderer/src/assets/font_family.svg" width="18" height="18" alt=""> | 字体 / 字号 / 行高 | 内置 `京華老宋体`，也可以选择系统中安装的任意字体 |
+| <img src="./src/renderer/src/assets/dark.svg" width="18" height="18" alt=""> | 主题切换 | 内置明亮 / 暗黑两种主题 |
 | <img src="./src/renderer/src/assets/enter_fullscreen.svg" width="18" height="18" alt=""> | 全屏阅读 | **沉浸式阅读体验**，阅读区域宽度可自由调整 |
 |  | 粘性标题栏 | 章节标题会常驻顶部，看到哪里一目了然 |
 |  | 阅读进度恢复 | 自动记录阅读进度，下次打开可以继续阅读 |
