@@ -655,7 +655,6 @@ function onEditDone() {
   <AppModal
     v-model="modelValue"
     title="书源"
-    inset="20"
     panel-class="bookSourcePanel"
     :mask-closable="false"
     :esc-closable="true"
@@ -991,8 +990,15 @@ function onEditDone() {
 
 <style>
 .appModalPanel.bookSourcePanel {
+  --min-width: 600px;
+  --max-width: 800px;
+  --max-height: calc(100vh - 48px);
   padding: 0;
   overflow: hidden;
+  max-width: var(--max-width) !important;
+  width: max(min(calc(100vw - 48px), var(--max-width)), var(--min-width));
+  max-height: var(--max-height) !important;
+  height: var(--max-height);
 }
 .appModalPanel.bookSourcePanel .appModalPanelHeader {
   margin-bottom: 0;

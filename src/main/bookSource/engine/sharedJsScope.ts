@@ -27,7 +27,7 @@ type SharedScopeEntry = {
 const scopeCache = new Map<string, SharedScopeEntry>();
 
 /** java.lang.String 等 shim / jsLib 异步预处理变更时递增，避免沿用过期 sandbox */
-const JS_LIB_SHIM_VERSION = "12";
+const JS_LIB_SHIM_VERSION = "13";
 
 /**
  * Legado/Jayway：JsonPath 中间结果多为 JSONArray/JSONObject，`String(result)` 仍是合法 JSON，
@@ -51,6 +51,7 @@ export function createLegadoJson(): JSON {
 const SANDBOX_EVAL_BINDINGS = [
   "result",
   "src",
+  "$",
   "java",
   "book",
   "chapter",
@@ -200,6 +201,8 @@ type RunScopeBindings = {
   book: Record<string, unknown>;
   chapter: Record<string, unknown>;
   result: unknown;
+  /** 与 result 同步的别名（`$.field` 误当 JS 时） */
+  $: unknown;
   baseUrl: string;
   key: string;
   page: number;
@@ -281,6 +284,10 @@ function applyBindings(
       sandbox[key] = value;
     }
   }
+  // result 更新时保持 $ 别名（嵌套 ajax 恢复绑定后也一致）
+  if (Object.prototype.hasOwnProperty.call(bindings, "result")) {
+    sandbox.$ = bindings.result;
+  }
   sandbox.globalThis = sandbox;
 }
 
@@ -320,6 +327,8 @@ function buildBindings(
     book,
     chapter,
     result,
+    /** 与 result 同步：误把 `$.field` 当 JS 时仍能取到列表项字段 */
+    $: result,
     baseUrl: ctx.baseUrl ?? "",
     key: ctx.key ?? "",
     page: ctx.page ?? 1,

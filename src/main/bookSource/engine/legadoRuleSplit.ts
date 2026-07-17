@@ -224,7 +224,7 @@ export function looksLikeLegadoJs(rule: string): boolean {
   ) {
     return true;
   }
-  if (/\bjava\.(?:ajax|md5Encode|get|put|getString|startBrowserAwait)\b/.test(t)) {
+  if (/\bjava\.(?:ajax|md5Encode|get|put|getString|startBrowserAwait|refreshBookUrl|refreshTocUrl|reGetBook|refreshBook)\b/.test(t)) {
     return true;
   }
   if (t.includes("== '") || t.includes('== "') || t.includes("!=")) {

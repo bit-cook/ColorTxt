@@ -79,6 +79,8 @@ function buildVmSandbox(
     book,
     chapter,
     result,
+    /** Legado 模板/脚本里 `$` 常指当前 result（JSON 项上 `$.book_id` 作 JS 属性访问） */
+    $: result,
     baseUrl: ctx.baseUrl ?? "",
     key: ctx.key ?? "",
     page: ctx.page ?? 1,

@@ -25,10 +25,16 @@ export function expandLegadoGetRefs(
 /**
  * `@put`/`@get` 拼出的详情链等：已是最终 URL，不可再当 JsonPath / XPath。
  * 例：`https://example.com/book/123.html`、`/book/123.html`
+ * 仍含 `{{…}}` / `@get:` / `{$.…}` 时须先 makeUpRule，不可当字面量
+ *（`$.bid` → `<js>…</js>` → `https://…?bookid={{result}}`）。
+ * 含 `&&` / `||` / `%%` 的是拼接规则（如 `https://host/&&tag.a@href`），不可整段当字面 URL。
  */
 export function isLegadoLiteralUrlRule(rule: string): boolean {
   const t = rule.trim();
   if (!t) return false;
+  if (t.includes("{{") || t.includes("{$") || /@get:/i.test(t)) return false;
+  // 与 splitLegadoCompoundRule 一致：组合符存在时须分段解析
+  if (/(?:&&|\|\||%%)/.test(t)) return false;
   if (/^(?:https?:\/\/|data:|javascript:)/i.test(t)) return true;
   // /book/123.html — 勿当 XPath（XPath 多为 /html、//div）
   if (
@@ -108,10 +114,10 @@ export function legadoJsonPathFromRule(rule: string): string | null {
 export function isLegadoEmbeddedRuleExpr(expr: string): boolean {
   const t = expr.trim();
   if (!t) return false;
+  // `$..path` 也以 `$.` 开头；显式包含 `$..` / 带 ## 的 JsonPath
+  if (isLegadoJsonPathExpr(t)) return true;
   return (
     t.startsWith("@") ||
-    t.startsWith("$.") ||
-    t.startsWith("$[") ||
     t.startsWith("//")
   );
 }
@@ -136,7 +142,9 @@ export function isLegadoTemplateOnlyRule(rule: string): boolean {
   if (/(?:<js>|@js:)/i.test(t)) return false;
   if (/^@js:/i.test(t) || /^<js>/i.test(t)) return false;
   if (looksLikeLegadoJs(t)) return false;
-  const stripped = t.replace(/\{\{[\s\S]*?\}\}/g, "");
+  const stripped = t.replace(/\{\{[\s\S]*?\}\}/g, "").trim();
+  // `@{{$.author}}`：展开后仅剩展示用 @ 前缀，仍视为纯模板
+  if (!stripped || stripped === "@") return true;
   if (/[@$]|\$\.|\$\[|^@json:|^@Json:|^@css:/i.test(stripped)) return false;
   return true;
 }
@@ -281,6 +289,20 @@ function isLegadoFlatHeaderMap(obj: Record<string, unknown>): boolean {
   );
 }
 
+function coerceUrlOptionBody(body: unknown): string {
+  if (typeof body === "string") return body;
+  if (body == null) return "";
+  // POST JSON body 常为对象；String(obj) → "[object Object]" 会导致正文接口空响应
+  if (typeof body === "object") {
+    try {
+      return JSON.stringify(body);
+    } catch {
+      return "";
+    }
+  }
+  return String(body);
+}
+
 export function parseLegadoUrlSuffixJson(raw: string): LegadoUrlFetchOptions {
   // 书源常见 body: '{"a":1}'（单引号包着内层双引号 JSON）；标准 JSON.parse 会失败
   let parsed = parseLegadoLooseJsonObject(raw);
@@ -311,7 +333,7 @@ export function parseLegadoUrlSuffixJson(raw: string): LegadoUrlFetchOptions {
     return {
       headers,
       method: typeof parsed!.method === "string" ? parsed!.method : undefined,
-      body: parsed!.body != null ? String(parsed!.body) : undefined,
+      body: parsed!.body != null ? coerceUrlOptionBody(parsed!.body) : undefined,
       charset: typeof parsed!.charset === "string" ? parsed!.charset : undefined,
       type: typeof parsed!.type === "string" ? parsed!.type : undefined,
       webView: webView || undefined,

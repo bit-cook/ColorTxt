@@ -38,13 +38,33 @@ import {
 } from "./bookInfoRules";
 import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoAsciiWhitespace } from "./legadoDefaultRule";
 import { AnalyzeRule } from "./analyzeRule";
-import { AnalyzeUrl, ajaxAllStrResponses, splitUrlFetchOptions } from "./analyzeUrl";
+import {
+  AnalyzeUrl,
+  ajaxAllStrResponses,
+  splitUrlFetchOptions,
+  type StrResponse,
+} from "./analyzeUrl";
 import { createJsExtensionHost } from "./jsExtensions";
 import { evalJsAsync } from "./rhinoRuntime";
 import { runLoginCheckJs, awaitLoginForSearchPage, isVerificationCancelled } from "./loginCheck";
 import { ensureBookSourceJsLib } from "./sharedJsScope";
 import { appendBookSourceErrorLog } from "./bookSourceErrorLog";
 import { timeFormat } from "./legadoJavaApi";
+
+/**
+ * 对齐 Legado WebBook：getStrResponse 后跑 loginCheckJs（搜索/发现/详情/目录/正文均如此）。
+ * 部分源用其识别反爬页（如含 `fffffffffffffffffff`）并 webView 刷新 Cookie。
+ */
+async function fetchWithLoginCheck(
+  analyzeUrl: AnalyzeUrl,
+  source: BookSourceRecord,
+  key: string,
+  logs: string[],
+): Promise<StrResponse> {
+  let res = await analyzeUrl.getStrResponse();
+  if (!source.loginCheckJs?.trim()) return res;
+  return runLoginCheckJs(analyzeUrl, source, res, key, logs);
+}
 
 function runJsLib(
   source: BookSourceRecord,
@@ -269,27 +289,20 @@ export async function searchBook(
     logs,
     ruleVariables,
   });
-  let res = await analyzeUrl.getStrResponse();
-  if (source.loginCheckJs?.trim()) {
-    try {
-      res = await runLoginCheckJs(analyzeUrl, source, res, key, logs);
-    } catch (e) {
-      if (isVerificationCancelled(e)) {
-        logs.push("用户取消登录，跳过该书源");
-        return [];
-      }
-      throw e;
-    }
-  } else {
-    try {
+  let res: StrResponse;
+  try {
+    if (source.loginCheckJs?.trim()) {
+      res = await fetchWithLoginCheck(analyzeUrl, source, key, logs);
+    } else {
+      res = await analyzeUrl.getStrResponse();
       res = await awaitLoginForSearchPage(source, res, analyzeUrl, logs);
-    } catch (e) {
-      if (isVerificationCancelled(e)) {
-        logs.push("用户取消登录，跳过该书源");
-        return [];
-      }
-      throw e;
     }
+  } catch (e) {
+    if (isVerificationCancelled(e)) {
+      logs.push("用户取消登录，跳过该书源");
+      return [];
+    }
+    throw e;
   }
   if (!res.body?.trim()) {
     logs.push(
@@ -342,27 +355,20 @@ export async function exploreBook(
     logs,
     ruleVariables,
   });
-  let res = await analyzeUrl.getStrResponse();
-  if (source.loginCheckJs?.trim()) {
-    try {
-      res = await runLoginCheckJs(analyzeUrl, source, res, "", logs);
-    } catch (e) {
-      if (isVerificationCancelled(e)) {
-        logs.push("用户取消登录，跳过该书源");
-        return [];
-      }
-      throw e;
-    }
-  } else {
-    try {
+  let res: StrResponse;
+  try {
+    if (source.loginCheckJs?.trim()) {
+      res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
+    } else {
+      res = await analyzeUrl.getStrResponse();
       res = await awaitLoginForSearchPage(source, res, analyzeUrl, logs);
-    } catch (e) {
-      if (isVerificationCancelled(e)) {
-        logs.push("用户取消登录，跳过该书源");
-        return [];
-      }
-      throw e;
     }
+  } catch (e) {
+    if (isVerificationCancelled(e)) {
+      logs.push("用户取消登录，跳过该书源");
+      return [];
+    }
+    throw e;
   }
   return analyzeBookList(
     source,
@@ -717,10 +723,12 @@ export function resolveBookKindForChapterRules(
 export function repairChapterUrlBookId(chapterUrl: string, bookId: string): string {
   const id = stripNumericIdPrefix(bookId);
   if (!id || !/ads-read/i.test(chapterUrl)) return chapterUrl;
-  const comma = chapterUrl.indexOf(",{");
+  // 仅接受纯数字 bookId（kind 标签如「9.5分」不能写入 BookID）
+  if (!/^\d+$/.test(id)) return chapterUrl;
+  const comma = chapterUrl.search(/,\s*\{/);
   if (comma < 0) return chapterUrl;
   const urlPart = chapterUrl.slice(0, comma);
-  const optRaw = chapterUrl.slice(comma + 1);
+  const optRaw = chapterUrl.slice(comma + 1).replace(/^\s*/, "");
   let opts: Record<string, unknown>;
   try {
     opts = JSON.parse(optRaw) as Record<string, unknown>;
@@ -728,6 +736,28 @@ export function repairChapterUrlBookId(chapterUrl: string, bookId: string): stri
     return chapterUrl;
   }
   const body = opts.body;
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const bodyObj = body as Record<string, unknown>;
+    const batch = bodyObj.ContentAnchorBatch;
+    if (!Array.isArray(batch)) return chapterUrl;
+    let changed = false;
+    const nextBatch = batch.map((item) => {
+      if (!item || typeof item !== "object") return item;
+      const row = { ...(item as Record<string, unknown>) };
+      const cur = row.BookID;
+      const curStr = cur == null ? "" : String(cur);
+      if (!curStr || curStr.includes("_") || !/^\d+$/.test(curStr)) {
+        changed = true;
+        row.BookID = id;
+      }
+      return row;
+    });
+    if (!changed) return chapterUrl;
+    return `${urlPart},${JSON.stringify({
+      ...opts,
+      body: { ...bodyObj, ContentAnchorBatch: nextBatch },
+    })}`;
+  }
   if (typeof body !== "string" || !body.includes("BookID")) return chapterUrl;
   const nextBody = body.replace(
     /"BookID"\s*:\s*(?:""|null|"[^"]*")/,
@@ -965,7 +995,7 @@ export async function getBookInfo(
     logs,
     ruleVariables: variables,
   });
-  let res = await analyzeUrl.getStrResponse();
+  let res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
   // resourceId 为 90000001_数字 时 bookInfo 常空，去掉前缀重试
   if (
     /[?&]resourceId=\d+_\d+/i.test(resolvedBookUrl) &&
@@ -974,14 +1004,15 @@ export async function getBookInfo(
     const stripped = resolvedBookUrl.replace(/([?&]resourceId=)\d+_/i, "$1");
     if (stripped !== resolvedBookUrl) {
       logs.push(`详情 resourceId 含前缀且响应空，重试: ${stripped.slice(0, 120)}`);
-      res = await new AnalyzeUrl({
+      const retryUrl = new AnalyzeUrl({
         mUrl: stripped,
         baseUrl: source.bookSourceUrl,
         source,
         host,
         logs,
         ruleVariables: variables,
-      }).getStrResponse();
+      });
+      res = await fetchWithLoginCheck(retryUrl, source, "", logs);
       // 后续 tocUrl 拼 $..resourceID 须用短 id
       book.bookUrl = stripped;
     }
@@ -1489,7 +1520,7 @@ export async function getChapterList(
     logs,
     ruleVariables: variables,
   });
-  const res = await analyzeUrl.getStrResponse();
+  let res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
   let body = res.body;
   let redirectUrl = res.url;
   // bookId 误带 90000001_ 前缀时 all-chapter 返回空 rows，去掉前缀再试
@@ -1504,14 +1535,15 @@ export async function getChapterList(
     );
     if (stripped !== fetchTocUrlFinal) {
       logs.push(`目录 bookId 含前缀且 rows 为空，重试: ${stripped.slice(0, 120)}`);
-      const retry = await new AnalyzeUrl({
+      const retryUrl = new AnalyzeUrl({
         mUrl: stripped,
         baseUrl: String(book.bookUrl || bookPageUrl),
         source,
         host,
         logs,
         ruleVariables: variables,
-      }).getStrResponse();
+      });
+      const retry = await fetchWithLoginCheck(retryUrl, source, "", logs);
       body = retry.body;
       redirectUrl = retry.url;
       resolvedTocUrl = stripped;
@@ -1592,14 +1624,15 @@ export async function getChapterList(
       ]);
       while (next && !visited.has(tocVisitKey(next))) {
         visited.add(tocVisitKey(next));
-        const nextRes = await new AnalyzeUrl({
+        const nextAnalyze = new AnalyzeUrl({
           mUrl: next,
           baseUrl: String(book.bookUrl || bookPageUrl),
           source,
           host,
           logs,
           ruleVariables: variables,
-        }).getStrResponse();
+        });
+        const nextRes = await fetchWithLoginCheck(nextAnalyze, source, "", logs);
         await collect(nextRes.body, nextRes.url, nextRes.url);
         const arNext = new AnalyzeRule(source, logs, host)
           .setContent(nextRes.body, next)
@@ -1664,7 +1697,16 @@ export async function getChapterContent(
       tocUrl: resolvedTocUrl,
     }),
   );
-  const fetchChapterUrl = repairChapterUrlBookId(chapterUrl, kind);
+  // ads-read 的 BookID 须用 toc/book 上的数字 id，勿用 kind 标签
+  const bookIdForChapter =
+    resolvedTocUrl.match(/[?&]bookId=([^&]+)/i)?.[1] ??
+    resolvedTocUrl.match(/[?&]book_id=([^&]+)/i)?.[1] ??
+    bookPageUrl.match(/[?&](?:bookid|bookId|book_id)=([^&]+)/i)?.[1] ??
+    ( /^\d+$/.test(kind) ? kind : "");
+  const fetchChapterUrl = repairChapterUrlBookId(
+    chapterUrl,
+    bookIdForChapter ? decodeURIComponent(bookIdForChapter) : "",
+  );
   if (fetchChapterUrl !== chapterUrl) {
     chapter = { ...chapter, url: fetchChapterUrl };
   }
@@ -1696,7 +1738,7 @@ export async function getChapterContent(
     webJs: rule.webJs?.trim() || undefined,
     sourceRegex: rule.sourceRegex?.trim() || undefined,
   });
-  const res = await analyzeUrl.getStrResponse();
+  const res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
   const body = res.body;
   const redirectUrl = res.url;
   const contentParts: string[] = [];
@@ -1731,7 +1773,7 @@ export async function getChapterContent(
         if (absNext === absChapterNext) break;
       }
       visited.add(next);
-      const nextRes = await new AnalyzeUrl({
+      const nextAnalyze = new AnalyzeUrl({
         mUrl: next,
         baseUrl: source.bookSourceUrl,
         source,
@@ -1740,7 +1782,8 @@ export async function getChapterContent(
         ruleVariables: variables,
         webJs: rule.webJs?.trim() || undefined,
         sourceRegex: rule.sourceRegex?.trim() || undefined,
-      }).getStrResponse();
+      });
+      const nextRes = await fetchWithLoginCheck(nextAnalyze, source, "", logs);
       const page = await fetchContentPage(
         source,
         host,

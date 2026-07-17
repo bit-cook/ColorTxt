@@ -408,25 +408,30 @@ export function queryLegadoSelectorSegment(
   fromRoot: boolean,
 ): Cheerio<any> {
   const parsed = parseLegadoSelectorSegment(segment);
-  let found: Cheerio<any>;
-  if (parsed.className != null) {
-    const sel = legadoClassSelector(parsed.className);
-    found = fromRoot ? $(sel) : scope.find(sel);
-  } else if (parsed.tagName != null) {
-    found = fromRoot ? $(parsed.tagName) : scope.find(parsed.tagName);
-  } else if (parsed.elementId != null) {
-    const sel = `#${parsed.elementId}`;
-    found = fromRoot ? $(sel) : scope.find(sel);
-  } else if (parsed.ownText != null) {
-    found = elementsContainingOwnText($, scope, parsed.ownText, fromRoot);
-  } else if (parsed.children) {
-    found = fromRoot ? $.root().children() : scope.children();
-  } else if (parsed.css) {
-    found = fromRoot ? $(parsed.css) : scope.find(parsed.css);
-  } else {
+  try {
+    let found: Cheerio<any>;
+    if (parsed.className != null) {
+      const sel = legadoClassSelector(parsed.className);
+      found = fromRoot ? $(sel) : scope.find(sel);
+    } else if (parsed.tagName != null) {
+      found = fromRoot ? $(parsed.tagName) : scope.find(parsed.tagName);
+    } else if (parsed.elementId != null) {
+      const sel = `#${parsed.elementId}`;
+      found = fromRoot ? $(sel) : scope.find(sel);
+    } else if (parsed.ownText != null) {
+      found = elementsContainingOwnText($, scope, parsed.ownText, fromRoot);
+    } else if (parsed.children) {
+      found = fromRoot ? $.root().children() : scope.children();
+    } else if (parsed.css) {
+      found = fromRoot ? $(parsed.css) : scope.find(parsed.css);
+    } else {
+      return $("");
+    }
+    return pickElements(found, parsed, $);
+  } catch {
+    // 非法 CSS（如误入的 http://… 字面量）对齐 Legado：空结果，勿抛
     return $("");
   }
-  return pickElements(found, parsed, $);
 }
 
 /**

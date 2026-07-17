@@ -36,6 +36,20 @@ function isAsyncFunction(fn: unknown): boolean {
  * Node 把 `await java.ajax` 升成 async 后若仍用原生 map，会一次打出全部请求
  *（如搜索 list 对每项再 ajax 详情 → 限流 / TimeoutError）。
  */
+/** 挂到数组上的 List API 必须不可枚举：书源常用 `for (i in $)`，可枚举方法会当成 $[i] */
+function defineLegadoListMethod(
+  arr: object,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(arr, key, {
+    configurable: true,
+    writable: true,
+    enumerable: false,
+    value,
+  });
+}
+
 export function ensureLegadoListApi<T = unknown>(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   const arr = value as T[] &
@@ -44,38 +58,50 @@ export function ensureLegadoListApi<T = unknown>(value: unknown): unknown {
       map: typeof Array.prototype.map;
     };
   if (typeof arr.toArray !== "function") {
-    arr.toArray = () => [...arr];
-    arr.isEmpty = () => arr.length === 0;
-    arr.size = () => arr.length;
-    arr.get = (index: number) => arr[index];
+    defineLegadoListMethod(arr, "toArray", function (this: T[]) {
+      return this.slice();
+    });
+    defineLegadoListMethod(arr, "isEmpty", function (this: T[]) {
+      return this.length === 0;
+    });
+    defineLegadoListMethod(arr, "size", function (this: T[]) {
+      return this.length;
+    });
+    defineLegadoListMethod(arr, "get", function (this: T[], index: number) {
+      return this[index];
+    });
   }
   if (!arr.__legadoSequentialAsyncMap) {
-    Object.defineProperty(arr, "map", {
-      configurable: true,
-      writable: true,
-      enumerable: false,
-      value(callback: (item: T, index: number, array: T[]) => unknown, thisArg?: unknown) {
+    defineLegadoListMethod(
+      arr,
+      "map",
+      function (
+        this: T[],
+        callback: (item: T, index: number, array: T[]) => unknown,
+        thisArg?: unknown,
+      ) {
         if (!isAsyncFunction(callback)) {
           return Array.prototype.map.call(this, callback as never, thisArg);
         }
-        const list = this as T[];
+        const list = this;
         return (async () => {
           const out: unknown[] = [];
           for (let i = 0; i < list.length; i++) {
             out.push(
-              await (callback as (item: T, index: number, array: T[]) => Promise<unknown>).call(
-                thisArg,
-                list[i]!,
-                i,
-                list,
-              ),
+              await (
+                callback as (
+                  item: T,
+                  index: number,
+                  array: T[],
+                ) => Promise<unknown>
+              ).call(thisArg, list[i]!, i, list),
             );
           }
           return out;
         })();
       },
-    });
-    arr.__legadoSequentialAsyncMap = true;
+    );
+    defineLegadoListMethod(arr, "__legadoSequentialAsyncMap", true);
   }
   return arr;
 }

@@ -714,7 +714,7 @@ defineExpose({
         <button
           v-if="characterPortraitTabVisible"
           type="button"
-          class="activityTabBtn"
+          class="activityTabBtn activityTabBtn--character"
           :class="{ active: panelExpanded && activeTab === 'character' }"
           title="角色卡"
           aria-label="角色卡"
@@ -1215,6 +1215,10 @@ defineExpose({
   width: 22px;
   height: 22px;
   display: block;
+}
+
+.activityTabBtn--character .activityIcon :deep(svg circle) {
+  stroke: currentColor;
 }
 
 .sidebarPanelColumn {

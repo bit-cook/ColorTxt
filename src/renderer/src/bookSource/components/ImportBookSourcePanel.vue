@@ -145,7 +145,6 @@ function onCancel() {
   <AppModal
     v-model="modelValue"
     title="导入书源"
-    inset="20"
     panel-class="bookSourcePanel"
     :mask-closable="false"
     :esc-closable="true"

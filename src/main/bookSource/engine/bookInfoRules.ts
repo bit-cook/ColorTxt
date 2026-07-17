@@ -241,19 +241,23 @@ async function expandBookInfoMakeUpRule(
         out += await ar.getPlainString(expr, content);
       }
     } else {
-      const jsOut = evalJsExpression(part.expr, {
-        source: ar.sourceRecord,
-        book: ar.bookRecord,
-        chapter: ar.chapterRecord,
-        result: content,
-        baseUrl: ar.currentBaseUrl,
-        host: ar.extensionHost,
-        java: ar.buildRuleJavaBindings(content),
-      });
-      if (typeof jsOut === "number" && jsOut % 1 === 0) {
-        out += String(Math.trunc(jsOut));
-      } else {
-        out += String(jsOut ?? "");
+      try {
+        const jsOut = evalJsExpression(part.expr, {
+          source: ar.sourceRecord,
+          book: ar.bookRecord,
+          chapter: ar.chapterRecord,
+          result: content,
+          baseUrl: ar.currentBaseUrl,
+          host: ar.extensionHost,
+          java: ar.buildRuleJavaBindings(content),
+        });
+        if (typeof jsOut === "number" && jsOut % 1 === 0) {
+          out += String(Math.trunc(jsOut));
+        } else {
+          out += String(jsOut ?? "");
+        }
+      } catch {
+        out += "";
       }
     }
   }

@@ -135,6 +135,53 @@ function isEmptyEvalResult(text: string): boolean {
   return !text || text === "null" || text === "undefined";
 }
 
+/**
+ * CDN/站点 JS 挑战页（如 `var buid = "fffffffffffffffffff"` + probe.js）。
+ * 此时 outerHTML 非空但尚无正文；应对齐「空结果」继续等待。
+ * 取 `document.cookie` 时不把挑战页当未就绪（cookie 字符串本身就可能很短）。
+ */
+export function isJsChallengeHtml(text: string): boolean {
+  const head = text.slice(0, 8000);
+  if (head.includes("fffffffffffffffffff")) return true;
+  if (/probe\.js/i.test(head) && text.length < 4096) return true;
+  return false;
+}
+
+/**
+ * 普通 HTTP 拉到的页是否仍须改用 webView 取正文。
+ * 刷 Cookie 后 Node fetch 常见：404 + probev3.js 壳、无目录/书信息（浏览器 WebView 则正常）。
+ */
+export function needsWebViewHtmlFallback(
+  body: string,
+  statusCode?: number,
+): boolean {
+  if (isJsChallengeHtml(body)) return true;
+  const head = body.slice(0, 12000);
+  const hasBookDom =
+    body.includes("chapter-item") ||
+    body.includes("og:novel") ||
+    body.includes("book-img-text") ||
+    body.includes("catalog-volume") ||
+    body.includes("y-list__item");
+  if (hasBookDom) return false;
+  if (/probev\d*\.js/i.test(head)) return true;
+  if (statusCode != null && statusCode >= 400 && /probe/i.test(head)) return true;
+  return false;
+}
+
+function shouldRetryWebViewResult(text: string, userScript: string): boolean {
+  if (isEmptyEvalResult(text)) return true;
+  if (/^\s*document\.cookie\s*$/i.test(userScript.trim())) return false;
+  // 仅当脚本意在取页面 HTML 时，挑战页视为未就绪
+  if (
+    !userScript.trim() ||
+    /outerHTML|innerHTML|documentElement|document\.body/i.test(userScript)
+  ) {
+    return isJsChallengeHtml(text);
+  }
+  return false;
+}
+
 function attachTrustAnyCertificate(wc: Electron.WebContents): void {
   // 对齐 Legado BackstageWebView.onReceivedSslError → proceed()
   wc.on("certificate-error", (event, _url, _error, _cert, callback) => {
@@ -255,14 +302,27 @@ export async function runBackstageWebView(
 
     const wrappedScript = buildWebViewEvalScript(userScript);
 
-    // 对齐 Legado EvalJsRunnable：非空且非 "null" 即返回；否则最多再试 30 次（间隔 1s）
+    // 对齐 Legado EvalJsRunnable：非空且非 "null" 即返回；否则最多再试 30 次（间隔 1s）。
+    // 额外：JS 挑战页（fffffffffffffffffff / 短 probe.js）对 HTML 类脚本也继续等。
     let last = "";
     for (let retry = 0; ; retry++) {
       const raw = await wc.executeJavaScript(wrappedScript, true);
       last = typeof raw === "string" ? raw : String(raw ?? "");
-      if (!isEmptyEvalResult(last)) break;
+      if (!shouldRetryWebViewResult(last, userScript)) break;
       if (retry >= 30) {
-        throw new Error("webView js 执行超时（空结果）");
+        // 先回写 session Cookie，再决定是否超时失败
+        if (pageUrl.startsWith("http")) {
+          await persistWebViewCookies(wc, pageUrl);
+        }
+        // loginCheckJs 常用 `document.cookie`：值可为空（仅 HttpOnly），不能当 JS 超时
+        if (/^\s*document\.cookie\s*$/i.test(userScript)) {
+          return last;
+        }
+        if (isEmptyEvalResult(last)) {
+          throw new Error("webView js 执行超时（空结果）");
+        }
+        // 挑战页等满仍返回最后一次 HTML，由上层决定是否可用
+        break;
       }
       await new Promise((r) => setTimeout(r, 1000));
     }

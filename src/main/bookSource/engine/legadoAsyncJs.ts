@@ -473,6 +473,103 @@ function ifElseChainIsTerminal(
   return i >= script.length;
 }
 
+/**
+ * 顶层 `try { …; expr } catch (e) { …; expr }`：分支末尾表达式补 return。
+ * 目录 tocUrl 常见写法；若只认 if/else，整段以 `}` 结尾时 ensureLegadoScriptReturn
+ * 不会补 return → 返回 undefined → tocUrl 回退详情页。
+ */
+export function ensureLegadoTryCatchBranchReturn(script: string): string {
+  let result = script;
+  for (let pass = 0; pass < 8; pass++) {
+    let changed = false;
+    const tryRe = /\btry\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = tryRe.exec(result))) {
+      const tryStart = m.index;
+      if (braceDepthBefore(result, tryStart) !== 0) {
+        tryRe.lastIndex = tryStart + 1;
+        continue;
+      }
+      const tryBraceOpen = m.index + m[0].length - 1;
+      const tryBraceClose = findMatchingBrace(result, tryBraceOpen);
+      if (tryBraceClose < 0) {
+        tryRe.lastIndex = tryStart + 1;
+        continue;
+      }
+
+      let after = tryBraceClose + 1;
+      while (after < result.length && /\s/.test(result[after]!)) after++;
+      let chainEnd = tryBraceClose;
+      const catchBlocks: Array<{ open: number; close: number }> = [];
+
+      while (/^catch\b/.test(result.slice(after))) {
+        after += 5;
+        while (after < result.length && /\s/.test(result[after]!)) after++;
+        if (result[after] === "(") {
+          const parenClose = findMatchingParen(result, after);
+          if (parenClose < 0) break;
+          after = parenClose + 1;
+          while (after < result.length && /\s/.test(result[after]!)) after++;
+        }
+        if (result[after] !== "{") break;
+        const catchClose = findMatchingBrace(result, after);
+        if (catchClose < 0) break;
+        catchBlocks.push({ open: after, close: catchClose });
+        chainEnd = catchClose;
+        after = catchClose + 1;
+        while (after < result.length && /\s/.test(result[after]!)) after++;
+      }
+
+      if (/^finally\b/.test(result.slice(after))) {
+        after += 7;
+        while (after < result.length && /\s/.test(result[after]!)) after++;
+        if (result[after] === "{") {
+          const finClose = findMatchingBrace(result, after);
+          if (finClose >= 0) chainEnd = finClose;
+        }
+      }
+
+      if (!ifElseChainIsTerminal(result, tryStart, chainEnd)) {
+        tryRe.lastIndex = tryStart + 1;
+        continue;
+      }
+
+      const tryInj = injectTrailingReturnInBraceBlock(
+        result,
+        tryBraceOpen,
+        tryBraceClose,
+      );
+      if (tryInj.changed) {
+        result = tryInj.text;
+        changed = true;
+        tryRe.lastIndex = Math.max(tryInj.nextIndex, tryStart + 1);
+        continue;
+      }
+
+      let catchChanged = false;
+      for (const cb of catchBlocks) {
+        const catchInj = injectTrailingReturnInBraceBlock(
+          result,
+          cb.open,
+          cb.close,
+        );
+        if (catchInj.changed) {
+          result = catchInj.text;
+          changed = true;
+          catchChanged = true;
+          tryRe.lastIndex = Math.max(catchInj.nextIndex, tryStart + 1);
+          break;
+        }
+      }
+      if (catchChanged) continue;
+
+      tryRe.lastIndex = Math.max(chainEnd + 1, tryStart + 1);
+    }
+    if (!changed) break;
+  }
+  return result;
+}
+
 /** 解析 if 后紧随的 else / else if 链，返回整条链结束下标 */
 function findIfElseChainEnd(script: string, thenBraceClose: number): number {
   let end = thenBraceClose;
@@ -729,14 +826,18 @@ export function ensureLegadoIfEvalReturn(script: string): string {
 /**
  * 快照 `result` 并仅给**数组**补 List.toArray（字符串/对象原样保留，避免打断 .replace/.map）。
  * 用 `let result` 阴影全局，避免 await java.ajax 期间嵌套 @js 覆盖共享沙箱。
+ * List API 须不可枚举：`for (i in $)` / `for (i in result)` 不可扫到 toArray 等键。
  */
 export const LEGADO_RESULT_LIST_PRELUDE = `let result = (() => {
   const r = globalThis.result;
   if (Array.isArray(r) && typeof r.toArray !== "function") {
-    r.toArray = function () { return this.slice(); };
-    r.isEmpty = function () { return this.length === 0; };
-    r.size = function () { return this.length; };
-    r.get = function (i) { return this[i]; };
+    const def = (k, v) => Object.defineProperty(r, k, {
+      configurable: true, writable: true, enumerable: false, value: v
+    });
+    def("toArray", function () { return this.slice(); });
+    def("isEmpty", function () { return this.length === 0; });
+    def("size", function () { return this.length; });
+    def("get", function (i) { return this[i]; });
   }
   return r;
 })();`;
@@ -744,10 +845,13 @@ export const LEGADO_RESULT_LIST_PRELUDE = `let result = (() => {
 export const LEGADO_RESULT_LIST_PRELUDE_INPLACE = `(() => {
   const r = typeof result !== "undefined" ? result : globalThis.result;
   if (!Array.isArray(r) || typeof r.toArray === "function") return;
-  r.toArray = function () { return this.slice(); };
-  r.isEmpty = function () { return this.length === 0; };
-  r.size = function () { return this.length; };
-  r.get = function (i) { return this[i]; };
+  const def = (k, v) => Object.defineProperty(r, k, {
+    configurable: true, writable: true, enumerable: false, value: v
+  });
+  def("toArray", function () { return this.slice(); });
+  def("isEmpty", function () { return this.length === 0; });
+  def("size", function () { return this.length; });
+  def("get", function (i) { return this[i]; });
 })();`;
 
 /** 同步/异步 Legado JS 通用预处理 */
@@ -763,6 +867,7 @@ export function prepareLegadoJs(script: string): string {
   s = fixRhinoBareArrayArrowParams(s);
   s = ensureLegadoWithBlockReturn(s);
   s = ensureLegadoIfElseBranchReturn(s);
+  s = ensureLegadoTryCatchBranchReturn(s);
   s = ensureLegadoIfEvalReturn(s);
   s = ensureLegadoScriptReturn(s);
   // 必须在 return 补全之后：prelude 本身不是返回值
@@ -1139,6 +1244,12 @@ export function injectLegadoAsyncAwaits(
     "getVerificationCode",
     "refreshTocUrl",
     "reGetBook",
+    // loginCheckJs：`java.webView(...); result = java.getStrResponse()` 须先等 Cookie 再重请求
+    "webView",
+    "webViewGetOverrideUrl",
+    "webViewGetSource",
+    "getStrResponse",
+    "getResponse",
   ] as const;
   for (const name of asyncJavaCalls) {
     s = s.replace(

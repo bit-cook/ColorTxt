@@ -18,9 +18,13 @@ import { cookieHeaderForUrl, setCookieFromResponse } from "./cookieManager";
 import { DEFAULT_BOOK_SOURCE_USER_AGENT } from "./bookSourceUserAgent";
 import { evalJs, evalJsAsync } from "./rhinoRuntime";
 import { legadoJsonValueToString } from "./legadoJavaApi";
-import { runBackstageWebView } from "./backstageWebView";
+import { runBackstageWebView, needsWebViewHtmlFallback } from "./backstageWebView";
 import { splitAtJsRule } from "./legadoRuleSplit";
-import { parseLegadoUrlSuffixJson } from "./legadoCompositeRule";
+import {
+  isLegadoEmbeddedRuleExpr,
+  isLegadoJsonPathExpr,
+  parseLegadoUrlSuffixJson,
+} from "./legadoCompositeRule";
 import { withSourceRateLimit } from "./concurrentRateLimiter";
 import {
   extractProxyFromHeaders,
@@ -519,8 +523,21 @@ export class AnalyzeUrl {
       let m: RegExpExecArray | null;
       while ((m = re.exec(out)) !== null) {
         rebuilt += out.slice(cursor, m.index);
-        const js = m[1] ?? "";
-        const v = await evalJsAsync(js, {
+        const expr = (m[1] ?? "").trim();
+        /**
+         * AnalyzeUrl 无列表项 JSON 上下文。`$..docId##.*_` 等须在规则解析阶段展开；
+         * 若残留在 URL 里，勿当 Rhino JS（会 SyntaxError: Unexpected token '.'）。
+         */
+        if (
+          expr === "result" ||
+          isLegadoJsonPathExpr(expr) ||
+          isLegadoEmbeddedRuleExpr(expr)
+        ) {
+          rebuilt += "";
+          cursor = m.index + m[0].length;
+          continue;
+        }
+        const v = await evalJsAsync(expr, {
           source: this.source,
           result: out,
           baseUrl: this.baseUrl,
@@ -697,6 +714,32 @@ export class AnalyzeUrl {
       logs: this.host.logs,
       skipRateLimit: true,
     });
+    // 普通 HTTP 遇 JS 挑战 / WAF 壳时，改用 webView（与 UrlOption webView:true 同路径）。
+    // 仅刷 Cookie 再 fetch 在 Electron 里常仍 404+probev3、无目录；浏览器 WebView 可过。
+    if (
+      this.method === "GET" &&
+      needsWebViewHtmlFallback(res.body, res.statusCode)
+    ) {
+      this.host.logs?.push(
+        `普通请求为 JS 挑战/WAF 壳 (HTTP ${res.statusCode ?? "?"})，改用 webView`,
+      );
+      const webBody = await runBackstageWebView({
+        url: this.url,
+        js: webJs,
+        source: this.source,
+        host: this.host,
+        delayMs: this.urlFetchOptions.webViewDelayTime ?? undefined,
+      });
+      if (webBody?.trim() && !needsWebViewHtmlFallback(webBody)) {
+        res = { ...res, body: webBody, statusCode: 200, headers: {} };
+      } else if (
+        webBody?.includes("chapter-item") ||
+        webBody?.includes("og:novel") ||
+        (webBody && webBody.length > (res.body?.length ?? 0))
+      ) {
+        res = { ...res, body: webBody, statusCode: 200, headers: {} };
+      }
+    }
     const bodyJs = this.urlFetchOptions.bodyJs?.trim();
     if (bodyJs) {
       const nextBody = await evalJsAsync(bodyJs, {

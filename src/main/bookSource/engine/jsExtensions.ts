@@ -497,15 +497,27 @@ export function createJsExtensionHost(
       url: unknown,
       js: unknown,
       cacheFirst = false,
-    ) =>
-      runBackstageWebView({
+    ) => {
+      const pageUrl = url != null ? String(url) : "";
+      const script = js != null ? String(js) : "";
+      const out = await runBackstageWebView({
         html: html != null ? String(html) : "",
-        url: url != null ? String(url) : "",
-        js: js != null ? String(js) : "",
+        url: pageUrl,
+        js: script,
         source,
         host,
         cacheFirst: cacheFirst === true,
-      }),
+      });
+      // loginCheckJs：`java.webView(null, url, "document.cookie")` 返回值写回 CookieJar
+      if (
+        pageUrl.startsWith("http") &&
+        /^\s*document\.cookie\s*$/i.test(script.trim()) &&
+        out.trim()
+      ) {
+        setCookieForUrl(pageUrl.split(",")[0]!.trim(), out);
+      }
+      return out;
+    },
     webViewGetOverrideUrl: async (
       html: unknown,
       url: unknown,
@@ -617,7 +629,7 @@ async function legadoHttpPost(
     source: host.source,
     headers,
     method: "POST",
-    body: body != null && body !== "" ? String(body) : undefined,
+    body: coerceHttpBody(body),
     host,
     logs: host.logs,
     redirect: "manual",
@@ -627,6 +639,19 @@ async function legadoHttpPost(
     startTime,
     message: res.statusMessage,
   });
+}
+
+function coerceHttpBody(body: unknown): string | undefined {
+  if (body == null || body === "") return undefined;
+  if (typeof body === "string") return body;
+  if (typeof body === "object") {
+    try {
+      return JSON.stringify(body);
+    } catch {
+      return undefined;
+    }
+  }
+  return String(body);
 }
 
 async function legadoHttpRequest(
@@ -644,7 +669,7 @@ async function legadoHttpRequest(
     source: host.source,
     headers,
     method,
-    body: body != null && body !== "" ? String(body) : undefined,
+    body: coerceHttpBody(body),
     host,
     logs: host.logs,
     redirect,

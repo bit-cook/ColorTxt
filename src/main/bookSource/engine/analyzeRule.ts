@@ -57,6 +57,7 @@ import {
 import {
   expandLegadoGetRefs,
   isLegadoEmbeddedRuleExpr,
+  isLegadoJsonPathExpr,
   isLegadoLiteralUrlRule,
   isLegadoTemplateOnlyRule,
   isPureMustacheTemplateRule,
@@ -395,23 +396,50 @@ export class AnalyzeRule {
       return "";
     }
     const { baseRule, regex } = splitRuleRegexSuffix(parseRule);
-    const { working, pureGet } = await this.normalizeRuleInput(baseRule, mContent);
+    let { working, pureGet } = await this.normalizeRuleInput(baseRule, mContent);
     if (pureGet) {
       let s = working;
       if (regex) s = this.applyRuleRegex(s, regex);
       return trimLegadoAsciiWhitespace(s);
     }
+    /**
+     * 纯模板须在展开前判定并直接返回。
+     * 若先 expand 再判，`<p>{{$.data.Content[0].Content}}</p>` 会变成 `<p>正文</p>`，
+     * 在 JSON 页上被 detectMode 当成 JsonPath，正文变空。
+     */
+    if (isLegadoTemplateOnlyRule(working)) {
+      let expanded = this.expandAllTemplateExprs(
+        working,
+        mContent ?? this.content,
+      );
+      if (expanded.includes("{$.")) {
+        expanded = expandBraceJsonPathRule(
+          expanded,
+          mContent ?? this.content,
+        );
+      }
+      if (regex) expanded = this.applyRuleRegex(expanded, regex);
+      return trimLegadoAsciiWhitespace(expanded);
+    }
     // @put/@get 拼出的 https://…/book/id.html：勿再当 JsonPath
+    // 仍含 {{ }} 时先 makeUpRule（`$..docId##.*_` 等），再判断是否字面 URL
+    if (working.includes("{{") || working.includes("{$")) {
+      working = this.expandAllTemplateExprs(
+        working,
+        mContent ?? this.content,
+      );
+    }
+    // 单花括号 `{$.book_id}`（部分 tocUrl）；须在字面 URL 判断前展开
+    if (working.includes("{$.")) {
+      working = expandBraceJsonPathRule(
+        working,
+        mContent ?? this.content,
+      );
+    }
     if (isLegadoLiteralUrlRule(working)) {
       let s = working.trim();
       if (regex) s = this.applyRuleRegex(s, regex);
       return trimLegadoAsciiWhitespace(s);
-    }
-    if (isLegadoTemplateOnlyRule(working)) {
-      const expanded = trimLegadoAsciiWhitespace(
-        this.expandAllTemplateExprs(working, mContent ?? this.content),
-      );
-      return regex ? trimLegadoAsciiWhitespace(this.applyRuleRegex(expanded, regex)) : expanded;
     }
     const jsonCompound = await this.resolveJsonCompoundString(working, mContent, regex);
     if (jsonCompound != null) return jsonCompound;
@@ -439,22 +467,43 @@ export class AnalyzeRule {
       return "";
     }
     const { baseRule, regex } = splitRuleRegexSuffix(parseRule);
-    const { working, pureGet } = this.normalizeRuleInputSync(baseRule, mContent);
+    let { working, pureGet } = this.normalizeRuleInputSync(baseRule, mContent);
     if (pureGet) {
       let s = working;
       if (regex) s = this.applyRuleRegex(s, regex);
       return trimLegadoAsciiWhitespace(s);
     }
+    if (isLegadoTemplateOnlyRule(working)) {
+      let expanded = this.expandAllTemplateExprs(
+        working,
+        mContent ?? this.content,
+      );
+      if (expanded.includes("{$.")) {
+        expanded = expandBraceJsonPathRule(
+          expanded,
+          mContent ?? this.content,
+        );
+      }
+      if (regex) expanded = this.applyRuleRegex(expanded, regex);
+      return trimLegadoAsciiWhitespace(expanded);
+    }
+    if (working.includes("{{") || working.includes("{$")) {
+      working = this.expandAllTemplateExprs(
+        working,
+        mContent ?? this.content,
+      );
+    }
+    // 单花括号 `{$.book_id}`（部分 tocUrl）；须在字面 URL 判断前展开
+    if (working.includes("{$.")) {
+      working = expandBraceJsonPathRule(
+        working,
+        mContent ?? this.content,
+      );
+    }
     if (isLegadoLiteralUrlRule(working)) {
       let s = working.trim();
       if (regex) s = this.applyRuleRegex(s, regex);
       return trimLegadoAsciiWhitespace(s);
-    }
-    if (isLegadoTemplateOnlyRule(working)) {
-      const expanded = trimLegadoAsciiWhitespace(
-        this.expandAllTemplateExprs(working, mContent ?? this.content),
-      );
-      return regex ? trimLegadoAsciiWhitespace(this.applyRuleRegex(expanded, regex)) : expanded;
     }
     const jsonCompound = this.resolveJsonCompoundStringSync(working, mContent, regex);
     if (jsonCompound != null) return jsonCompound;
@@ -1129,6 +1178,26 @@ export class AnalyzeRule {
         rule.setContent(content, baseUrl ?? rule.baseUrl);
         return rule;
       },
+      /**
+       * Legado AnalyzeRule.refreshBookUrl：
+       * 将 book.bookUrl 更新为当前详情页最终地址（重定向后的 baseUrl），并返回该 URL。
+       * 常见于 tocUrl=`java.refreshBookUrl()`（详情与目录同页）。
+       */
+      refreshBookUrl: () => {
+        const url = String(
+          rule.redirectUrl ||
+            rule.requestUrlCtx ||
+            rule.baseUrl ||
+            (rule.book && typeof rule.book === "object"
+              ? (rule.book as { bookUrl?: unknown }).bookUrl
+              : "") ||
+            "",
+        ).trim();
+        if (rule.book && typeof rule.book === "object" && url) {
+          (rule.book as { bookUrl?: string }).bookUrl = url;
+        }
+        return url;
+      },
       ajax: async (url: unknown) => {
         const body = await baseAjax(url);
         if (body != null && body !== "") {
@@ -1185,14 +1254,25 @@ export class AnalyzeRule {
       } else if (workRule.includes("{$.")) {
         workRule = expandBraceJsonPathRule(workRule, content);
       }
+    } else if (workRule.includes("{{")) {
+      // 链式上一段常为 number/string（如 `<js>1100000000+parseInt(result)</js>`），
+      // 下一段 `https://…?bookid={{result}}` 须展开，不能只在 JSON 条目上 makeUpRule
+      workRule = this.expandAllTemplateExprs(workRule, content);
     }
     // Legado AnalyzeByJSonPath：{$.} 展开后为字面量；@js/<js> 仍须执行脚本
-    if (workRule !== baseRule && isJsonItemContent(content) && !isJsRule) {
-      let literal = workRule;
-      if (!list && typeof literal === "string" && regex) {
-        literal = this.applyRuleRegex(literal, regex);
+    if (workRule !== baseRule && !isJsRule) {
+      const stillNeedsParse =
+        workRule.includes("{{") ||
+        workRule.includes("{$") ||
+        /^@js:/i.test(workRule.trim()) ||
+        /^<js>/i.test(workRule.trim());
+      if (!stillNeedsParse) {
+        let literal = workRule;
+        if (!list && typeof literal === "string" && regex) {
+          literal = this.applyRuleRegex(literal, regex);
+        }
+        return literal;
       }
-      return literal;
     }
     // @get 展开后的绝对/站内 URL：JSON 条目上勿走 JsonPath，也勿把 /book/x.html 当 XPath
     if (!list && isLegadoLiteralUrlRule(workRule)) {
@@ -1322,13 +1402,22 @@ export class AnalyzeRule {
       } else if (workRule.includes("{$.")) {
         workRule = expandBraceJsonPathRule(workRule, content);
       }
+    } else if (workRule.includes("{{")) {
+      workRule = this.expandAllTemplateExprs(workRule, content);
     }
-    if (workRule !== baseRule && isJsonItemContent(content) && !isJsRule) {
-      let literal = workRule;
-      if (!list && typeof literal === "string" && regex) {
-        literal = this.applyRuleRegex(literal, regex);
+    if (workRule !== baseRule && !isJsRule) {
+      const stillNeedsParse =
+        workRule.includes("{{") ||
+        workRule.includes("{$") ||
+        /^@js:/i.test(workRule.trim()) ||
+        /^<js>/i.test(workRule.trim());
+      if (!stillNeedsParse) {
+        let literal = workRule;
+        if (!list && typeof literal === "string" && regex) {
+          literal = this.applyRuleRegex(literal, regex);
+        }
+        return literal;
       }
-      return literal;
     }
     if (!list && isLegadoLiteralUrlRule(workRule)) {
       return regex ? this.applyRuleRegex(workRule, regex) : workRule;
@@ -1415,16 +1504,35 @@ export class AnalyzeRule {
     return out;
   }
 
-  /** Legado 正则结果 List<String> 上的 $1 / $2 引用，及 $1@js: 链 */
+  /** Legado 正则结果 List<String> 上的 $1 / $2 / `$3$5$6` 拼接，及 `$1@js:` / `$1<js>` 链 */
   private applyRegexGroupRef(rule: string, content: unknown): unknown | undefined {
-    const m = rule.match(/^(\$\d{1,2})([\s\S]*)$/);
-    if (!m || !Array.isArray(content)) return undefined;
+    if (!Array.isArray(content)) return undefined;
+    const trimmed = rule.trim();
+    // `$3$5$6$7$8`：多组直接拼接（目录章名常用）
+    if (/^(?:\$\d{1,2})+$/.test(trimmed)) {
+      return trimmed.replace(/\$(\d{1,2})/g, (_, d) =>
+        String(content[Number.parseInt(d, 10)] ?? ""),
+      );
+    }
+    const m = trimmed.match(/^(\$\d{1,2})([\s\S]*)$/);
+    if (!m) return undefined;
     const idx = Number.parseInt(m[1].slice(1), 10);
     let val: unknown = content[idx] ?? "";
     const tail = m[2].trim();
     if (!tail) return val;
     if (tail.startsWith("@js:")) {
       return evalJs(tail.slice(4), {
+        source: this.source,
+        book: this.book,
+        chapter: this.chapter,
+        result: val,
+        baseUrl: this.baseUrl,
+        host: this.host,
+      });
+    }
+    if (/^<js>/i.test(tail)) {
+      const script = stripLegadoJsRuleMarkers(tail);
+      return evalJs(script, {
         source: this.source,
         book: this.book,
         chapter: this.chapter,
@@ -1483,12 +1591,13 @@ export class AnalyzeRule {
         }
         return String(content);
       }
-      if (key.startsWith("$.") || key.startsWith("$..") || key.startsWith("$[")) {
-        const pathPart = key.split("##")[0]?.trim() ?? key;
+      if (key.startsWith("$.") || key.startsWith("$..") || key.startsWith("$[") || isLegadoJsonPathExpr(key)) {
+        // 须带 ## 后缀整段交给 expand（如 `$..docId##.*_` 去资源 id 前缀）
         for (const ctx of templateContexts) {
-          const val = expandLegadoTemplateJsonPathExpr(pathPart, ctx);
+          const val = expandLegadoTemplateJsonPathExpr(key, ctx);
           if (val) return val;
         }
+        const pathPart = key.split("##")[0]?.trim() ?? key;
         if (pathPart === "$.id" || pathPart.endsWith(".id")) {
           const bid =
             this.lookupStoredValue("bid") || this.lookupStoredValue("id");
@@ -1505,13 +1614,18 @@ export class AnalyzeRule {
       if (isLegadoEmbeddedRuleExpr(key)) {
         return this.getStringSync(key, content);
       }
-      const jsOut = evalJsExpression(key, {
-        ...this.buildJsEvalContext(content),
-      });
-      if (typeof jsOut === "number" && jsOut % 1 === 0) {
-        return String(Math.trunc(jsOut));
+      try {
+        const jsOut = evalJsExpression(key, {
+          ...this.buildJsEvalContext(content),
+        });
+        if (typeof jsOut === "number" && jsOut % 1 === 0) {
+          return String(Math.trunc(jsOut));
+        }
+        return String(jsOut ?? "");
+      } catch {
+        // 模板内误写 JS / `$` 未绑定时勿炸整条规则（URL 会残留 {{}}）
+        return "";
       }
-      return String(jsOut ?? "");
     });
   }
 
@@ -1547,6 +1661,15 @@ export class AnalyzeRule {
     script = this.expandRuleJsTemplates(script, content);
     // `{{'书名'}}` / `{{`url`}}`：expand 已是最终字面量，再 eval 会 ReferenceError / Unexpected token
     if (isPureMustacheTemplateRule(beforeExpand)) {
+      return script;
+    }
+    // `https://…?id={{$.book_id}}`：detectMode 因 `{{` 进 js；展开后已是 URL，勿再当脚本
+    if (
+      isLegadoLiteralUrlRule(script) ||
+      (beforeExpand.includes("{{") &&
+        !isLegadoJsRule(rule) &&
+        !looksLikeLegadoJs(script))
+    ) {
       return script;
     }
     script = expandLegadoRegexGroupRefsInJs(script, content);
@@ -1594,6 +1717,14 @@ export class AnalyzeRule {
     const beforeExpand = script;
     script = this.expandRuleJsTemplates(script, content);
     if (isPureMustacheTemplateRule(beforeExpand)) {
+      return script;
+    }
+    if (
+      isLegadoLiteralUrlRule(script) ||
+      (beforeExpand.includes("{{") &&
+        !isLegadoJsRule(rule) &&
+        !looksLikeLegadoJs(script))
+    ) {
       return script;
     }
     script = expandLegadoRegexGroupRefsInJs(script, content);
@@ -1759,7 +1890,7 @@ export class AnalyzeRule {
       }
     }
     if (list) return elements;
-    return legadoJoinResultTexts(acc);
+    return joinLegadoDefaultAndTexts(acc);
   }
 
   private byLegadoDefaultExtractAll(rule: string, content: unknown): string[] {
@@ -1804,6 +1935,11 @@ export class AnalyzeRule {
   private byLegadoDefaultSingle(rule: string, content: unknown, list: boolean): unknown {
     const trimmed = rule.replace(/^@@/, "").trim();
     if (!trimmed) return list ? [] : "";
+
+    // `https://host/&&tag.a@href` 的前缀：字面量，勿当 CSS（Cheerio 会抛 Expected name）
+    if (!list && isLegadoLiteralUrlRule(trimmed) && !trimmed.includes("@")) {
+      return trimmed;
+    }
 
     if (trimmed.startsWith("@css:")) {
       return this.byCss(trimmed.slice(5).trim(), content, list);
@@ -2274,6 +2410,19 @@ function isLegadoJsonContent(content: unknown): boolean {
     (str.startsWith("{") && str.endsWith("}")) ||
     (str.startsWith("[") && str.endsWith("]"))
   );
+}
+
+/**
+ * Default 规则 `&&` 拼接：含字面 URL 时直接相连（`https://host/&&tag.a@href`）；
+ * 否则仍用换行（kind 标签等再经 `##\n##，` 规范化）。
+ */
+function joinLegadoDefaultAndTexts(parts: string[]): string {
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0] ?? "";
+  if (parts.some((p) => /^(?:https?:\/\/|data:)/i.test(p.trim()))) {
+    return parts.join("");
+  }
+  return legadoJoinResultTexts(parts);
 }
 
 function detectMode(rule: string, contentIsJson = false): AnalyzeMode {
