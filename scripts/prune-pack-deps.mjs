@@ -7,9 +7,16 @@
  * 打包后若需恢复完整依赖：npm ci
  *
  * 用法：node scripts/prune-pack-deps.mjs [--platform win32|darwin|linux] [--arch x64|arm64] [--node-modules <path>]
+ *
+ * 交叉编译（如 macos-latest arm64 打 darwin-x64）：npm ci 不会安装目标架构的 optional
+ * 原生包；本脚本会在裁剪前补装并校验 @node-rs/jieba-* / sqlite-vec-*，避免 Intel Mac 等
+ * 产物缺 .node 导致启动崩溃。
  */
+import { execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { jiebaKeepName, sqliteKeepName } from "./electron-pack-context.mjs";
 
 const root = process.cwd();
 
@@ -77,8 +84,102 @@ function resolveOnnxPlatformArch(platformName, archName) {
 
 /** @param {string} plat @param {string} arch */
 function sqliteVecPlatformPackageName(plat, arch) {
-  const os = plat === "win32" ? "windows" : plat;
-  return `sqlite-vec-${os}-${arch}`;
+  return sqliteKeepName(plat, arch);
+}
+
+/** @param {string} dir */
+function dirHasNativeBinary(dir) {
+  if (!fs.existsSync(dir)) return false;
+  for (const name of fs.readdirSync(dir)) {
+    if (/\.(node|dylib|dll|so)$/i.test(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * 读取父包 optionalDependencies 中的版本；缺省则用父包 version。
+ * @param {string} parentPkgJson
+ * @param {string} depName
+ */
+function readOptionalDepVersion(parentPkgJson, depName) {
+  if (!fs.existsSync(parentPkgJson)) return null;
+  const pkg = JSON.parse(fs.readFileSync(parentPkgJson, "utf8"));
+  const fromOpt = pkg.optionalDependencies?.[depName];
+  if (typeof fromOpt === "string" && fromOpt.trim()) {
+    return fromOpt.replace(/^[\^~>=<\s]+/, "");
+  }
+  if (typeof pkg.version === "string" && pkg.version.trim()) return pkg.version;
+  return null;
+}
+
+/**
+ * 交叉编译时显式安装目标平台 optional 原生包（npm ci 只装宿主架构）。
+ * 用 `npm pack` + 解压拷贝，避开 `npm install` 的 os/cpu 拒绝与对项目依赖树的改动。
+ * @param {{
+ *   packageName: string,
+ *   destDir: string,
+ *   version: string | null,
+ *   label: string,
+ * }} opts
+ */
+function ensurePlatformNativePackage(opts) {
+  const { packageName, destDir, version, label } = opts;
+  if (dirHasNativeBinary(destDir)) return;
+
+  if (!version) {
+    console.error(
+      `[prune-pack-deps] ${label}: missing ${packageName} and could not resolve version`,
+    );
+    process.exit(1);
+  }
+
+  const spec = `${packageName}@${version}`;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "colortxt-native-"));
+  console.log(
+    `[prune-pack-deps] ${label}: packing ${spec} (cross-arch optional native)`,
+  );
+  try {
+    const packOut = execSync(`npm pack ${JSON.stringify(spec)}`, {
+      cwd: tmp,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      env: process.env,
+      shell: true,
+    })
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .pop();
+    if (!packOut) {
+      console.error(`[prune-pack-deps] ${label}: npm pack produced no tarball for ${spec}`);
+      process.exit(1);
+    }
+    const tgz = path.join(tmp, packOut);
+    execSync(`tar -xzf ${JSON.stringify(tgz)}`, {
+      cwd: tmp,
+      stdio: "inherit",
+      shell: true,
+    });
+    const extracted = path.join(tmp, "package");
+    if (!dirHasNativeBinary(extracted)) {
+      console.error(
+        `[prune-pack-deps] ${label}: ${packageName} tarball has no native binary`,
+      );
+      process.exit(1);
+    }
+    fs.mkdirSync(path.dirname(destDir), { recursive: true });
+    rm(destDir);
+    fs.cpSync(extracted, destDir, { recursive: true });
+  } finally {
+    rm(tmp);
+  }
+
+  if (!dirHasNativeBinary(destDir)) {
+    console.error(
+      `[prune-pack-deps] ${label}: ${packageName} still missing native binary under ${destDir}`,
+    );
+    process.exit(1);
+  }
 }
 
 /** Linux AppImage / electron-builder 常用 x86_64 目录名，与 prune 入参 x64 对齐 */
@@ -257,12 +358,23 @@ function pruneFontList(nodeModulesRoot, plat) {
  */
 function pruneSqliteVec(nodeModulesRoot, plat, arch) {
   const pkgRoot = path.join(nodeModulesRoot, "sqlite-vec");
-  if (fs.existsSync(pkgRoot)) {
-    rm(path.join(pkgRoot, "README.md"));
-    rm(path.join(pkgRoot, "index.d.ts"));
-  }
+  if (!fs.existsSync(pkgRoot)) return;
 
   const keep = sqliteVecPlatformPackageName(plat, arch);
+  const platRoot = path.join(nodeModulesRoot, keep);
+  ensurePlatformNativePackage({
+    packageName: keep,
+    destDir: platRoot,
+    version: readOptionalDepVersion(
+      path.join(pkgRoot, "package.json"),
+      keep,
+    ),
+    label: "sqlite-vec",
+  });
+
+  rm(path.join(pkgRoot, "README.md"));
+  rm(path.join(pkgRoot, "index.d.ts"));
+
   for (const ent of fs.readdirSync(nodeModulesRoot, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
     if (ent.name.startsWith("sqlite-vec-") && ent.name !== keep) {
@@ -270,8 +382,13 @@ function pruneSqliteVec(nodeModulesRoot, plat, arch) {
     }
   }
 
-  const platRoot = path.join(nodeModulesRoot, keep);
-  if (fs.existsSync(platRoot)) rm(path.join(platRoot, "README.md"));
+  if (!dirHasNativeBinary(platRoot)) {
+    console.error(
+      `[prune-pack-deps] sqlite-vec: expected native package ${keep} after prune`,
+    );
+    process.exit(1);
+  }
+  rm(path.join(platRoot, "README.md"));
 }
 
 /** onnxruntime-web 删除后常留在顶层的孤儿包（仅 web 推理链使用） */
@@ -387,29 +504,36 @@ function ensureSharpPackStub(nodeModulesRoot) {
 /** 仅保留当前平台的 @node-rs/jieba-* 原生扩展包 */
 function pruneJiebaPlatformPackages(nodeModulesRoot, plat, arch) {
   const jiebaRoot = path.join(nodeModulesRoot, "@node-rs", "jieba");
-  if (fs.existsSync(jiebaRoot)) {
-    rm(path.join(jiebaRoot, "README.md"));
-  }
+  if (!fs.existsSync(jiebaRoot)) return;
+
+  const keep = jiebaKeepName(plat, arch);
+  const packageName = `@node-rs/${keep}`;
+  const keepDir = path.join(nodeModulesRoot, "@node-rs", keep);
+  ensurePlatformNativePackage({
+    packageName,
+    destDir: keepDir,
+    version: readOptionalDepVersion(
+      path.join(jiebaRoot, "package.json"),
+      packageName,
+    ),
+    label: "jieba",
+  });
+
+  rm(path.join(jiebaRoot, "README.md"));
+
   const scope = path.join(nodeModulesRoot, "@node-rs");
-  if (!fs.existsSync(scope)) return;
-  const platToken =
-    plat === "darwin"
-      ? arch === "arm64"
-        ? "darwin-arm64"
-        : "darwin-x64"
-      : plat === "linux"
-        ? arch === "arm64"
-          ? "linux-arm64-gnu"
-          : "linux-x64-gnu"
-        : arch === "arm64"
-          ? "win32-arm64-msvc"
-          : "win32-x64-msvc";
-  const keep = `jieba-${platToken}`;
   for (const ent of fs.readdirSync(scope, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
     if (ent.name.startsWith("jieba-") && ent.name !== keep) {
       rm(path.join(scope, ent.name));
     }
+  }
+
+  if (!dirHasNativeBinary(keepDir)) {
+    console.error(
+      `[prune-pack-deps] jieba: expected native package ${packageName} after prune (required for ${plat}/${arch})`,
+    );
+    process.exit(1);
   }
 }
 

@@ -1,8 +1,7 @@
 import { createRequire } from "node:module";
-import { Jieba } from "@node-rs/jieba";
+import type { Jieba } from "@node-rs/jieba";
 
 const require = createRequire(import.meta.url);
-const { dict } = require("@node-rs/jieba/dict") as { dict: Buffer };
 
 /** bump when tokenizer rules or jieba dict changes */
 export const AI_SEGMENT_VERSION = 1;
@@ -10,7 +9,12 @@ export const AI_SEGMENT_VERSION = 1;
 let jieba: Jieba | null = null;
 
 function getJieba(): Jieba {
-  if (!jieba) jieba = Jieba.withDict(dict);
+  if (!jieba) {
+    // 懒加载：避免主进程启动路径因缺平台原生绑定整进程崩溃（打包应仍带上对应 jieba-*）
+    const { Jieba: JiebaCtor } = require("@node-rs/jieba") as typeof import("@node-rs/jieba");
+    const { dict } = require("@node-rs/jieba/dict") as { dict: Buffer };
+    jieba = JiebaCtor.withDict(dict);
+  }
   return jieba;
 }
 
