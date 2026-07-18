@@ -103,7 +103,9 @@ export function useAppTimedScroll(deps: {
   );
 
   watch(deps.currentFile, (file, prev) => {
-    if (deps.pauseOnLoading && active.value && file && prev) return;
+    // 找书续章：未缓存章会先清空 content key；由 loading watch 暂停/恢复，勿退出定时滚动
+    if (deps.pauseOnLoading && active.value) return;
+    if (file === prev) return;
     stopTimedScroll();
   });
   watch(deps.readerEditMode, (ed) => {

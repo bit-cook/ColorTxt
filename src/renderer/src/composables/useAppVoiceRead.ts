@@ -806,7 +806,9 @@ export function useAppVoiceRead(deps: {
   watch(deps.currentFile, (file, prev) => {
     player.clearSynthesisCache();
     clearVoiceReadSpeakerCache();
-    if (deps.pauseOnLoading && mode.value !== "off" && file && prev) return;
+    // 找书续章：未缓存章会先清空 content key 再拉正文；由 loading watch 暂停/续播，勿退出朗读
+    if (deps.pauseOnLoading && mode.value !== "off") return;
+    if (file === prev) return;
     exitVoiceRead();
   });
 
