@@ -5,6 +5,7 @@ import {
   type BookshelfBook,
 } from "./findBookBookshelf";
 import { resolveBookshelfReadChapterIndex } from "./findBookshelfDisplay";
+import { ipcPlain } from "./ipcPlain";
 
 export function hasCachedBookshelfToc(book: BookshelfBook): boolean {
   return Boolean(book.tocUrl?.trim() && book.chapters?.length);
@@ -34,25 +35,27 @@ export async function loadBookshelfReaderPayload(
 
   let detail: Book;
   if (book.tocUrl?.trim()) {
-    detail = bookshelfAsBook(book);
+    detail = ipcPlain(bookshelfAsBook(book));
   } else {
     const seed = bookshelfAsBook(book);
-    const infoRes = await window.colorTxt.bookSourceGetBookInfo({
-      bookSourceUrl: book.origin,
-      bookUrl: seed.bookUrl,
-      name: seed.name,
-      author: seed.author,
-      kind: seed.kind,
-      wordCount: seed.wordCount,
-      intro: seed.intro,
-      lastChapter: seed.lastChapter,
-      coverUrl: seed.coverUrl,
-      variable: seed.variable,
-    });
+    const infoRes = await window.colorTxt.bookSourceGetBookInfo(
+      ipcPlain({
+        bookSourceUrl: book.origin,
+        bookUrl: seed.bookUrl,
+        name: seed.name,
+        author: seed.author,
+        kind: seed.kind,
+        wordCount: seed.wordCount,
+        intro: seed.intro,
+        lastChapter: seed.lastChapter,
+        coverUrl: seed.coverUrl,
+        variable: seed.variable,
+      }),
+    );
     if (!infoRes.detail) {
       return { payload: null, message: infoRes.message ?? "加载书籍失败" };
     }
-    detail = infoRes.detail;
+    detail = ipcPlain(infoRes.detail);
   }
 
   const tocRes = await window.colorTxt.bookSourceGetChapterList({

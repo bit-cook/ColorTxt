@@ -7,6 +7,7 @@ import {
   type BookshelfBookInfoPatch,
 } from "../findBookBookshelf";
 import { resolveLatestChapterTitleFromToc } from "../findBookshelfDisplay";
+import { ipcPlain } from "../ipcPlain";
 
 const updatingKeys = ref(new Set<string>());
 
@@ -139,18 +140,20 @@ export function useBookshelfUpdate(onBooksChanged?: (books: BookshelfBook[]) => 
 
     setUpdating(key, true);
     try {
-      const infoRes = await window.colorTxt.bookSourceGetBookInfo({
-        bookSourceUrl: book.origin,
-        bookUrl: book.bookUrl,
-        name: book.name,
-        author: book.author,
-        kind: book.kind,
-        wordCount: book.wordCount,
-        intro: book.intro,
-        lastChapter: book.lastChapter,
-        coverUrl: book.coverUrl,
-        variable: book.variable,
-      });
+      const infoRes = await window.colorTxt.bookSourceGetBookInfo(
+        ipcPlain({
+          bookSourceUrl: book.origin,
+          bookUrl: book.bookUrl,
+          name: book.name,
+          author: book.author,
+          kind: book.kind,
+          wordCount: book.wordCount,
+          intro: book.intro,
+          lastChapter: book.lastChapter,
+          coverUrl: book.coverUrl,
+          variable: book.variable,
+        }),
+      );
       if (!infoRes.detail) {
         appendBookshelfUpdateLog(
           formatUpdateErrorEntry(
@@ -162,7 +165,7 @@ export function useBookshelfUpdate(onBooksChanged?: (books: BookshelfBook[]) => 
         return false;
       }
 
-      const detail = infoRes.detail;
+      const detail = ipcPlain(infoRes.detail);
       const tocRes = await window.colorTxt.bookSourceGetChapterList({
         bookSourceUrl: book.origin,
         book: detail,

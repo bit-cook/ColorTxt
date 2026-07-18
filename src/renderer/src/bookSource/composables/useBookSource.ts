@@ -12,11 +12,7 @@ import type {
 import { parseBookSourceJson } from "@shared/bookSource/types";
 import { searchBookToBook } from "@shared/bookSource/bookModel";
 import { appPrompt } from "../../services/appDialog";
-
-/** IPC 只能传递可结构化克隆的纯对象，需剥离 Vue 响应式代理 */
-function ipcPlain<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
+import { ipcPlain } from "../ipcPlain";
 
 export function useBookSourceApi() {
   const api = window.colorTxt;

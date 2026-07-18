@@ -6,6 +6,7 @@ import {
   updateFindBookBookshelfReadProgress,
 } from "../findBookBookshelf";
 import { formatBookshelfLastRead } from "../findBookshelfDisplay";
+import { ipcPlain } from "../ipcPlain";
 
 const MAX_CONCURRENT = 2;
 
@@ -51,19 +52,21 @@ export function useBookshelfLastReadTitles(
     resolvingKeys.add(key);
     inFlight += 1;
     try {
-      const infoRes = await window.colorTxt.bookSourceGetBookInfo({
-        bookSourceUrl: book.origin,
-        bookUrl: book.bookUrl,
-        name: book.name,
-        author: book.author,
-        kind: book.kind,
-        wordCount: book.wordCount,
-        intro: book.intro,
-        lastChapter: book.lastChapter,
-        coverUrl: book.coverUrl,
-        variable: book.variable,
-      });
-      const detail = infoRes.detail;
+      const infoRes = await window.colorTxt.bookSourceGetBookInfo(
+        ipcPlain({
+          bookSourceUrl: book.origin,
+          bookUrl: book.bookUrl,
+          name: book.name,
+          author: book.author,
+          kind: book.kind,
+          wordCount: book.wordCount,
+          intro: book.intro,
+          lastChapter: book.lastChapter,
+          coverUrl: book.coverUrl,
+          variable: book.variable,
+        }),
+      );
+      const detail = infoRes.detail ? ipcPlain(infoRes.detail) : undefined;
       if (!detail?.tocUrl) return;
 
       const tocRes = await window.colorTxt.bookSourceGetChapterList({

@@ -93,6 +93,8 @@ import {
   formatFindBookWindowTitle,
 } from "@shared/findBookWindowTitle";
 
+import { ipcPlain } from "../ipcPlain";
+
 const props = withDefaults(
   defineProps<{
     item: SearchBookItem;
@@ -1391,18 +1393,19 @@ async function refreshTocInternal(opts: { announce: boolean }) {
   const currentUrl = displayChapters.value[currentDisplayIndex.value]?.url ?? "";
   refreshingToc.value = true;
   try {
+    const bookPayload = ipcPlain({
+      ...props.detail,
+      bookUrl,
+      tocUrl: props.detail.tocUrl || bookUrl,
+      kind: props.detail.kind || props.item.kind || "",
+      name: props.detail.name || props.item.name,
+      author: props.detail.author || props.item.author,
+      origin,
+      originName: props.item.originName,
+    });
     const tocRes = await window.colorTxt.bookSourceGetChapterList({
       bookSourceUrl: origin,
-      book: {
-        ...props.detail,
-        bookUrl,
-        tocUrl: props.detail.tocUrl || bookUrl,
-        kind: props.detail.kind || props.item.kind || "",
-        name: props.detail.name || props.item.name,
-        author: props.detail.author || props.item.author,
-        origin,
-        originName: props.item.originName,
-      },
+      book: bookPayload,
     });
     if (tocRes.logs?.length) logs.value = tocRes.logs;
     if (tocRes.message) {
@@ -1433,7 +1436,10 @@ async function refreshTocInternal(opts: { announce: boolean }) {
       chapters: nextChapters,
       lastChapter: latestTitle,
     });
-    emit("tocRefreshed", { detail: nextDetail, chapters: nextChapters });
+    emit("tocRefreshed", {
+      detail: ipcPlain(nextDetail),
+      chapters: nextChapters,
+    });
     await nextTick();
     await refreshChapterCacheStatus();
     const nextDisplay = sortContentChaptersDisplay(
@@ -1460,8 +1466,12 @@ async function refreshTocInternal(opts: { announce: boolean }) {
         });
       }
     }
-  } catch {
-    appToast("刷新目录失败", { kind: "warning" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[findBook] refreshToc", e);
+    appToast(msg?.trim() ? `刷新目录失败：${msg}` : "刷新目录失败", {
+      kind: "warning",
+    });
   } finally {
     refreshingToc.value = false;
   }
