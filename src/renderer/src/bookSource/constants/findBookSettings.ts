@@ -1,4 +1,5 @@
 import type { TimedScrollSettings } from "../../constants/timedScroll";
+import type { PomodoroSettings } from "../../constants/pomodoro";
 import type {
   TextConvertWidthMode,
   TextConvertZhMode,
@@ -153,4 +154,5 @@ export type PersistedFindBookSettings = {
   fullscreenShowSystemTime?: boolean;
   sidebarWidth?: number;
   timedScroll?: Partial<TimedScrollSettings>;
+  pomodoro?: Partial<PomodoroSettings>;
 };

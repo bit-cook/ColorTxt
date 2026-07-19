@@ -24,6 +24,10 @@ import {
   mergeTimedScrollSettings,
   type TimedScrollSettings,
 } from "../../constants/timedScroll";
+import {
+  mergePomodoroSettings,
+  type PomodoroSettings,
+} from "../../constants/pomodoro";
 import { READER_EDITOR_DEFAULT_FONT_FAMILY } from "../../monaco/readerEditorOptions";
 import { loadPersistedSettingsData } from "../../stores/cacheStore";
 import { resolveDefaultBookSourceDownloadDirSync, resolveDefaultBookSourceChapterCacheDirSync } from "../../utils/defaultCacheDirs";
@@ -110,6 +114,9 @@ function seedFromMainSettings(
     );
   }
   copyIfUndef("timedScroll", main.timedScroll);
+  if (out.pomodoro === undefined && main.pomodoro) {
+    out.pomodoro = main.pomodoro;
+  }
 
   return out;
 }
@@ -159,6 +166,7 @@ export function snapshotFindBookSettingsFromStore(state: {
   fullscreenShowSystemTime: boolean;
   sidebarWidth: number;
   timedScrollSettings: TimedScrollSettings;
+  pomodoroSettings: PomodoroSettings;
 }): PersistedFindBookSettings {
   return {
     cacheDir: state.cacheDir.trim(),
@@ -189,6 +197,7 @@ export function snapshotFindBookSettingsFromStore(state: {
     fullscreenShowSystemTime: state.fullscreenShowSystemTime,
     sidebarWidth: state.sidebarWidth,
     timedScroll: state.timedScrollSettings,
+    pomodoro: state.pomodoroSettings,
   };
 }
 
@@ -294,6 +303,7 @@ export function createInitialFindBookSettingsState() {
           )
         : 270 - SIDEBAR_ACTIVITY_BAR_WIDTH,
     timedScrollSettings: mergeTimedScrollSettings(data.timedScroll),
+    pomodoroSettings: mergePomodoroSettings(data.pomodoro),
   };
 }
 

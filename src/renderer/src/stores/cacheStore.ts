@@ -40,6 +40,10 @@ import {
   mergeTimedScrollSettings,
   type TimedScrollSettings,
 } from "../constants/timedScroll";
+import {
+  mergePomodoroSettings,
+  type PomodoroSettings,
+} from "../constants/pomodoro";
 import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
 import { parseWordcloudAngleMode } from "../constants/wordcloudUi";
 import { parseWordcloudPaletteId } from "../constants/wordcloudPalettes";
@@ -103,6 +107,8 @@ export type PersistedSettingsData = {
   fullscreenShowSystemTime?: boolean;
   /** 定时滚动：范围与间隔 */
   timedScroll?: Partial<TimedScrollSettings>;
+  /** 番茄时钟 */
+  pomodoro?: Partial<PomodoroSettings>;
   /** 用户自定义快捷键（动作ID -> accelerator） */
   shortcutBindings?: Partial<Record<ShortcutActionId, string>>;
   /** 阅读器表面色用户覆盖（亮色侧） */
@@ -356,6 +362,11 @@ export function loadPersistedSettingsData(
   if (obj.timedScroll && typeof obj.timedScroll === "object") {
     data.timedScroll = mergeTimedScrollSettings(
       obj.timedScroll as Partial<TimedScrollSettings>,
+    );
+  }
+  if (obj.pomodoro && typeof obj.pomodoro === "object") {
+    data.pomodoro = mergePomodoroSettings(
+      obj.pomodoro as Partial<PomodoroSettings>,
     );
   }
   if (obj.shortcutBindings && typeof obj.shortcutBindings === "object") {

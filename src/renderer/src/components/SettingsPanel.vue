@@ -59,6 +59,14 @@ import {
   mergeTimedScrollSettings,
   type TimedScrollSettings,
 } from "../constants/timedScroll";
+import {
+  defaultPomodoroFocusMinutes,
+  defaultPomodoroLongBreakMinutes,
+  defaultPomodoroShortBreakMinutes,
+  defaultPomodoroEnabled,
+  mergePomodoroSettings,
+  type PomodoroSettings,
+} from "../constants/pomodoro";
 import { appAlert } from "../services/appDialog";
 import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
@@ -118,6 +126,7 @@ export type SettingsApplyPayload = {
   compressBlankKeepOneBlank: boolean;
   txtrDelimitedMatchCrossLine: boolean;
   timedScroll: TimedScrollSettings;
+  pomodoro: PomodoroSettings;
   ebookConvertOutputDir: string;
   characterPortraitCacheDir: string;
   aiSkillsEnabled: Record<string, boolean>;
@@ -151,6 +160,7 @@ const props = defineProps<{
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
   timedScrollSettings: TimedScrollSettings;
+  pomodoroSettings: PomodoroSettings;
   ebookConvertOutputDir: string;
   characterPortraitCacheDir: string;
   aiSkillsEnabled: Record<string, boolean>;
@@ -208,6 +218,10 @@ const draftTxtrDelimitedMatchCrossLine = ref(
 );
 const draftTimedScrollRange = ref(defaultTimedScrollRange);
 const draftTimedScrollIntervalMs = ref(defaultTimedScrollIntervalMs);
+const draftPomodoroEnabled = ref(defaultPomodoroEnabled);
+const draftPomodoroFocusMinutes = ref(defaultPomodoroFocusMinutes);
+const draftPomodoroShortBreakMinutes = ref(defaultPomodoroShortBreakMinutes);
+const draftPomodoroLongBreakMinutes = ref(defaultPomodoroLongBreakMinutes);
 const draftEbookConvertOutputDir = ref("");
 const draftCharacterPortraitCacheDir = ref("");
 
@@ -259,6 +273,11 @@ function syncDraftFromProps() {
   const timedScrollMerged = mergeTimedScrollSettings(props.timedScrollSettings);
   draftTimedScrollRange.value = timedScrollMerged.range;
   draftTimedScrollIntervalMs.value = timedScrollMerged.intervalMs;
+  const pomodoroMerged = mergePomodoroSettings(props.pomodoroSettings);
+  draftPomodoroEnabled.value = pomodoroMerged.enabled;
+  draftPomodoroFocusMinutes.value = pomodoroMerged.focusMinutes;
+  draftPomodoroShortBreakMinutes.value = pomodoroMerged.shortBreakMinutes;
+  draftPomodoroLongBreakMinutes.value = pomodoroMerged.longBreakMinutes;
   draftEbookConvertOutputDir.value = props.ebookConvertOutputDir;
   draftCharacterPortraitCacheDir.value = props.characterPortraitCacheDir;
   draftAiSkillOverrides.value = mergeAiSkillOverrides(props.aiSkillOverrides);
@@ -366,6 +385,10 @@ function resetReadingDraft() {
   draftTxtrDelimitedMatchCrossLine.value = defaultTxtrDelimitedMatchCrossLine;
   draftFullscreenReaderWidthPercent.value = defaultFullscreenReaderWidthPercent;
   draftFullscreenShowSystemTime.value = defaultFullscreenShowSystemTime;
+  draftPomodoroEnabled.value = defaultPomodoroEnabled;
+  draftPomodoroFocusMinutes.value = defaultPomodoroFocusMinutes;
+  draftPomodoroShortBreakMinutes.value = defaultPomodoroShortBreakMinutes;
+  draftPomodoroLongBreakMinutes.value = defaultPomodoroLongBreakMinutes;
   draftTimedScrollRange.value = defaultTimedScrollRange;
   draftTimedScrollIntervalMs.value = defaultTimedScrollIntervalMs;
 }
@@ -562,6 +585,12 @@ async function onConfirm() {
       range: draftTimedScrollRange.value,
       intervalMs: draftTimedScrollIntervalMs.value,
     }),
+    pomodoro: mergePomodoroSettings({
+      enabled: draftPomodoroEnabled.value,
+      focusMinutes: draftPomodoroFocusMinutes.value,
+      shortBreakMinutes: draftPomodoroShortBreakMinutes.value,
+      longBreakMinutes: draftPomodoroLongBreakMinutes.value,
+    }),
     ebookConvertOutputDir: draftEbookConvertOutputDir.value.trim(),
     characterPortraitCacheDir: draftCharacterPortraitCacheDir.value.trim(),
     aiSkillsEnabled: mergeAiSkillsEnabled(
@@ -661,6 +690,14 @@ async function onClearCache() {
               "
               v-model:draft-fullscreen-show-system-time="
                 draftFullscreenShowSystemTime
+              "
+              v-model:draft-pomodoro-enabled="draftPomodoroEnabled"
+              v-model:draft-pomodoro-focus-minutes="draftPomodoroFocusMinutes"
+              v-model:draft-pomodoro-short-break-minutes="
+                draftPomodoroShortBreakMinutes
+              "
+              v-model:draft-pomodoro-long-break-minutes="
+                draftPomodoroLongBreakMinutes
               "
               v-model:draft-timed-scroll-range="draftTimedScrollRange"
               v-model:draft-timed-scroll-interval-ms="

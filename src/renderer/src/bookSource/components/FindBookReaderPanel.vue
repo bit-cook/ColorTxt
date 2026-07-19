@@ -19,6 +19,7 @@ import ReaderMain from "../../components/ReaderMain.vue";
 import VoiceReadToolbar from "../../components/VoiceReadToolbar.vue";
 import ReaderChapterNavBar from "../../components/ReaderChapterNavBar.vue";
 import FullscreenSystemClock from "../../components/FullscreenSystemClock.vue";
+import PomodoroBreakOverlay from "../../components/PomodoroBreakOverlay.vue";
 import FindBookReaderFooter from "./FindBookReaderFooter.vue";
 import FindBookReaderHeader from "./FindBookReaderHeader.vue";
 import {
@@ -26,6 +27,7 @@ import {
   floorReadingProgressPercentByLines,
   formatCharCount,
 } from "../../utils/format";
+import { usePomodoroTimer } from "../../composables/usePomodoroTimer";
 import EditBookSourcePanel from "./EditBookSourcePanel.vue";
 import BookSourceLoginPanel from "./BookSourceLoginPanel.vue";
 import AppShellMenuTeleport from "../../components/AppShellMenuTeleport.vue";
@@ -182,6 +184,23 @@ const showSidebar = ref(true);
 const settings = useFindBookReaderSettings();
 const findBookSettings = useFindBookSettings();
 const effectiveCacheDir = findBookSettings.effectiveCacheDir;
+const {
+  phase: pomodoroPhase,
+  displayMode: pomodoroDisplayMode,
+  progress: pomodoroProgress,
+  countdownText: pomodoroCountdownText,
+  pauseResumeLabel: pomodoroPauseResumeLabel,
+  paused: pomodoroPaused,
+  showBreakOverlay: pomodoroShowBreakOverlay,
+  start: startPomodoro,
+  toggleDisplayMode: togglePomodoroDisplayMode,
+  togglePause: togglePomodoroPause,
+  stop: stopPomodoro,
+  finishBreakEarly: finishPomodoroBreakEarly,
+} = usePomodoroTimer(findBookSettings.pomodoroSettings);
+const pomodoroEnabled = computed(
+  () => findBookSettings.pomodoroSettings.value.enabled,
+);
 const {
   currentTheme,
   sidebarWidth,
@@ -1746,6 +1765,7 @@ watch(
     if (!open) {
       voiceRead.exitVoiceRead();
       timedScroll.stopTimedScroll();
+      stopPomodoro();
       cancelChapterLoad();
       if (offlineCaching.value) void cancelOfflineCache();
       loading.value = false;
@@ -2342,6 +2362,17 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
           :reading-progress-placeholder="footerReadingProgress.placeholder"
           :reading-progress-complete="footerReadingProgress.complete"
           :chapter-char-count-text="footerChapterCharCountText"
+          :pomodoro-enabled="pomodoroEnabled"
+          :pomodoro-phase="pomodoroPhase"
+          :pomodoro-display-mode="pomodoroDisplayMode"
+          :pomodoro-progress="pomodoroProgress"
+          :pomodoro-countdown-text="pomodoroCountdownText"
+          :pomodoro-pause-resume-label="pomodoroPauseResumeLabel"
+          :pomodoro-paused="pomodoroPaused"
+          @pomodoro-start="startPomodoro"
+          @pomodoro-toggle-display-mode="togglePomodoroDisplayMode"
+          @pomodoro-toggle-pause="togglePomodoroPause"
+          @pomodoro-stop="stopPomodoro"
         />
       </div>
 
@@ -2354,6 +2385,14 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
       </div>
       <FullscreenSystemClock
         :visible="isFullscreenView && fullscreenShowSystemTime"
+        :pomodoro-visible="isFullscreenView && pomodoroPhase !== 'idle'"
+        :pomodoro-progress="pomodoroProgress"
+        :pomodoro-paused="pomodoroPaused"
+      />
+      <PomodoroBreakOverlay
+        :visible="pomodoroShowBreakOverlay"
+        :countdown-text="pomodoroCountdownText"
+        @finish="finishPomodoroBreakEarly"
       />
     </div>
 

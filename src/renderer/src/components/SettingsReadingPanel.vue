@@ -18,6 +18,11 @@ import {
   minTimedScrollIntervalMs,
   type TimedScrollRange,
 } from "../constants/timedScroll";
+import {
+  maxPomodoroMinutes,
+  minPomodoroMinutes,
+  pomodoroLongBreakEvery,
+} from "../constants/pomodoro";
 import { computed } from "vue";
 
 const props = defineProps<{
@@ -30,6 +35,10 @@ const props = defineProps<{
   draftTxtrDelimitedMatchCrossLine: boolean;
   draftFullscreenReaderWidthPercent: number;
   draftFullscreenShowSystemTime: boolean;
+  draftPomodoroEnabled: boolean;
+  draftPomodoroFocusMinutes: number;
+  draftPomodoroShortBreakMinutes: number;
+  draftPomodoroLongBreakMinutes: number;
   draftTimedScrollRange: TimedScrollRange;
   draftTimedScrollIntervalMs: number;
   monacoCustomHighlight: boolean;
@@ -45,6 +54,10 @@ defineEmits<{
   "update:draftTxtrDelimitedMatchCrossLine": [v: boolean];
   "update:draftFullscreenReaderWidthPercent": [v: number];
   "update:draftFullscreenShowSystemTime": [v: boolean];
+  "update:draftPomodoroEnabled": [v: boolean];
+  "update:draftPomodoroFocusMinutes": [v: number];
+  "update:draftPomodoroShortBreakMinutes": [v: number];
+  "update:draftPomodoroLongBreakMinutes": [v: number];
   "update:draftTimedScrollRange": [v: TimedScrollRange];
   "update:draftTimedScrollIntervalMs": [v: number];
 }>();
@@ -209,6 +222,75 @@ const draftMaxLineHeightMultiple = computed(() =>
       </div>
     </div>
 
+    <div class="settingsBody settingsBody--pomodoro">
+      <h3 class="settingsSectionTitle settingsSectionTitle--pomodoro">番茄时钟</h3>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel">启用番茄时钟</span>
+          <SwitchToggle
+            :model-value="draftPomodoroEnabled"
+            aria-label="启用番茄时钟"
+            @update:model-value="$emit('update:draftPomodoroEnabled', $event)"
+          />
+        </div>
+        <p class="settingsHint">在底栏左侧显示番茄时钟</p>
+      </div>
+
+      <template v-if="draftPomodoroEnabled">
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel">阅读时长（分钟）</span>
+            <NumericInput
+              :model-value="draftPomodoroFocusMinutes"
+              :min="minPomodoroMinutes"
+              :max="maxPomodoroMinutes"
+              integer
+              aria-label="番茄时钟阅读时长分钟"
+              @update:model-value="
+                $emit('update:draftPomodoroFocusMinutes', $event)
+              "
+            />
+          </div>
+        </div>
+
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel">短休息（分钟）</span>
+            <NumericInput
+              :model-value="draftPomodoroShortBreakMinutes"
+              :min="minPomodoroMinutes"
+              :max="maxPomodoroMinutes"
+              integer
+              aria-label="番茄时钟短休息分钟"
+              @update:model-value="
+                $emit('update:draftPomodoroShortBreakMinutes', $event)
+              "
+            />
+          </div>
+        </div>
+
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel">长休息（分钟）</span>
+            <NumericInput
+              :model-value="draftPomodoroLongBreakMinutes"
+              :min="minPomodoroMinutes"
+              :max="maxPomodoroMinutes"
+              integer
+              aria-label="番茄时钟长休息分钟"
+              @update:model-value="
+                $emit('update:draftPomodoroLongBreakMinutes', $event)
+              "
+            />
+          </div>
+          <p class="settingsHint">
+            每完成 {{ pomodoroLongBreakEvery }} 轮「阅读时长」后会进入一次长休息
+          </p>
+        </div>
+      </template>
+    </div>
+
     <div class="settingsBody settingsBody--timedScroll">
       <h3 class="settingsSectionTitle settingsSectionTitle--timedScroll">定时滚动</h3>
 
@@ -304,11 +386,13 @@ const draftMaxLineHeightMultiple = computed(() =>
 }
 
 .settingsBody--fullscreen,
+.settingsBody--pomodoro,
 .settingsBody--timedScroll {
   gap: 10px;
 }
 
 .settingsSectionTitle--fullscreen,
+.settingsSectionTitle--pomodoro,
 .settingsSectionTitle--timedScroll {
   margin-bottom: 10px;
 }

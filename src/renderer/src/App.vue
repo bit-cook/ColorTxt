@@ -27,7 +27,13 @@ import AppCaptchaHost from "./components/AppCaptchaHost.vue";
 import AppToastHost from "./components/AppToastHost.vue";
 import AppOverlays from "./components/AppOverlays.vue";
 import FullscreenSystemClock from "./components/FullscreenSystemClock.vue";
+import PomodoroBreakOverlay from "./components/PomodoroBreakOverlay.vue";
 import type { SettingsApplyPayload } from "./components/SettingsPanel.vue";
+import { usePomodoroTimer } from "./composables/usePomodoroTimer";
+import {
+  mergePomodoroSettings,
+  type PomodoroSettings,
+} from "./constants/pomodoro";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import type { ColorTxtShowMessageBoxOptions } from "@shared/colorTxtShowMessageBox";
 import type {
@@ -592,6 +598,21 @@ const fullscreenShowSystemTime = ref(defaultFullscreenShowSystemTime);
 const timedScrollSettings = ref<TimedScrollSettings>(
   mergeTimedScrollSettings(undefined),
 );
+const pomodoroSettings = ref<PomodoroSettings>(mergePomodoroSettings(undefined));
+const {
+  phase: pomodoroPhase,
+  displayMode: pomodoroDisplayMode,
+  progress: pomodoroProgress,
+  countdownText: pomodoroCountdownText,
+  pauseResumeLabel: pomodoroPauseResumeLabel,
+  paused: pomodoroPaused,
+  showBreakOverlay: pomodoroShowBreakOverlay,
+  start: startPomodoro,
+  toggleDisplayMode: togglePomodoroDisplayMode,
+  togglePause: togglePomodoroPause,
+  stop: stopPomodoro,
+  finishBreakEarly: finishPomodoroBreakEarly,
+} = usePomodoroTimer(pomodoroSettings);
 /** 电子书转换缓存目录；默认 userData/ConvertedTxt；设置里清空则为与源文件同目录 */
 const ebookConvertOutputDir = ref(
   (() => {
@@ -1195,6 +1216,7 @@ const persistence = useAppPersistence({
   fullscreenReaderWidthPercent,
   fullscreenShowSystemTime,
   timedScrollSettings,
+  pomodoroSettings,
   fileMetaRecords,
   shortcutBindings,
   defaultShortcutBindings,
@@ -2919,6 +2941,7 @@ async function applySettings(payload: SettingsApplyPayload) {
   chapterNavToolbarEnabled.value = payload.chapterNavToolbarEnabled;
   chapterCharCountExact.value = payload.chapterCharCountExact;
   timedScrollSettings.value = mergeTimedScrollSettings(payload.timedScroll);
+  pomodoroSettings.value = mergePomodoroSettings(payload.pomodoro);
   readerEditShowLineNumbers.value = payload.readerEditShowLineNumbers;
   readerEditMinimap.value = payload.readerEditMinimap;
   editAutoRefreshChapterList.value = payload.editAutoRefreshChapterList;
@@ -3548,6 +3571,9 @@ useAppShellThemeWatch({
     </div>
     <FullscreenSystemClock
       :visible="isFullscreenView && fullscreenShowSystemTime"
+      :pomodoro-visible="isFullscreenView && pomodoroPhase !== 'idle'"
+      :pomodoro-progress="pomodoroProgress"
+      :pomodoro-paused="pomodoroPaused"
     />
 
     <div
@@ -3584,13 +3610,29 @@ useAppShellThemeWatch({
         :path-menu-reconvert-enabled="footerPathMenuReconvertEnabled"
         :path-menu-close-enabled="footerPathMenuCloseEnabled"
         :edit-cursor-label="readerEditCursorFooterLabel"
+        :pomodoro-enabled="pomodoroSettings.enabled"
+        :pomodoro-phase="pomodoroPhase"
+        :pomodoro-display-mode="pomodoroDisplayMode"
+        :pomodoro-progress="pomodoroProgress"
+        :pomodoro-countdown-text="pomodoroCountdownText"
+        :pomodoro-pause-resume-label="pomodoroPauseResumeLabel"
+        :pomodoro-paused="pomodoroPaused"
         @path-reveal-in-folder="revealCurrentFileInFolder"
         @path-reload="reloadCurrentFileFromDisk"
         @path-reconvert="reconvertCurrentEbookFromDisk"
         @path-close="closeCurrentFile"
         @save-file-as-encoding="onFooterSaveFileAsEncoding"
+        @pomodoro-start="startPomodoro"
+        @pomodoro-toggle-display-mode="togglePomodoroDisplayMode"
+        @pomodoro-toggle-pause="togglePomodoroPause"
+        @pomodoro-stop="stopPomodoro"
       />
     </div>
+    <PomodoroBreakOverlay
+      :visible="pomodoroShowBreakOverlay"
+      :countdown-text="pomodoroCountdownText"
+      @finish="finishPomodoroBreakEarly"
+    />
 
     <AppDialogHost />
     <AppCaptchaHost />
@@ -3631,6 +3673,7 @@ useAppShellThemeWatch({
       :chapter-nav-toolbar-enabled="chapterNavToolbarEnabled"
       :chapter-char-count-exact="chapterCharCountExact"
       :timed-scroll-settings="timedScrollSettings"
+      :pomodoro-settings="pomodoroSettings"
       :reader-edit-show-line-numbers="readerEditShowLineNumbers"
       :reader-edit-minimap="readerEditMinimap"
       :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"

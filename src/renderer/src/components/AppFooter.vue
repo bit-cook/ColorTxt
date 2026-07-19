@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import AppContextMenu from "./AppContextMenu.vue";
+import PomodoroFooterControl from "./PomodoroFooterControl.vue";
+import type {
+  PomodoroDisplayMode,
+  PomodoroPhase,
+} from "../composables/usePomodoroTimer";
 
 const props = withDefaults(
   defineProps<{
@@ -28,6 +33,14 @@ const props = withDefaults(
     pathMenuCloseEnabled: boolean;
     /** 编辑态底栏光标/选区文案（空串不展示） */
     editCursorLabel?: string;
+    /** 番茄时钟：是否在底栏左侧显示 */
+    pomodoroEnabled?: boolean;
+    pomodoroPhase?: PomodoroPhase;
+    pomodoroDisplayMode?: PomodoroDisplayMode;
+    pomodoroProgress?: number;
+    pomodoroCountdownText?: string;
+    pomodoroPauseResumeLabel?: string;
+    pomodoroPaused?: boolean;
   }>(),
   {
     loadingProgressPercent: null,
@@ -38,6 +51,13 @@ const props = withDefaults(
     pathMenuReconvertEnabled: false,
     pathMenuCloseEnabled: false,
     editCursorLabel: "",
+    pomodoroEnabled: false,
+    pomodoroPhase: "idle",
+    pomodoroDisplayMode: "pie",
+    pomodoroProgress: 0,
+    pomodoroCountdownText: "0:00",
+    pomodoroPauseResumeLabel: "暂停",
+    pomodoroPaused: false,
   },
 );
 
@@ -47,6 +67,10 @@ const emit = defineEmits<{
   pathReconvert: [];
   pathClose: [];
   saveFileAsEncoding: [encoding: "utf8" | "gb2312"];
+  pomodoroStart: [];
+  pomodoroToggleDisplayMode: [];
+  pomodoroTogglePause: [];
+  pomodoroStop: [];
 }>();
 
 const footerRootRef = ref<HTMLElement | null>(null);
@@ -162,6 +186,19 @@ function onPathMenuSelect(id: string) {
 <template>
   <footer ref="footerRootRef" class="footer">
     <div class="footer-left">
+      <PomodoroFooterControl
+        v-if="pomodoroEnabled"
+        :phase="pomodoroPhase"
+        :display-mode="pomodoroDisplayMode"
+        :progress="pomodoroProgress"
+        :countdown-text="pomodoroCountdownText"
+        :pause-resume-label="pomodoroPauseResumeLabel"
+        :paused="pomodoroPaused"
+        @start="emit('pomodoroStart')"
+        @toggle-display-mode="emit('pomodoroToggleDisplayMode')"
+        @toggle-pause="emit('pomodoroTogglePause')"
+        @stop="emit('pomodoroStop')"
+      />
       <div v-if="currentFile || ebookParsing" class="footerPathWrap">
         <button
           ref="pathLinkRef"
@@ -261,7 +298,7 @@ function onPathMenuSelect(id: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px;
+  padding: 0 10px 0 5px;
   gap: 16px;
 }
 
@@ -271,6 +308,7 @@ function onPathMenuSelect(id: string) {
   white-space: nowrap;
   min-width: 0;
   flex: 1;
+  align-self: stretch;
   display: flex;
   align-items: center;
   gap: 10px;

@@ -46,6 +46,7 @@ function createFindBookSettingsStore() {
   const fullscreenShowSystemTime = ref(initial.fullscreenShowSystemTime);
   const sidebarWidth = ref(initial.sidebarWidth);
   const timedScrollSettings = ref(initial.timedScrollSettings);
+  const pomodoroSettings = ref(initial.pomodoroSettings);
 
   const effectiveCacheDir = computed(() => {
     const configured = cacheDir.value.trim();
@@ -93,6 +94,7 @@ function createFindBookSettingsStore() {
         fullscreenShowSystemTime: fullscreenShowSystemTime.value,
         sidebarWidth: sidebarWidth.value,
         timedScrollSettings: timedScrollSettings.value,
+        pomodoroSettings: pomodoroSettings.value,
       }),
     );
     syncHttpProxyToMain();
@@ -137,6 +139,7 @@ function createFindBookSettingsStore() {
     fullscreenShowSystemTime,
     sidebarWidth,
     timedScrollSettings,
+    pomodoroSettings,
     persistAll,
     persistReaderUiPrefs,
   };

@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import PomodoroFooterControl from "../../components/PomodoroFooterControl.vue";
+import type {
+  PomodoroDisplayMode,
+  PomodoroPhase,
+} from "../../composables/usePomodoroTimer";
+
 withDefaults(
   defineProps<{
     loading?: boolean;
@@ -9,17 +15,52 @@ withDefaults(
     readingProgressPlaceholder: boolean;
     readingProgressComplete: boolean;
     chapterCharCountText: string;
+    pomodoroEnabled?: boolean;
+    pomodoroPhase?: PomodoroPhase;
+    pomodoroDisplayMode?: PomodoroDisplayMode;
+    pomodoroProgress?: number;
+    pomodoroCountdownText?: string;
+    pomodoroPauseResumeLabel?: string;
+    pomodoroPaused?: boolean;
   }>(),
   {
     loading: false,
     hasContent: false,
+    pomodoroEnabled: false,
+    pomodoroPhase: "idle",
+    pomodoroDisplayMode: "pie",
+    pomodoroProgress: 0,
+    pomodoroCountdownText: "0:00",
+    pomodoroPauseResumeLabel: "暂停",
+    pomodoroPaused: false,
   },
 );
+
+defineEmits<{
+  pomodoroStart: [];
+  pomodoroToggleDisplayMode: [];
+  pomodoroTogglePause: [];
+  pomodoroStop: [];
+}>();
 </script>
 
 <template>
   <footer class="findBookReaderFooter">
-    <div class="findBookReaderFooterLeft" />
+    <div class="findBookReaderFooterLeft">
+      <PomodoroFooterControl
+        v-if="pomodoroEnabled"
+        :phase="pomodoroPhase"
+        :display-mode="pomodoroDisplayMode"
+        :progress="pomodoroProgress"
+        :countdown-text="pomodoroCountdownText"
+        :pause-resume-label="pomodoroPauseResumeLabel"
+        :paused="pomodoroPaused"
+        @start="$emit('pomodoroStart')"
+        @toggle-display-mode="$emit('pomodoroToggleDisplayMode')"
+        @toggle-pause="$emit('pomodoroTogglePause')"
+        @stop="$emit('pomodoroStop')"
+      />
+    </div>
     <div class="findBookReaderFooterRight">
       <span v-if="loading" class="findBookReaderFooterLoading">加载中...</span>
       <template v-else-if="hasContent">
@@ -35,7 +76,7 @@ withDefaults(
             >{{ readingProgressPercentPart }}</span
           >{{ readingProgressDetailPart }}
         </span>
-        <span>章节字数：{{ chapterCharCountText }}</span>
+        <span>当前章节字数：{{ chapterCharCountText }}</span>
       </template>
     </div>
   </footer>
@@ -50,7 +91,7 @@ withDefaults(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px;
+  padding: 0 10px 0 5px;
   gap: 16px;
   background: var(--bg);
   user-select: none;
@@ -59,6 +100,11 @@ withDefaults(
 .findBookReaderFooterLeft {
   min-width: 0;
   flex: 1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
 }
 
 .findBookReaderFooterRight {
