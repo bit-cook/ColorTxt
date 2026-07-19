@@ -285,7 +285,7 @@ const draftMaxLineHeightMultiple = computed(() =>
             />
           </div>
           <p class="settingsHint">
-            每完成 {{ pomodoroLongBreakEvery }} 轮「阅读时长」后会进入一次长休息
+            每完成 {{ pomodoroLongBreakEvery }} 轮「阅读时长」会进入一次长休息
           </p>
         </div>
       </template>
