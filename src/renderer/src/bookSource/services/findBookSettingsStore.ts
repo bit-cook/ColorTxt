@@ -4,6 +4,7 @@ import {
   defaultCompressBlankLines,
   defaultFullscreenReaderWidthPercent,
   defaultFullscreenShowSystemTime,
+  defaultShowSidebar,
   defaultLeadIndentFullWidth,
   defaultMonacoAdvancedWrapping,
   defaultMonacoCustomHighlight,
@@ -107,6 +108,7 @@ function seedFromMainSettings(
   copyIfUndef("readerEditMinimap", main.readerEditMinimap);
   copyIfUndef("fullscreenReaderWidthPercent", main.fullscreenReaderWidthPercent);
   copyIfUndef("fullscreenShowSystemTime", main.fullscreenShowSystemTime);
+  copyIfUndef("showSidebar", main.showSidebar);
   if (out.sidebarWidth === undefined && typeof main.sidebarWidth === "number") {
     out.sidebarWidth = Math.max(
       FIND_BOOK_SIDEBAR_MIN_WIDTH,
@@ -164,6 +166,7 @@ export function snapshotFindBookSettingsFromStore(state: {
   readerEditMinimap: boolean;
   fullscreenReaderWidthPercent: number;
   fullscreenShowSystemTime: boolean;
+  showSidebar: boolean;
   sidebarWidth: number;
   timedScrollSettings: TimedScrollSettings;
   pomodoroSettings: PomodoroSettings;
@@ -195,6 +198,7 @@ export function snapshotFindBookSettingsFromStore(state: {
     readerEditMinimap: state.readerEditMinimap,
     fullscreenReaderWidthPercent: state.fullscreenReaderWidthPercent,
     fullscreenShowSystemTime: state.fullscreenShowSystemTime,
+    showSidebar: state.showSidebar,
     sidebarWidth: state.sidebarWidth,
     timedScroll: state.timedScrollSettings,
     pomodoro: state.pomodoroSettings,
@@ -295,6 +299,10 @@ export function createInitialFindBookSettingsState() {
       typeof data.fullscreenShowSystemTime === "boolean"
         ? data.fullscreenShowSystemTime
         : defaultFullscreenShowSystemTime,
+    showSidebar:
+      typeof data.showSidebar === "boolean"
+        ? data.showSidebar
+        : defaultShowSidebar,
     sidebarWidth:
       typeof data.sidebarWidth === "number" && Number.isFinite(data.sidebarWidth)
         ? Math.max(

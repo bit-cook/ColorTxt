@@ -179,10 +179,15 @@ const readerEditorDirty = ref(false);
 const loading = ref(false);
 /** 仅切到未缓存章节时为 true，控制侧栏 loading 图标与「加载中」提示 */
 const showChapterLoadingUi = ref(false);
-const showSidebar = ref(true);
 
 const settings = useFindBookReaderSettings();
 const findBookSettings = useFindBookSettings();
+/** 阅读器侧栏 UI 态；持久化偏好在 findBookSettings.showSidebar */
+const showSidebar = ref(findBookSettings.showSidebar.value);
+/** 本会话是否已按「章节数」应用过打开时的侧栏策略（单章临时收起等） */
+let sidebarOpenPolicyApplied = false;
+/** 本次打开后用户是否已手动切换侧栏（此后不再套用单章临时收起） */
+let sidebarUserToggledThisOpen = false;
 const effectiveCacheDir = findBookSettings.effectiveCacheDir;
 const {
   phase: pomodoroPhase,
@@ -1759,6 +1764,35 @@ async function bootstrapReaderContent() {
   void loadChapterAtDisplayIndex(startIndex, { smoothScroll: false });
 }
 
+/** 打开时：先恢复持久化偏好；仅一章时临时收起（不写盘） */
+function applySidebarOpenPolicy() {
+  if (
+    !modelValue.value ||
+    sidebarOpenPolicyApplied ||
+    sidebarUserToggledThisOpen
+  ) {
+    return;
+  }
+  const chapterCount = contentChapters.value.length;
+  if (chapterCount <= 0) {
+    showSidebar.value = findBookSettings.showSidebar.value;
+    return;
+  }
+  showSidebar.value = findBookSettings.showSidebar.value;
+  if (chapterCount === 1) {
+    showSidebar.value = false;
+  }
+  sidebarOpenPolicyApplied = true;
+}
+
+function onToggleSidebar() {
+  showSidebar.value = !showSidebar.value;
+  findBookSettings.showSidebar.value = showSidebar.value;
+  findBookSettings.persistReaderUiPrefs();
+  sidebarUserToggledThisOpen = true;
+  sidebarOpenPolicyApplied = true;
+}
+
 watch(
   modelValue,
   async (open) => {
@@ -1776,6 +1810,8 @@ watch(
       lastChapterBody.value = "";
       lastChapterTitle.value = "";
       totalLineCount.value = 0;
+      sidebarOpenPolicyApplied = false;
+      sidebarUserToggledThisOpen = false;
       if (isFullscreenView.value) {
         try {
           await window.colorTxt.setFullscreen(false);
@@ -1786,7 +1822,7 @@ watch(
       }
       return;
     }
-    showSidebar.value = true;
+    applySidebarOpenPolicy();
     applyAppShellTheme(currentTheme.value);
     await nextTick();
     applyReaderAppearance();
@@ -1795,7 +1831,7 @@ watch(
   { immediate: true },
 );
 
-/** 书架先开阅读器、目录迟到时：目录就绪后加载正文 */
+/** 书架先开阅读器、目录迟到时：目录就绪后加载正文，并补做单章侧栏策略 */
 watch(
   () => [modelValue.value, props.chapters.length, props.tocLoading] as const,
   async ([open, chapterCount, tocLoading], prev) => {
@@ -1804,6 +1840,7 @@ watch(
     const wasTocLoading = prev?.[2] ?? false;
     // 目录从空到有，或 tocLoading 刚结束且已有章节
     if (prevCount > 0 && !wasTocLoading) return;
+    applySidebarOpenPolicy();
     await nextTick();
     await bootstrapReaderContent();
   },
@@ -2046,7 +2083,7 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
           :can-enter-reader-edit-mode="canEnterReaderEditMode"
           :text-replace-active="textReplaceActive"
           @change-theme="onChangeTheme"
-          @toggle-sidebar="showSidebar = !showSidebar"
+          @toggle-sidebar="onToggleSidebar"
           @toggle-fullscreen="toggleFullscreen"
           @set-monaco-font="readerUi.setMonacoFontFamily"
           @toggle-pin-other-font="readerUi.togglePinnedOtherFont"

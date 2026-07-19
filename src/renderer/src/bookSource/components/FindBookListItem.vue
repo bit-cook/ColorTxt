@@ -196,6 +196,7 @@ function onCoverLoad(e: Event) {
   flex-shrink: 0;
   width: 76px;
   height: 102px;
+  --book-cover-height: 102px;
 }
 .findBookListItemCover {
   width: 76px;

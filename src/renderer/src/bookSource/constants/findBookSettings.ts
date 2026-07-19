@@ -152,6 +152,8 @@ export type PersistedFindBookSettings = {
   readerEditMinimap?: boolean;
   fullscreenReaderWidthPercent?: number;
   fullscreenShowSystemTime?: boolean;
+  /** 阅读器侧栏是否展开（非全屏） */
+  showSidebar?: boolean;
   sidebarWidth?: number;
   timedScroll?: Partial<TimedScrollSettings>;
   pomodoro?: Partial<PomodoroSettings>;

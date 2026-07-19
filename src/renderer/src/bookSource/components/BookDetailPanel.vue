@@ -1110,6 +1110,7 @@ async function onDownloadOrStop() {
 .bookDetailCover {
   width: 96px;
   height: 128px;
+  --book-cover-height: 128px;
   border-radius: 6px;
   flex-shrink: 0;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
