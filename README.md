@@ -40,6 +40,7 @@
 | <img src="./src/renderer/src/assets/reading.svg" width="18" height="18" alt=""> | **语音朗读** | 支持旁白 / 对白多音色，配合 AI + 角色卡可实现多角色语音朗读 |
 | <img src="./src/renderer/src/assets/replace.svg" width="18" height="18" alt=""> | **文本替换** | 全局替换文本（可用于替换人名、去广告文本等） |
 | <img src="./src/renderer/src/assets/conver.svg" width="18" height="18" alt=""> | **简繁互转** | 简繁互转，字母 / 数字全半角互转 |
+| <img src="./src/renderer/src/assets/history.svg" width="18" height="18" alt=""> | **番茄时钟** | 保护眼睛，健康阅读，从你我做起 |
 | <img src="./src/renderer/src/assets/AI_chat.svg" width="18" height="18" alt=""> | **AI 阅读助手** | 可以让 **AI** 帮忙分析剧情、回答小说相关问题（支持生成 <img src="./src/renderer/src/assets/mindmap.svg" width="18" height="18" alt=""> **思维导图** / <img src="./src/renderer/src/assets/wordcloud.svg" width="18" height="18" alt=""> **词云图**） |
 | <img src="./src/renderer/src/assets/character.svg" width="18" height="18" alt=""> | **角色卡生成** | 借助 **AI** 检索小说中角色的相关信息生成摘要，通过 **文生图** 生成角色立绘 |
 | <img src="./src/renderer/src/assets/AI_compose.svg" width="18" height="18" alt=""> | **AI 智能排版** | 让 **AI** 对文本进行排版，可自动处理硬换行、修正标点符号等 |
