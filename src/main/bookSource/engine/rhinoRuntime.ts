@@ -2,6 +2,8 @@ import vm from "node:vm";
 import type { BookSourceRecord } from "@shared/bookSource/types";
 import type { JsExtensionHost } from "./jsExtensions";
 import {
+  LEGADO_FOREACH_SERIAL_NAME,
+  collectLoginCheckJsAsyncNames,
   inlineBookSourceCommentEvals,
   prepareLegadoAsyncJs,
   prepareLegadoJs,
@@ -17,6 +19,7 @@ import {
   createLegadoJson,
   ensureBookSourceJsLib,
   getJsLibAsyncFunctionNames,
+  legadoForEachSerial,
   runInBookSourceJsScope,
 } from "./sharedJsScope";
 import {
@@ -26,11 +29,13 @@ import {
   runWithJsEvalDeadlineAsync,
   toBookSourceJsTimeoutError,
 } from "./bookSourceJsTimeout";
+import { runWithBookSourceJsHost, runWithBookSourceJsHostAsync } from "./bookSourceJsContext";
 
 export type JsEvalContext = {
   source?: BookSourceRecord;
-  book?: Record<string, unknown>;
-  chapter?: Record<string, unknown>;
+  /** 显式 null：绑定为 falsy（对齐 Legado 源登录无 book 时 `if(book)` 为假） */
+  book?: Record<string, unknown> | null;
+  chapter?: Record<string, unknown> | null;
   result?: unknown;
   /** Legado evalJS：src 为规则页正文，result 为链式上一段输出 */
   src?: unknown;
@@ -49,8 +54,12 @@ function buildVmSandbox(
   ctx: Omit<JsEvalContext, "host"> & { host: JsExtensionHost },
 ): Record<string, unknown> {
   const host = ctx.host;
-  const book = wrapLegadoBookForJs(ctx.book, ctx.bookVariableSync);
-  const chapter = wrapLegadoChapterForJs(ctx.chapter, ctx.chapterVariableSync);
+  const book =
+    ctx.book === null ? null : wrapLegadoBookForJs(ctx.book, ctx.bookVariableSync);
+  const chapter =
+    ctx.chapter === null
+      ? null
+      : wrapLegadoChapterForJs(ctx.chapter, ctx.chapterVariableSync);
   const result = ensureLegadoListApi(ctx.result ?? "");
   const src = ensureLegadoListApi(
     ctx.src !== undefined ? ctx.src : result,
@@ -87,6 +96,7 @@ function buildVmSandbox(
     cookie: host.cookieBindings,
     cache: host.cacheBindings,
     src,
+    [LEGADO_FOREACH_SERIAL_NAME]: legadoForEachSerial,
     JavaImporter: function JavaImporter() {
       return createJavaImporter((msg) => host.log(msg));
     },
@@ -137,18 +147,19 @@ async function settleLegadoJsResult(value: unknown): Promise<unknown> {
 export function evalJs(
   script: string,
   ctx: Omit<JsEvalContext, "host"> & { host?: JsExtensionHost },
-  options: { useSharedJsScope?: boolean } = {},
+  options: { useSharedJsScope?: boolean; throwOnError?: boolean } = {},
 ): unknown {
   const host = ctx.host;
   if (!host) return "";
   try {
-    return runWithJsEvalDeadline(() => {
+    return runWithBookSourceJsHost(host, () =>
+      runWithJsEvalDeadline(() => {
       const inlined = inlineBookSourceCommentEvals(
         script,
         ctx.source?.bookSourceComment,
       );
       const body = prepareLegadoJs(inlined);
-      const code = `(function(){ ${body} })()`;
+      const code = `(function(){\n${body}\n})()`;
       if (shouldUseBookSourceJsScope(ctx.source, options.useSharedJsScope)) {
         return runInBookSourceJsScope(ctx.source!, host, code, ctx);
       }
@@ -157,10 +168,12 @@ export function evalJs(
         host,
       });
       return runVmScript(code, sandbox);
-    });
+    }),
+    );
   } catch (e) {
     const err = toBookSourceJsTimeoutError(e);
     host.log(`JS 错误: ${err.message}`);
+    if (options.throwOnError) throw err;
     return "";
   }
 }
@@ -175,7 +188,8 @@ export async function evalJsAsync(
   if (!host) return "";
   const legadoAsync = options.legadoAsync !== false;
   try {
-    return await runWithJsEvalDeadlineAsync(async () => {
+    return await runWithBookSourceJsHostAsync(host, () =>
+      runWithJsEvalDeadlineAsync(async () => {
       const inlined = inlineBookSourceCommentEvals(
         script,
         ctx.source?.bookSourceComment,
@@ -185,10 +199,20 @@ export async function evalJsAsync(
         // 先加载 jsLib，以便把其中的 async 函数名并入 await 注入
         ensureBookSourceJsLib(ctx.source!, host);
         const jsLibAsyncNames = getJsLibAsyncFunctionNames(ctx.source?.jsLib);
+        // loginCheckJs 里 objStringify 后经 java.put 传递的 util.* async 方法也须按名 await
+        const asyncNames = [
+          ...new Set([
+            ...jsLibAsyncNames,
+            ...collectLoginCheckJsAsyncNames(
+              ctx.source?.loginCheckJs,
+              jsLibAsyncNames,
+            ),
+          ]),
+        ];
         const body = legadoAsync
-          ? prepareLegadoAsyncJs(inlined, jsLibAsyncNames)
+          ? prepareLegadoAsyncJs(inlined, asyncNames)
           : prepareLegadoJs(inlined);
-        const code = legadoAsync ? body : `(function(){ ${body} })()`;
+        const code = legadoAsync ? body : `(function(){\n${body}\n})()`;
         const result = runInBookSourceJsScope(ctx.source!, host, code, ctx, {
           async: legadoAsync,
         });
@@ -205,13 +229,14 @@ export async function evalJsAsync(
         host,
       });
       // prepareLegadoAsyncJs 已是 (async () => { ... })()；同步则包 IIFE
-      const code = legadoAsync ? body : `(function(){ ${body} })()`;
+      const code = legadoAsync ? body : `(function(){\n${body}\n})()`;
       const runResult = runVmScript(code, sandbox);
       if (!legadoAsync) return runResult;
       return await settleLegadoJsResult(
         await raceWithJsTimeout(Promise.resolve(runResult as Promise<unknown>)),
       );
-    });
+    }),
+    );
   } catch (e) {
     const err = toBookSourceJsTimeoutError(e);
     host.log(`JS 错误: ${err.message}`);

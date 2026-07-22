@@ -12,6 +12,8 @@ export const appDialogModel = reactive({
   promptValue: "",
   promptPlaceholder: "",
   promptMultiline: false,
+  /** 单行 prompt 的 input type（multiline 时忽略） */
+  promptInputType: "text" as "text" | "number",
   promptNeutralLabel: "",
 });
 
@@ -46,6 +48,7 @@ type QPrompt = DialogQueueBase & {
   defaultValue: string;
   placeholder: string;
   multiline: boolean;
+  inputType: "text" | "number";
   /** 左下角中性按钮（点击不关闭对话框） */
   neutralLabel?: string;
   onNeutral?: () => void;
@@ -65,8 +68,10 @@ function applyQueuedToModel(item: Queued) {
     appDialogModel.promptValue = item.defaultValue;
     appDialogModel.promptPlaceholder = item.placeholder;
     appDialogModel.promptMultiline = item.multiline;
+    appDialogModel.promptInputType = item.inputType;
     appDialogModel.promptNeutralLabel = item.neutralLabel?.trim() || "";
   } else {
+    appDialogModel.promptInputType = "text";
     appDialogModel.promptNeutralLabel = "";
   }
 }
@@ -201,6 +206,8 @@ export type AppPromptOptions = AppDialogHtmlOptions & {
   placeholder?: string;
   /** 多行编辑（如 Legado 变量对话框） */
   multiline?: boolean;
+  /** 单行输入框 type，默认 text；页码等场景可传 number */
+  inputType?: "text" | "number";
   /**
    * 左下角按钮文案（如「校验设置」）。
    * 点击不关闭对话框，调用 `onNeutral`（对齐 Legado AlertDialog.BUTTON_NEUTRAL）。
@@ -218,6 +225,7 @@ export function appPrompt(
   const defaultValue = options?.defaultValue ?? "";
   const placeholder = options?.placeholder ?? "";
   const multiline = options?.multiline === true;
+  const inputType = options?.inputType === "number" ? "number" : "text";
   const dangerouslyUseHTMLString = options?.dangerouslyUseHTMLString === true;
   const neutralLabel = options?.neutralLabel?.trim() || undefined;
   const onNeutral = options?.onNeutral;
@@ -230,6 +238,7 @@ export function appPrompt(
       defaultValue,
       placeholder,
       multiline,
+      inputType,
       neutralLabel,
       onNeutral,
       resolve,

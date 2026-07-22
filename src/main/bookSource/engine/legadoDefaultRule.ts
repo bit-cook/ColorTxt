@@ -1,5 +1,8 @@
 import * as cheerio from "cheerio";
 import type { Cheerio, CheerioAPI } from "cheerio";
+import { compileLegadoRegex } from "./analyzeByRegex";
+import { normalizeLegadoCssAttrContains } from "./legadoAttrSelector";
+import { jsoupPrettyElementsOuterHtml } from "./jsoupPrettyHtml";
 
 /**
  * Cheerio/HTML5 会剥离脱离 `<table>` 的 `<tr>` / `<td>`（Jsoup 仍可保留单元格）。
@@ -24,9 +27,29 @@ export function wrapOrphanTableFragments(html: string): string {
   return html;
 }
 
+/**
+ * `JSON.stringify(Elements)` 的结果常被下一跳选择器当 HTML 再解析。
+ * 若直接 `cheerio.load(jsonString)`，`\"` 会截断含空格的属性（标题丢失）。
+ * 先按 JSON 数组拆出片段再拼接，对齐「可解析的元素列表」语义。
+ */
+export function unwrapJsonHtmlArray(html: string): string | null {
+  const t = html.trim();
+  if (!t.startsWith("[")) return null;
+  try {
+    const parsed: unknown = JSON.parse(t);
+    if (!Array.isArray(parsed) || !parsed.length) return null;
+    if (!parsed.every((x) => typeof x === "string")) return null;
+    if (!parsed.some((x) => /<\s*\/?\s*[a-z]/i.test(x))) return null;
+    return (parsed as string[]).join("\n");
+  } catch {
+    return null;
+  }
+}
+
 /** 解析 HTML 片段/整页；自动包裹孤立的表格片段 */
 export function loadCheerioHtml(html: string): CheerioAPI {
-  return cheerio.load(wrapOrphanTableFragments(html));
+  const unwrapped = unwrapJsonHtmlArray(html);
+  return cheerio.load(wrapOrphanTableFragments(unwrapped ?? html));
 }
 
 export type RuleRegexSuffix = {
@@ -128,15 +151,20 @@ export function splitRuleRegexSuffix(rule: string): {
 export function applyRuleRegex(value: string, regex?: RuleRegexSuffix): string {
   if (!regex?.pattern) return value;
   try {
-    // Legado 替换正则按 DOTALL 处理，`.` 需匹配换行（如 SF 搜索 li.1@ownText 简介在 <br> 后）
-    const flags = regex.replaceFirst ? "s" : "gs";
+    // 对齐 Legado/Kotlin Regex 默认：`.` 不匹配换行（DOTALL 会让 `.*【1】.*` 之类整篇吞掉）；
+    // ownText 等提取已按 Jsoup 规范化空白，无需靠 DOTALL 跨行。
+    // 书源显式 `(?s)`/`(?i)` 等 Java 嵌入式标志 → compileLegadoRegex 转成 JS flags。
     if (regex.replaceFirst) {
-      const re = new RegExp(regex.pattern, "s");
+      // Legado AnalyzeRule.replaceRegex：### → 取首个匹配再替换；未命中返回 ""
+      const re = compileLegadoRegex(regex.pattern, "");
+      if (!re) return value;
       const m = value.match(re);
-      if (!m?.[0]) return value;
+      if (!m?.[0]) return "";
       return m[0].replace(re, regex.replacement ?? "");
     }
-    return value.replace(new RegExp(regex.pattern, flags), regex.replacement ?? "");
+    const re = compileLegadoRegex(regex.pattern, "g");
+    if (!re) return value;
+    return value.replace(re, regex.replacement ?? "");
   } catch {
     return value;
   }
@@ -175,7 +203,7 @@ const TAG_CHILD_SELECTOR_NAMES = new Set(
   ].map((s) => s.toLowerCase()),
 );
 
-/** Legado `@data-bid` / `@title` 等属性提取（非 class/tag/id 选择器段） */
+/** Legado `@data-bid` / `@title` / `@_src` 等属性提取（非 class/tag/id 选择器段） */
 export function isLegadoAttrExtract(s: string): boolean {
   const t = s.trim();
   if (!t || isLegadoExtractType(t)) return false;
@@ -183,7 +211,8 @@ export function isLegadoAttrExtract(s: string): boolean {
   if (/^(class|tag|id|text|children)\./.test(t)) return false;
   if (t.startsWith(".") || t.startsWith("#") || /[\[\]>+~*,]/.test(t)) return false;
   if (TAG_CHILD_SELECTOR_NAMES.has(t.toLowerCase())) return false;
-  return /^[a-zA-Z][\w-]*$/.test(t);
+  // 须允许 `_src` 等懒加载属性（如部分书源：`img@_src`）
+  return /^[a-zA-Z_][\w-]*$/.test(t);
 }
 
 export function splitLegadoPathAndIndex(s: string): {
@@ -237,7 +266,7 @@ export function pickLegadoResultByIndex(
   return [parts[i]!];
 }
 
-/** Legado 方括号索引区间 [start:end:step] */
+/** Legado 方括号索引区间 [start:end:step]（两端均含，对齐 AnalyzeByJSoup） */
 export type LegadoIndexRange = {
   start: number;
   end?: number;
@@ -410,13 +439,15 @@ function queryInScope(
   sel: string,
   fromRoot: boolean,
 ): Cheerio<any> {
-  if (fromRoot) return $(sel);
+  const css = normalizeLegadoCssAttrContains(sel);
   try {
-    const self = scope.filter(sel);
-    const descendants = scope.find(sel);
+    if (fromRoot) return $(css);
+    const self = scope.filter(css);
+    const descendants = scope.find(css);
     return self.length ? descendants.add(self) : descendants;
   } catch {
-    return scope.find(sel);
+    // 非法 CSS：对齐 Legado 空结果
+    return $("");
   }
 }
 
@@ -578,6 +609,10 @@ export function legadoSegmentToCss(segment: string): {
   };
 }
 
+/**
+ * Legado AnalyzeByJSoup.findIndexSet：`start..end` / `downTo` 均为闭区间。
+ * 例：`.book_other[1:2]` 取第 2、3 个（索引 1 与 2），不是半开区间。
+ */
 function pickElementsByRange(
   els: Cheerio<any>,
   range: LegadoIndexRange,
@@ -587,17 +622,21 @@ function pickElementsByRange(
   const len = els.length;
   const step = range.step ?? 1;
   const start = resolveLegadoElementIndex(range.start, len);
-  const end = range.end === undefined ? len : resolveLegadoElementIndex(range.end, len);
+  // end 未写时取到最后一个元素（含）；勿写成 len 以免闭区间越界
+  const end =
+    range.end === undefined
+      ? len - 1
+      : resolveLegadoElementIndex(range.end, len);
   const nodes: any[] = [];
   if (step > 0) {
-    for (let i = start; i < end && i < len; i += step) {
+    for (let i = start; i <= end && i < len; i += step) {
       if (i >= 0) {
         const node = els.get(i);
         if (node != null) nodes.push(node);
       }
     }
   } else {
-    for (let i = start; i > end; i += step) {
+    for (let i = start; i >= end; i += step) {
       if (i >= 0 && i < len) {
         const node = els.get(i);
         if (node != null) nodes.push(node);
@@ -839,12 +878,24 @@ function legadoElementTextNodes(el: Cheerio<any>): string {
   return parts.join("\n");
 }
 
-/** Legado `@html` / `@all`：`Elements.outerHtml()`（含选中节点自身标签） */
-function legadoElementOuterHtml(el: Cheerio<any>): string {
+/**
+ * Legado `Elements.outerHtml()`（含选中节点自身标签）。
+ * 输出对齐 Jsoup pretty-print：`<br>`/块级边界换行。行边界决定 `##` 正则
+ * （不跨行）能吃掉什么——分页导航须独占一行，否则同行的正文末句会被误删。
+ *
+ * `@html` 会先去掉 script/style（对齐 AnalyzeByJSoup.getResultLast）；
+ * `@all` 保留全文（部分正文规则依赖 body 内 `__INITIAL_STATE__` 等脚本）。
+ */
+function legadoElementOuterHtml(
+  el: Cheerio<any>,
+  stripScriptStyle: boolean,
+): string {
   if (!el.length) return "";
   const clone = el.clone();
-  clone.find("script, style").remove();
-  return clone.toString();
+  if (stripScriptStyle) {
+    clone.find("script, style").remove();
+  }
+  return jsoupPrettyElementsOuterHtml(clone);
 }
 
 export function extractFromElement(
@@ -857,13 +908,17 @@ export function extractFromElement(
 
   if (lower === "text") return legadoElementText(el);
   if (lower === "textnodes") return legadoElementTextNodes(el);
-  if (lower === "html" || lower === "all") return legadoElementOuterHtml(el);
+  if (lower === "html") return legadoElementOuterHtml(el, true);
+  if (lower === "all") return legadoElementOuterHtml(el, false);
   if (lower === "owntext") {
-    return el
-      .contents()
-      .filter((_, node) => node.type === "text")
-      .text()
-      .trim();
+    // 对齐 Jsoup ownText()：直接文本子节点 + 空白规范化（否则 <br> 间换行残留，
+    // ## 正则须靠 DOTALL 跨行才匹配，进而引发 `.*` 整篇吞掉）
+    return normalizeLegadoAsciiWhitespace(
+      el
+        .contents()
+        .filter((_, node) => node.type === "text")
+        .text(),
+    );
   }
   if (lower === "href") return el.attr("href") ?? "";
   if (lower === "src") return el.attr("src") ?? el.attr("data-src") ?? "";

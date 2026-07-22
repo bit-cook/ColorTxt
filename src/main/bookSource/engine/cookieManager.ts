@@ -1,4 +1,5 @@
 import { CookieJar } from "tough-cookie";
+import { getDomain } from "tldts";
 import {
   getCookieJar,
   saveCookieJar,
@@ -15,37 +16,74 @@ export function getDomainFromUrl(url: string): string {
   }
 }
 
-function loadJar(domain: string): CookieJar {
-  let jar = jarByDomain.get(domain);
+/**
+ * Legado NetworkUtils.getSubDomain：Cookie 按可注册域（eTLD+1）归档，子域共享。
+ * 登录常发生在 accounts.example.com，业务请求在 www.example.com——按完整主机名归档会取不到登录态。
+ * IP / localhost 等无可注册域时退回主机名。
+ */
+export function getCookieStoreDomain(url: string): string {
+  const host = getDomainFromUrl(url);
+  return getDomain(host) ?? host;
+}
+
+/** 设为域级 Cookie（Domain=storeDomain），子域名请求也能匹配；非法域名退回 host-only */
+function setDomainWideCookie(
+  jar: CookieJar,
+  storeDomain: string,
+  name: string,
+  value: string,
+): void {
+  try {
+    jar.setCookieSync(
+      `${name}=${value}; Domain=${storeDomain}; Path=/`,
+      `https://${storeDomain}/`,
+    );
+  } catch {
+    try {
+      jar.setCookieSync(`${name}=${value}`, `https://${storeDomain}/`);
+    } catch {
+      /* ignore invalid */
+    }
+  }
+}
+
+function loadJar(storeDomain: string): CookieJar {
+  let jar = jarByDomain.get(storeDomain);
   if (!jar) {
     jar = new CookieJar();
-    const stored = getCookieJar(domain);
+    const stored = getCookieJar(storeDomain);
     for (const [name, value] of Object.entries(stored)) {
-      try {
-        jar.setCookieSync(`${name}=${value}`, `https://${domain}/`);
-      } catch {
-        /* ignore invalid */
-      }
+      setDomainWideCookie(jar, storeDomain, name, value);
     }
-    jarByDomain.set(domain, jar);
+    jarByDomain.set(storeDomain, jar);
   }
   return jar;
 }
 
-export function persistJar(domain: string): void {
-  const jar = jarByDomain.get(domain);
+/** 枚举 jar 内全部 Cookie（含子域 host-only / HttpOnly），getCookiesSync(裸域) 会漏掉子域 Cookie */
+function allJarCookies(jar: CookieJar): { key: string; value: string }[] {
+  try {
+    const cookies = jar.serializeSync()?.cookies ?? [];
+    return cookies
+      .filter((c) => typeof c.key === "string" && c.key)
+      .map((c) => ({ key: String(c.key), value: String(c.value ?? "") }));
+  } catch {
+    return [];
+  }
+}
+
+export function persistJar(storeDomain: string): void {
+  const jar = jarByDomain.get(storeDomain);
   if (!jar) return;
-  const cookies = jar.getCookiesSync(`https://${domain}/`);
   const map: Record<string, string> = {};
-  for (const c of cookies) {
+  for (const c of allJarCookies(jar)) {
     map[c.key] = c.value;
   }
-  saveCookieJar(domain, map);
+  saveCookieJar(storeDomain, map);
 }
 
 export function cookieHeaderForUrl(url: string): string {
-  const domain = getDomainFromUrl(url);
-  const jar = loadJar(domain);
+  const jar = loadJar(getCookieStoreDomain(url));
   try {
     return jar.getCookieStringSync(url) || "";
   } catch {
@@ -54,8 +92,8 @@ export function cookieHeaderForUrl(url: string): string {
 }
 
 export function setCookieFromResponse(url: string, setCookie: string | string[]): void {
-  const domain = getDomainFromUrl(url);
-  const jar = loadJar(domain);
+  const storeDomain = getCookieStoreDomain(url);
+  const jar = loadJar(storeDomain);
   const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
   for (const h of headers) {
     if (!h) continue;
@@ -65,13 +103,12 @@ export function setCookieFromResponse(url: string, setCookie: string | string[])
       /* ignore */
     }
   }
-  persistJar(domain);
+  persistJar(storeDomain);
 }
 
 export function getCookieKey(domain: string, name: string): string | null {
-  const jar = loadJar(domain);
-  const cookies = jar.getCookiesSync(`https://${domain}/`);
-  const found = cookies.find((c) => c.key === name);
+  const jar = loadJar(getCookieStoreDomain(domain));
+  const found = allJarCookies(jar).find((c) => c.key === name);
   return found?.value ?? null;
 }
 
@@ -104,9 +141,9 @@ function resolveCookieUrl(url: string): string {
 /** Legado CookieStore.setCookie：按 url 二级域名保存整段 Cookie */
 export function setCookieForUrl(url: string, cookie?: string | null): void {
   const absUrl = resolveCookieUrl(url);
-  const domain = getDomainFromUrl(absUrl);
+  const storeDomain = getCookieStoreDomain(absUrl);
   if (!cookie?.trim()) {
-    removeDomainCookies(domain);
+    removeDomainCookies(storeDomain);
     return;
   }
   const jar = new CookieJar();
@@ -119,15 +156,11 @@ export function setCookieForUrl(url: string, cookie?: string | null): void {
     }
   } else {
     for (const [name, value] of Object.entries(pairs)) {
-      try {
-        jar.setCookieSync(`${name}=${value}`, absUrl);
-      } catch {
-        /* ignore invalid cookie */
-      }
+      setDomainWideCookie(jar, storeDomain, name, value);
     }
   }
-  jarByDomain.set(domain, jar);
-  persistJar(domain);
+  jarByDomain.set(storeDomain, jar);
+  persistJar(storeDomain);
 }
 
 /** Legado CookieStore.replaceCookie：与已有 Cookie 合并后保存 */
@@ -153,6 +186,12 @@ export function mapToCookieString(
 }
 
 export function removeDomainCookies(domain: string): void {
-  jarByDomain.delete(domain);
-  saveCookieJar(domain, {});
+  const storeDomain = getCookieStoreDomain(domain);
+  jarByDomain.delete(storeDomain);
+  saveCookieJar(storeDomain, {});
+  // 兼容旧版本按完整主机名归档的残留行（如 www.<域名>），一并清空
+  if (storeDomain !== domain) {
+    jarByDomain.delete(domain);
+    saveCookieJar(domain, {});
+  }
 }

@@ -45,6 +45,8 @@ export function useFindBookReaderShortcuts(deps: {
   decreaseLineHeight: () => void;
   jumpToPrevChapter: () => void;
   jumpToNextChapter: () => void;
+  toggleSidebar: () => void;
+  toggleFullscreen: () => void;
   isVoiceReadScrollLocked?: Ref<boolean>;
   isVoiceReadBlocksFind?: Ref<boolean>;
 }) {
@@ -81,12 +83,12 @@ export function useFindBookReaderShortcuts(deps: {
         openColorScheme: () => {},
         openFindBook: () => {},
         openBookSource: () => {},
-        toggleFullscreen: () => {},
+        toggleFullscreen: deps.toggleFullscreen,
         increaseFontSize: deps.increaseFontSize,
         decreaseFontSize: deps.decreaseFontSize,
         increaseLineHeight: deps.increaseLineHeight,
         decreaseLineHeight: deps.decreaseLineHeight,
-        toggleSidebar: () => {},
+        toggleSidebar: deps.toggleSidebar,
         openNewWindow: () => {},
         openFile: () => {},
         pickTxtDirectory: () => {},

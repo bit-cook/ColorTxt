@@ -92,6 +92,9 @@ import {
   persistSettingsData,
 } from "../../stores/cacheStore";
 import { READER_SIDEBAR_ROW_STRIDE } from "../../composables/useReaderSidebarLists";
+
+/** 章名下有 tag（updateTime）时两行展示的行距 */
+const READER_SIDEBAR_ROW_STRIDE_WITH_TAG = 56;
 import {
   contentChaptersInReadingOrder,
   displayIndexForReadingOrder,
@@ -184,6 +187,7 @@ const settings = useFindBookReaderSettings();
 const findBookSettings = useFindBookSettings();
 /** 阅读器侧栏 UI 态；持久化偏好在 findBookSettings.showSidebar */
 const showSidebar = ref(findBookSettings.showSidebar.value);
+const showChapterTag = findBookSettings.showChapterTag;
 /** 本会话是否已按「章节数」应用过打开时的侧栏策略（单章临时收起等） */
 let sidebarOpenPolicyApplied = false;
 /** 本次打开后用户是否已手动切换侧栏（此后不再套用单章临时收起） */
@@ -431,7 +435,7 @@ const sidebarShellVisible = computed(() =>
 const chapterNavUiVisible = computed(
   () =>
     chapterNavToolbarEnabled.value &&
-    displayChapters.value.length > 0 &&
+    displayChapters.value.length > 1 &&
     !isVoiceReadActive.value,
 );
 
@@ -560,10 +564,34 @@ async function refreshConvertedChapterTitles() {
   convertedChapterTitlesByIndex.value = next;
 }
 
-function chapterDisplayTitle(index: number): string {
+function chapterDisplayBaseTitle(index: number): string {
   const ch = displayChapters.value[index];
   if (!ch) return "";
   return convertedChapterTitlesByIndex.value.get(index) ?? ch.title;
+}
+
+function chapterDisplayTitle(index: number): string {
+  const ch = displayChapters.value[index];
+  if (!ch) return "";
+  const base = chapterDisplayBaseTitle(index);
+  const tag = showChapterTag.value ? (ch.tag?.trim() ?? "") : "";
+  return tag ? `${base}\n${tag}` : base;
+}
+
+const chapterListRowStride = computed(() =>
+  showChapterTag.value &&
+  displayChapters.value.some((ch) => ch.tag?.trim())
+    ? READER_SIDEBAR_ROW_STRIDE_WITH_TAG
+    : READER_SIDEBAR_ROW_STRIDE,
+);
+
+const hasChapterTags = computed(() =>
+  displayChapters.value.some((ch) => Boolean(ch.tag?.trim())),
+);
+
+function toggleShowChapterTag() {
+  showChapterTag.value = !showChapterTag.value;
+  findBookSettings.persistAll();
 }
 const sidebarPanelWidth = computed(() =>
   Math.max(FIND_BOOK_SIDEBAR_MIN_WIDTH, sidebarWidth.value),
@@ -888,7 +916,7 @@ async function onToggleReaderEdit() {
     return;
   }
   if (!canEnterReaderEditMode.value) {
-    appToast("请等待当前章节加载完成后再进入编辑模式。");
+    appToast("请等待当前章节加载完成后再进入编辑模式。", { kind: "info" });
     return;
   }
   voiceRead.exitVoiceRead();
@@ -958,7 +986,25 @@ async function loadChapterAtDisplayIndex(
     readerEditorDirty.value = false;
   }
   const contentIndex = contentIndexFor(ch);
-  if (contentIndex < 0) return;
+  if (contentIndex < 0) {
+    // 分卷标题：不拉正文规则（对齐 Legado），仅展示卷名
+    if (ch.isVolume) {
+      if (!(await confirmIfReaderEditDiscard())) return;
+      if (readerEditMode.value) {
+        readerEditMode.value = false;
+        readerEditorDirty.value = false;
+      }
+      currentDisplayIndex.value = index;
+      cancelChapterLoad();
+      readerContentKey.value = `findbook://volume#${encodeURIComponent(ch.url)}`;
+      lastChapterTitle.value = ch.title;
+      lastChapterBody.value = "";
+      totalLineCount.value = 0;
+      await renderChapterText(ch.title, "");
+      void scrollChapterListToCurrent({ smooth: options?.smoothScroll ?? true });
+    }
+    return;
+  }
   const preferCache = options?.preferCache !== false;
   const fromCache = preferCache && isChapterCached(ch);
   const wantSmooth = options?.smoothScroll ?? true;
@@ -1005,13 +1051,16 @@ async function loadChapterAtDisplayIndex(
       chapterUrl: ch.url,
       chapterTitle: ch.title,
       chapterIndex: contentIndex,
+      isVolume: ch.isVolume,
       nextChapterUrl: nextInReadingOrder?.url,
       chapterUrls: chapterUrlsInReadingOrder,
       cacheDir: effectiveCacheDir.value.trim() || undefined,
       preferCache,
     });
     if (loaded == null) {
-      if (chapterError.value) appToast(chapterError.value);
+      readerContentKey.value = null;
+      lastChapterTitle.value = ch.title;
+      lastChapterBody.value = "";
       return;
     }
     const { content: body, displayTitle } = loaded;
@@ -1192,6 +1241,8 @@ const { shortcutBindings } = useFindBookReaderShortcuts({
   decreaseLineHeight: () => readerUi.decreaseLineHeight(),
   jumpToPrevChapter: jumpToPrevChapterWithShortcut,
   jumpToNextChapter: jumpToNextChapterWithShortcut,
+  toggleSidebar: () => onToggleSidebar(),
+  toggleFullscreen: () => void toggleFullscreen(),
   isVoiceReadScrollLocked,
   isVoiceReadBlocksFind,
 });
@@ -1661,7 +1712,7 @@ function onToggleBookshelf() {
       });
     }
   }
-  appToast(added ? "已放入书架" : "已从书架移除");
+  appToast(added ? "已放入书架" : "已从书架移除", { kind: "info" });
 }
 
 function persistSharedTheme(theme: AppShellTheme) {
@@ -2132,6 +2183,14 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
               <div class="sidebarHeaderStart">
                 <span class="sidebarHeaderTitle">章节</span>
                 <IconButton
+                  v-if="hasChapterTags"
+                  :icon-html="icons.subhead"
+                  :title="showChapterTag ? '隐藏附加信息' : '显示附加信息'"
+                  :aria-label="showChapterTag ? '隐藏附加信息' : '显示附加信息'"
+                  :pressed="showChapterTag"
+                  @click="toggleShowChapterTag"
+                />
+                <IconButton
                   title="重新获取目录"
                   aria-label="重新获取目录"
                   :disabled="
@@ -2219,7 +2278,7 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
                     ref="chapterListRef"
                     class="sidebarList sidebarList--itemGap"
                     :item-count="displayChapters.length"
-                    :row-stride="READER_SIDEBAR_ROW_STRIDE"
+                    :row-stride="chapterListRowStride"
                     :overscan="10"
                     :item-key="(i) => i"
                   >
@@ -2255,7 +2314,19 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
                             displayChapters[index]?.isPay ? '已购买' : 'VIP'
                           "
                         />
-                        <span class="itemName">{{ chapterDisplayTitle(index) }}</span>
+                        <span class="itemName">
+                          <span class="itemNameTitle">{{
+                            chapterDisplayBaseTitle(index)
+                          }}</span>
+                          <span
+                            v-if="
+                              showChapterTag &&
+                              displayChapters[index]?.tag?.trim()
+                            "
+                            class="itemNameTag"
+                            >{{ displayChapters[index].tag.trim() }}</span
+                          >
+                        </span>
                         <LoadingDotsRotate
                           v-if="isChapterLoading(index)"
                           class="findBookReaderChapterLoading"
@@ -2311,7 +2382,11 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
             v-else-if="chapterError && !readerContentKey"
             class="findBookReaderError"
           >
-            {{ chapterError }}
+            <span class="findBookReaderErrorMain">{{ chapterError }}</span>
+            <span
+              v-if="logs.length"
+              class="findBookReaderErrorLogs"
+            >{{ logs.join("\n\n") }}</span>
           </p>
           <ReaderMain
             ref="readerRef"
@@ -2769,6 +2844,20 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
 .itemName {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+}
+.itemNameTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.itemNameTag {
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2930,14 +3019,32 @@ const modalRef = ref<InstanceType<typeof AppModal> | null>(null);
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
   margin: 0;
-  padding: 16px;
+  padding: 24px 20px;
+  overflow: auto;
   font-size: 14px;
+  line-height: 1.55;
   color: var(--danger);
-  text-align: center;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
   z-index: 2;
-  pointer-events: none;
+  pointer-events: auto;
+  background: var(--reader-bg, transparent);
+  user-select: text;
+}
+.findBookReaderErrorMain {
+  font-weight: 600;
+}
+.findBookReaderErrorLogs {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 0.9;
+  color: var(--muted-fg, var(--danger));
 }
 </style>

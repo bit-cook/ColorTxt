@@ -521,6 +521,7 @@ export function useBookSourceChapterContent() {
     chapterUrl: string;
     chapterTitle: string;
     chapterIndex: number;
+    isVolume?: boolean;
     nextChapterUrl?: string;
     chapterUrls?: string[];
     cacheDir?: string;

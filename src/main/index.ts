@@ -15,6 +15,13 @@ import {
   isBackstageWebViewWindow,
 } from "./bookSource/engine/backstageWebView";
 
+// 开发态 DevTools 会对「无 CSP / 含 unsafe-eval」的渲染进程刷安全警告；
+// 主界面 CSP 需 unsafe-eval（文本替换 @js:），登录验证窗还会加载第三方页——无法也不应强行收紧。
+// 打包后 Electron 本就不显示该警告；此处仅消除 unpackaged 控制台噪音。
+if (!app.isPackaged) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
+}
+
 /** 须在 `app.ready` 之前注册，否则自定义协议无法在渲染进程用于 `<img>` 等 */
 protocol.registerSchemesAsPrivileged([
   {

@@ -977,6 +977,10 @@ const api = {
     ipcRenderer.invoke(BOOK_SOURCE_IPC.setLoginInfo, url, info) as ReturnType<
       BookSourceIpcApi["bookSourceSetLoginInfo"]
     >,
+  bookSourceGetLoginUi: (sourceUrl: string) =>
+    ipcRenderer.invoke(BOOK_SOURCE_IPC.getLoginUi, sourceUrl) as ReturnType<
+      BookSourceIpcApi["bookSourceGetLoginUi"]
+    >,
   bookSourceBrowserLogin: (sourceUrl: string, title?: string) =>
     ipcRenderer.invoke(BOOK_SOURCE_IPC.browserLogin, sourceUrl, title) as ReturnType<
       BookSourceIpcApi["bookSourceBrowserLogin"]

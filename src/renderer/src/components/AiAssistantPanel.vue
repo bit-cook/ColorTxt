@@ -1089,11 +1089,13 @@ async function requestRebuildVectorIndex(): Promise<void> {
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。");
+    appToast("索引任务正在进行中，请稍候。", { kind: "info" });
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
-    appToast("对话正在进行中，请先停止或等待完成后再重建索引。");
+    appToast("对话正在进行中，请先停止或等待完成后再重建索引。", {
+      kind: "info",
+    });
     return;
   }
   activeRequestId.value += 1;
@@ -1116,11 +1118,13 @@ async function requestRebuildVectorIndex(): Promise<void> {
 async function requestClearAiBookCache(): Promise<void> {
   if (!bookHash.value) return;
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。");
+    appToast("索引任务正在进行中，请稍候。", { kind: "info" });
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
-    appToast("对话正在进行中，请先停止或等待完成后再清除缓存。");
+    appToast("对话正在进行中，请先停止或等待完成后再清除缓存。", {
+      kind: "info",
+    });
     return;
   }
   const r = await window.colorTxt.showMessageBox({

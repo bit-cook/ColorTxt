@@ -21,12 +21,19 @@ import {
 import {
   clearLoginSessionAck,
   getLoginHeader,
+  getLoginInfo,
   getLoginSessionAck,
   putLoginHeader,
   removeLoginHeader,
   setLoginInfo,
 } from "../store/bookSourceStore";
 import { evalJs, evalJsAsync } from "./rhinoRuntime";
+import {
+  extractLoginUiJs,
+  parseLoginUi,
+  type LoginUiRow,
+} from "@shared/bookSource/loginUi";
+import { queryLegadoSelectorSegment } from "./legadoDefaultRule";
 
 function buildLoginJava(
   analyzeUrl: AnalyzeUrl,
@@ -68,12 +75,22 @@ function buildLoginJava(
       title: string,
       refetchAfterSuccess = false,
     ) => {
-      const body = await getVerificationResult(source.bookSourceUrl, url, title, {
-        refetchAfterSuccess: refetchAfterSuccess === true,
-        source,
-        host,
-      });
-      return toLegadoStrResponse({ url, body, headers: {} });
+      try {
+        const body = await getVerificationResult(source.bookSourceUrl, url, title, {
+          refetchAfterSuccess: refetchAfterSuccess === true,
+          source,
+          host,
+        });
+        return toLegadoStrResponse({ url, body, headers: {} });
+      } catch (e) {
+        if (isVerificationCancelled(e)) {
+          return toLegadoStrResponse(
+            { url, body: "", headers: {} },
+            { statusCode: 0, message: "cancelled" },
+          );
+        }
+        throw e;
+      }
     },
     putLoginHeader: (headerJson: string) => {
       putLoginHeader(source.bookSourceUrl, headerJson);
@@ -170,14 +187,12 @@ export function hasLoginSession(source: BookSourceRecord): boolean {
 
 function isLikelyLoginPage(body: string): boolean {
   const s = body.slice(0, 16000);
-  const markers = [
+  // 强特征：单独命中即可（真正登录墙 / 验证页）
+  const strong = [
     "账号登录",
     "发送验证码",
     "忘记密码",
     "登录账号即代表",
-    "注册账号",
-    "class=\"login",
-    "id=\"login",
     "用户登录",
     "Just a moment",
     "百度安全验证",
@@ -185,16 +200,24 @@ function isLikelyLoginPage(body: string): boolean {
     "人机验证",
     "确认您是真人",
   ];
-  let hit = 0;
-  for (const m of markers) {
-    if (s.includes(m)) hit += 1;
+  for (const m of strong) {
+    if (s.includes(m)) return true;
   }
-  return hit >= 1;
+  // 弱特征：导航常有 `class="login-info"` / 「注册」链，勿单凭一条就当登录墙
+  // （部分站点分类页含 login-info，但书列表可直接解析）
+  let weak = 0;
+  if (/\bclass\s*=\s*["']login["']/i.test(s)) weak += 1;
+  if (/\bid\s*=\s*["']login["']/i.test(s)) weak += 1;
+  if (s.includes("注册账号")) weak += 1;
+  if (/class\s*=\s*["'][^"']*login-(?:form|box|modal|dialog|panel)[^"']*["']/i.test(s)) {
+    weak += 1;
+  }
+  return weak >= 2;
 }
 
 /**
- * 搜索/发现页嵌了登录弹层，但 CSS 书列表已能命中时视为非登录墙。
- * 仅处理简单 CSS 选择器（如 `div.matchbook > div.view||ul.clearfix > li`）。
+ * 搜索页嵌了登录弹层，但书列表规则已能命中时视为非登录墙。
+ * 支持 Legado `class.`/`tag.`/`id.` 与普通 CSS（如部分站点 `class.book-list-table`）。
  */
 function pageAlreadyHasCssBookList(
   source: BookSourceRecord,
@@ -223,7 +246,8 @@ function pageAlreadyHasCssBookList(
       }
       try {
         $ ??= cheerio.load(body);
-        if ($(sel).length > 0) return true;
+        const found = queryLegadoSelectorSegment($, $.root(), sel, true);
+        if (found.length > 0) return true;
       } catch {
         /* ignore invalid selector */
       }
@@ -245,6 +269,54 @@ export function runSourceLogin(
   runLoginJs(source, loginData, logs);
 }
 
+/**
+ * 求值 loginUi 得到按钮/输入行（对齐 Legado SourceLoginDialog.evalUiJs）。
+ * `@js:`/`<js>` 需在主进程跑 JS 才能得到行；纯 JSON 直接解析。
+ * 源登录场景无 book：显式传 null，使脚本 `if(book)` 为假（否则会渲染正文场景按钮）。
+ */
+export async function getLoginUiRows(
+  source: BookSourceRecord,
+  ctx: {
+    book?: Record<string, unknown> | null;
+    chapter?: Record<string, unknown> | null;
+  } = {},
+  logs: string[] = [],
+): Promise<LoginUiRow[]> {
+  const raw = source.loginUi?.trim();
+  if (!raw) return [];
+  const code = extractLoginUiJs(raw);
+  if (code == null) return parseLoginUi(raw);
+
+  const host = createJsExtensionHost(source, logs);
+  const loginJs = extractLoginJs(source.loginUrl) ?? "";
+  const result = wrapLegadoMapLike(getLoginInfo(source.bookSourceUrl));
+  const out = await evalJsAsync(
+    `${loginJs}\n${code}`,
+    {
+      source,
+      host,
+      book: ctx.book ?? null,
+      chapter: ctx.chapter ?? null,
+      result,
+    },
+    { legadoAsync: true },
+  );
+  if (out == null) return [];
+  const json = String(out).trim();
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is LoginUiRow =>
+        r != null && typeof r === "object" && typeof (r as LoginUiRow).name === "string",
+    );
+  } catch (e) {
+    logs.push(`loginUi 解析失败: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
+}
+
 export async function runLoginUiButton(
   source: BookSourceRecord,
   loginData: Record<string, string>,
@@ -263,12 +335,18 @@ export async function runLoginUiButton(
   const loginJs = extractLoginJs(source.loginUrl) ?? "";
   const script = `${loginJs}\n${actionTrim}`;
   const legadoResult = wrapLegadoMapLike(loginData);
-  await evalJsAsync(script, {
-    source,
-    host,
-    book: legadoResult,
-    result: legadoResult,
-  });
+  try {
+    await evalJsAsync(script, {
+      source,
+      host,
+      book: legadoResult,
+      result: legadoResult,
+    });
+  } catch {
+    // 对齐 Legado SourceLoginDialog.handleButtonClick：按钮 JS 错误仅记 AppLog，
+    // 不弹错不中断（如部分书源 logout() 里 removeCacheList 对不存在的缓存 forEach 必抛，
+    // 但清 Cookie/打开退出页等动作已在报错前完成）。evalJsAsync 已向 logs 记录 JS 错误。
+  }
 }
 
 function runLoginJs(

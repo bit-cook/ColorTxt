@@ -1,5 +1,8 @@
-import { createDecipheriv, createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID as nodeRandomUUID } from "node:crypto";
 import { createOrgPackage } from "./legadoJsoupShim";
+import { syncBookSourceHttpBinary } from "./syncBookSourceFetch";
+import { getBookSourceJsHost } from "./bookSourceJsContext";
+import { createSymmetricCrypto } from "./legadoCrypto";
 
 export { createOrgPackage } from "./legadoJsoupShim";
 
@@ -27,30 +30,176 @@ function toBuffer(value: unknown): Buffer {
   return Buffer.from(value as Uint8Array);
 }
 
-/** Legado Packages.* — 深代理；Packages.org 提供 jsoup 等真实包 */
-export function createPackagesStub(): Record<string, unknown> {
-  const org = createOrgPackage();
+/** Java UUID 风格对象：`String(uuid)` / 拼接不会抛 Cannot convert object to primitive value */
+function createJavaUuid(): {
+  toString(): string;
+  valueOf(): string;
+  [Symbol.toPrimitive](): string;
+} {
+  const id = nodeRandomUUID();
+  return {
+    toString: () => id,
+    valueOf: () => id,
+    [Symbol.toPrimitive]: () => id,
+  };
+}
+
+/**
+ * Packages.* 未实现路径的深代理。
+ * 必须实现 @@toPrimitive / toString / valueOf，否则 `String(Packages.xxx)` 会抛
+ * TypeError: Cannot convert object to primitive value（Rhino 上 Java 对象可 toString）。
+ */
+function createSafeDeepProxy(): object {
   const proxy = (): object =>
     new Proxy(
       function () {
-        /* noop ctor */
+        /* noop ctor / callable */
       },
       {
         get(_t, prop) {
           if (prop === "then") return undefined;
+          if (prop === Symbol.toPrimitive) return () => "";
+          if (prop === "toString" || prop === "valueOf") return () => "";
           return proxy();
         },
         apply: () => proxy(),
         construct: () => proxy(),
       },
     );
+  return proxy();
+}
+
+function coerceBytes(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+  return Buffer.from(String(data ?? ""), "utf8");
+}
+
+function createDigestUtilShim(): Record<string, unknown> {
+  return {
+    md5Hex: (str: unknown) =>
+      createHash("md5").update(coerceBytes(str)).digest("hex"),
+    /** Hutool DigestUtil.md5(ByteArray) → MD5 摘要字节 */
+    md5: (data: unknown) =>
+      Array.from(createHash("md5").update(coerceBytes(data)).digest()),
+  };
+}
+
+const ANDROID_BASE64 = {
+  NO_WRAP: 2,
+  DEFAULT: 0,
+  encodeToString(data: unknown, _flags?: number) {
+    return coerceBytes(data).toString("base64");
+  },
+  decode(str: unknown, _flags?: number) {
+    return Array.from(Buffer.from(String(str ?? ""), "base64"));
+  },
+};
+
+/** java.util.Base64 — 部分 API 书源：`Base64.getDecoder().decode(...)` */
+const JAVA_UTIL_BASE64 = {
+  getDecoder() {
+    return {
+      decode(input: unknown) {
+        return Buffer.from(coerceJavaString(input), "base64");
+      },
+    };
+  },
+  getEncoder() {
+    return {
+      encode(input: unknown) {
+        return Buffer.from(toBuffer(input)).toString("base64");
+      },
+      encodeToString(input: unknown) {
+        return Buffer.from(toBuffer(input)).toString("base64");
+      },
+    };
+  },
+};
+
+/**
+ * JavaImporter 扁平命名空间里的 Base64：同时支持
+ * android.util（encodeToString）与 java.util（getDecoder）。
+ * 勿只用 ANDROID_BASE64 覆盖，否则部分 API 书源正文 AES 解密报 getDecoder is not a function。
+ */
+const IMPORTER_BASE64 = {
+  ...ANDROID_BASE64,
+  ...JAVA_UTIL_BASE64,
+};
+/** 常见 Android Build 字段桩（部分登录脚本用来拼设备指纹） */
+const ANDROID_BUILD_STUB: Record<string, string> = {
+  MODEL: "ColorTxt",
+  MANUFACTURER: "ColorTxt",
+  BRAND: "ColorTxt",
+  DEVICE: "colortxt",
+  PRODUCT: "colortxt",
+  HARDWARE: "colortxt",
+  FINGERPRINT: "colortxt/colortxt/colortxt:1/release/0",
+};
+
+function createNamespaceProxy(
+  known: Record<string, unknown>,
+): Record<string, unknown> {
+  return new Proxy(known, {
+    get(target, prop) {
+      if (prop === "then") return undefined;
+      if (typeof prop === "string" && Object.prototype.hasOwnProperty.call(target, prop)) {
+        return target[prop];
+      }
+      return createSafeDeepProxy();
+    },
+  });
+}
+
+/** Legado Packages.* — 深代理；Packages.org 提供 jsoup；补齐 UUID / Build 等常用桩 */
+export function createPackagesStub(): Record<string, unknown> {
+  const org = createOrgPackage();
+  const javaUtil = createNamespaceProxy({
+    UUID: {
+      randomUUID: () => createJavaUuid(),
+    },
+    Base64: JAVA_UTIL_BASE64,
+  });
+  const java = createNamespaceProxy({
+    util: javaUtil,
+  });
+  const androidOs = createNamespaceProxy({
+    Build: ANDROID_BUILD_STUB,
+  });
+  const androidText = createNamespaceProxy({
+    TextUtils: {
+      isEmpty: (value: unknown) => !String(value ?? "").trim(),
+    },
+  });
+  const androidUtil = createNamespaceProxy({
+    Base64: ANDROID_BASE64,
+  });
+  const android = createNamespaceProxy({
+    os: androidOs,
+    text: androidText,
+    util: androidUtil,
+  });
+  const cn = createNamespaceProxy({
+    hutool: createNamespaceProxy({
+      crypto: createNamespaceProxy({
+        digest: createNamespaceProxy({
+          DigestUtil: createDigestUtilShim(),
+        }),
+      }),
+    }),
+  });
+
   return new Proxy(
     {},
     {
       get(_t, prop) {
         if (prop === "then") return undefined;
         if (prop === "org") return org;
-        return proxy();
+        if (prop === "java") return java;
+        if (prop === "android") return android;
+        if (prop === "cn") return cn;
+        return createSafeDeepProxy();
       },
     },
   );
@@ -94,22 +243,10 @@ function createJavaLangShims(): Record<string, unknown> {
 
 function createJavaUtilShims(): Record<string, unknown> {
   return {
-    Base64: {
-      getDecoder() {
-        return {
-          decode(input: unknown) {
-            return Buffer.from(coerceJavaString(input), "base64");
-          },
-        };
-      },
-      getEncoder() {
-        return {
-          encode(input: unknown) {
-            return Buffer.from(toBuffer(input)).toString("base64");
-          },
-        };
-      },
+    UUID: {
+      randomUUID: () => createJavaUuid(),
     },
+    Base64: IMPORTER_BASE64,
     Arrays: {
       copyOfRange(arr: unknown, from: number, to: number) {
         return toBuffer(arr).subarray(from, to);
@@ -120,16 +257,38 @@ function createJavaUtilShims(): Record<string, unknown> {
 
 function normalizeMacAlgorithm(algorithm: string): string {
   const u = algorithm.trim();
-  const m = u.match(/^Hmac?(MD5|SHA1|SHA256|SHA384|SHA512)$/i);
-  if (m) {
-    const inner = m[1]!.toUpperCase();
+  const hyphen = u.match(/^HMAC[-_](MD5|SHA-?1|SHA-?256|SHA-?384|SHA-?512)$/i);
+  if (hyphen) {
+    return hyphen[1]!.replace(/-/g, "").toLowerCase();
+  }
+  const compact = u.match(/^Hmac?(MD5|SHA1|SHA256|SHA384|SHA512)$/i);
+  if (compact) {
+    const inner = compact[1]!.toUpperCase();
     if (inner === "MD5") return "md5";
     return inner.toLowerCase();
   }
-  return u.toLowerCase().replace(/^hmac/, "");
+  const stripped = u.toLowerCase().replace(/^hmac[-_]?/, "");
+  if (stripped === "md5") return "md5";
+  if (/^sha\d+$/.test(stripped)) return stripped;
+  return stripped;
 }
 
 function createJavaxCryptoShims(): Record<string, unknown> {
+  const ENCRYPT_MODE = 1;
+  const DECRYPT_MODE = 2;
+
+  /** javax.crypto.spec.DESKeySpec — DES 密钥取前 8 字节 */
+  function DESKeySpec(key: unknown) {
+    const buf = isByteLike(key)
+      ? toBuffer(key)
+      : Buffer.from(String(key ?? ""), "utf8");
+    const key8 =
+      buf.length >= 8
+        ? Buffer.from(buf.subarray(0, 8))
+        : Buffer.concat([buf, Buffer.alloc(8 - buf.length)]);
+    return { key: key8 };
+  }
+
   return {
     Mac: {
       getInstance(algorithm: string) {
@@ -153,30 +312,63 @@ function createJavaxCryptoShims(): Record<string, unknown> {
       },
     },
     SecretKeySpec(key: unknown, _algo: string) {
-      const buf = isByteLike(key) ? toBuffer(key) : Buffer.from(String(key ?? ""), "utf8");
+      const buf = isByteLike(key)
+        ? toBuffer(key)
+        : Buffer.from(String(key ?? ""), "utf8");
       return { key: buf };
+    },
+    DESKeySpec,
+    SecretKeyFactory: {
+      getInstance(_algorithm: string) {
+        return {
+          generateSecret(keySpec: { key?: Buffer } | unknown) {
+            if (keySpec && typeof keySpec === "object" && "key" in keySpec) {
+              return { key: Buffer.from((keySpec as { key: Buffer }).key) };
+            }
+            return { key: Buffer.alloc(0) };
+          },
+        };
+      },
     },
     IvParameterSpec(iv: Buffer) {
       return { iv: Buffer.from(iv) };
     },
     Cipher: {
+      ENCRYPT_MODE,
+      DECRYPT_MODE,
       getInstance(transformation: string) {
-        const [algoRaw, modeRaw] = transformation.split("/");
-        const algo = (algoRaw ?? "AES").toLowerCase();
-        const mode = (modeRaw ?? "CBC").toLowerCase();
-        let decipher: ReturnType<typeof createDecipheriv> | null = null;
+        let trans = String(transformation ?? "AES/CBC/PKCS5Padding").trim();
+        // Java：Cipher.getInstance("DES") ≡ DES/ECB/PKCS5Padding（部分书源 encryptByDES）
+        if (!trans.includes("/")) {
+          trans = `${trans}/ECB/PKCS5Padding`;
+        }
+        let opmode = DECRYPT_MODE;
+        let keyObj: { key: Buffer } | null = null;
+        let ivObj: { iv: Buffer } | null = null;
         return {
-          init(opmode: number, key: { key: Buffer }, iv: { iv: Buffer }) {
-            if (opmode !== 2) {
-              throw new Error(`Cipher opmode ${opmode} not supported`);
-            }
-            const bits = key.key.length * 8;
-            const nodeAlgo = `${algo}-${bits}-${mode}`;
-            decipher = createDecipheriv(nodeAlgo, key.key, iv.iv);
+          init(
+            op: number,
+            key: { key: Buffer },
+            iv?: { iv: Buffer },
+          ) {
+            opmode = op;
+            keyObj = key;
+            ivObj = iv ?? null;
           },
-          doFinal(data: Buffer) {
-            if (!decipher) throw new Error("Cipher not initialized");
-            return Buffer.concat([decipher.update(data), decipher.final()]);
+          doFinal(data: unknown) {
+            if (!keyObj?.key) throw new Error("Cipher not initialized");
+            const crypto = createSymmetricCrypto(
+              trans,
+              keyObj.key,
+              ivObj?.iv,
+            );
+            if (opmode === ENCRYPT_MODE) {
+              const input = isByteLike(data)
+                ? toBuffer(data)
+                : Buffer.from(String(data ?? ""), "utf8");
+              return crypto.encrypt(input);
+            }
+            return crypto.decrypt(data);
           },
         };
       },
@@ -195,6 +387,8 @@ export function createJavaImporter(log: (msg: string) => void): Record<string, u
       createJavaLangShims(),
       createJavaUtilShims(),
       createJavaxCryptoShims(),
+      // 保留 android encodeToString，同时勿丢掉 java.util getDecoder（见 IMPORTER_BASE64）
+      { Base64: IMPORTER_BASE64 },
     );
   };
   return bag;
@@ -202,10 +396,7 @@ export function createJavaImporter(log: (msg: string) => void): Record<string, u
 
 function createHutoolShims(): Record<string, unknown> {
   return {
-    DigestUtil: {
-      md5Hex: (str: unknown) =>
-        createHash("md5").update(String(str)).digest("hex"),
-    },
+    DigestUtil: createDigestUtilShim(),
     StrUtil: {
       reverse: (str: unknown) => [...String(str)].reverse().join(""),
     },
@@ -215,6 +406,17 @@ function createHutoolShims(): Record<string, unknown> {
     ZipUtil: {
       gzip: (data: unknown) => String(data),
     },
+  };
+}
+
+function createOkHttpResponse(buf: Buffer): Record<string, unknown> {
+  return {
+    code: () => 200,
+    body: () => ({
+      bytes: () => Array.from(buf),
+      string: () => buf.toString("utf8"),
+    }),
+    close: () => undefined,
   };
 }
 
@@ -247,16 +449,31 @@ function createOkHttpShims(log: (msg: string) => void): Record<string, unknown> 
     RequestBody: { create: (body: unknown) => String(body ?? "") },
     Request: { Builder },
     OkHttpClient: class {
-      newCall(req: { url: string; headers: Record<string, string>; body: string | null }) {
+      newCall(req: {
+        url: string;
+        headers: Record<string, string>;
+        body: string | null;
+      }) {
         return {
-          execute: () => ({
-            body: () => ({
-              string: () => {
-                log(`jsLib okhttp POST ${req.url}`);
-                return JSON.stringify({ data: "" });
-              },
-            }),
-          }),
+          execute: () => {
+            const method = req.body != null && req.body !== "" ? "POST" : "GET";
+            try {
+              const buf = syncBookSourceHttpBinary(
+                {
+                  url: req.url,
+                  headers: req.headers,
+                  method,
+                  body: req.body,
+                },
+                getBookSourceJsHost()?.source,
+              );
+              return createOkHttpResponse(buf);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              log(`jsLib okhttp ${method} ${req.url}: ${msg}`);
+              throw e instanceof Error ? e : new Error(msg);
+            }
+          },
         };
       }
     },

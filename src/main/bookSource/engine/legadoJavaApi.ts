@@ -24,13 +24,21 @@ export function legadoJsonValueToString(value: unknown): string {
 
 function normalizeHmacAlgorithm(algorithm: string): string {
   const u = algorithm.trim();
-  const m = u.match(/^Hmac?(MD5|SHA1|SHA256|SHA384|SHA512)$/i);
-  if (m) {
-    const inner = m[1]!.toUpperCase();
+  // Hutool：HMAC-SHA1 / HMAC_SHA1（部分聚合书源正文解密链等）
+  const hyphen = u.match(/^HMAC[-_](MD5|SHA-?1|SHA-?256|SHA-?384|SHA-?512)$/i);
+  if (hyphen) {
+    return hyphen[1]!.replace(/-/g, "").toLowerCase();
+  }
+  const compact = u.match(/^Hmac?(MD5|SHA1|SHA256|SHA384|SHA512)$/i);
+  if (compact) {
+    const inner = compact[1]!.toUpperCase();
     if (inner === "MD5") return "md5";
     return inner.toLowerCase();
   }
-  return u.toLowerCase().replace(/^hmac/, "");
+  const stripped = u.toLowerCase().replace(/^hmac[-_]?/, "");
+  if (stripped === "md5") return "md5";
+  if (/^sha\d+$/.test(stripped)) return stripped;
+  return stripped;
 }
 
 /** Legado java.encodeURI(str) / java.encodeURI(str, charset) */
@@ -82,6 +90,85 @@ export function desEncodeToBase64String(
     key,
     iv,
   ).encryptBase64(String(data ?? ""));
+}
+
+/** 明文加密：强制 UTF-8 字节，避免 toBuffer 把「像 Base64 的明文」误当密文解码 */
+function encryptPlainUtf8Base64(
+  transformation: string,
+  key: unknown,
+  iv: unknown,
+  data: unknown,
+): string {
+  return createSymmetricCrypto(transformation, key, iv).encryptBase64(
+    Buffer.from(String(data ?? ""), "utf8"),
+  );
+}
+
+function desedeTransformation(mode: unknown, padding: unknown): string {
+  return `DESede/${String(mode ?? "CBC")}/${String(padding ?? "PKCS5Padding")}`;
+}
+
+/**
+ * Legado java.tripleDESEncodeBase64Str(data, key, mode, padding, iv)
+ * → createSymmetricCrypto("DESede/${mode}/${padding}", key, iv).encryptBase64(data)
+ */
+export function tripleDESEncodeBase64Str(
+  data: unknown,
+  key: unknown,
+  mode: unknown,
+  padding: unknown,
+  iv: unknown,
+): string {
+  return encryptPlainUtf8Base64(desedeTransformation(mode, padding), key, iv, data);
+}
+
+/**
+ * Legado java.tripleDESEncodeArgsBase64Str — key 按 Base64 解码；
+ * iv 按 UTF-8 字节（对齐官方实现：`iv.encodeToByteArray()`，非 Base64）。
+ */
+export function tripleDESEncodeArgsBase64Str(
+  data: unknown,
+  key: unknown,
+  mode: unknown,
+  padding: unknown,
+  iv: unknown,
+): string {
+  return encryptPlainUtf8Base64(
+    desedeTransformation(mode, padding),
+    Buffer.from(String(key ?? ""), "base64"),
+    Buffer.from(String(iv ?? ""), "utf8"),
+    data,
+  );
+}
+
+/** Legado java.tripleDESDecodeStr(data, key, mode, padding, iv) */
+export function tripleDESDecodeStr(
+  data: unknown,
+  key: unknown,
+  mode: unknown,
+  padding: unknown,
+  iv: unknown,
+): string {
+  return createSymmetricCrypto(
+    desedeTransformation(mode, padding),
+    key,
+    iv,
+  ).decryptStr(data);
+}
+
+/** Legado java.tripleDESDecodeArgsBase64Str — 同 EncodeArgs：key Base64，iv UTF-8 */
+export function tripleDESDecodeArgsBase64Str(
+  data: unknown,
+  key: unknown,
+  mode: unknown,
+  padding: unknown,
+  iv: unknown,
+): string {
+  return createSymmetricCrypto(
+    desedeTransformation(mode, padding),
+    Buffer.from(String(key ?? ""), "base64"),
+    Buffer.from(String(iv ?? ""), "utf8"),
+  ).decryptStr(data);
 }
 
 /** Legado java.t2s / java.s2t */

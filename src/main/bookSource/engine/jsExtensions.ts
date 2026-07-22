@@ -22,8 +22,8 @@ import {
   cookieStringToMap,
   mapToCookieString,
 } from "./cookieManager";
-import { ajaxAllStrResponses, fetchStrResponse, normalizeUrlFetchOptions, splitUrlFetchOptions } from "./analyzeUrl";
-import { getWebViewUserAgent, getAndroidId } from "./bookSourceUserAgent";
+import { ajaxAllStrResponses, fetchStrResponse, splitUrlFetchOptions, AnalyzeUrl } from "./analyzeUrl";
+import { getWebViewUserAgent, getAndroidId, DEFAULT_BOOK_SOURCE_USER_AGENT } from "./bookSourceUserAgent";
 import { appendBookSourceErrorLog } from "./bookSourceErrorLog";
 import { getVerificationResult, isVerificationCancelled, getVerificationCodeResult } from "./sourceVerification";
 import { toLegadoStrResponse, toLegadoConnectionResponse, toLegadoJsoupResponse } from "./legadoStrResponse";
@@ -45,11 +45,16 @@ import {
   legadoT2s,
   timeFormatUtc,
   timeFormat,
+  tripleDESDecodeArgsBase64Str,
+  tripleDESDecodeStr,
+  tripleDESEncodeArgsBase64Str,
+  tripleDESEncodeBase64Str,
 } from "./legadoJavaApi";
 import { runBackstageWebView } from "./backstageWebView";
 import { cacheFile, importScript, readTxtFile } from "./scriptImport";
 import { updateConcurrentRate } from "./concurrentRateLimiter";
 import { toNumChapter } from "./legadoStringUtils";
+import { coerceJavaString } from "./legadoJavaShims";
 import { emitBookSourceToast } from "./bookSourceToast";
 
 /** 对齐 Legado JsEncodeUtils.digestHex / Hutool DigestUtil.digester */
@@ -181,11 +186,6 @@ function mergeLoginInfo(
   return { ...persisted, ...override };
 }
 
-/** 对齐 Legado BaseSource.getLoginInfoMap：无有效字段时返回 null */
-function hasNonEmptyLoginField(info: Record<string, string>): boolean {
-  return Object.values(info).some((v) => v != null && String(v).trim() !== "");
-}
-
 /** Legado Map 风格：result.get / source.getLoginInfoMap().get */
 export function wrapLegadoMapLike<T extends Record<string, string>>(
   data: T,
@@ -232,15 +232,10 @@ export function createJsExtensionHost(
     loginDataOverride,
   );
 
-  const loginInfoMap = () => {
-    if (!hasNonEmptyLoginField(loginInfo)) return null;
-    return {
-      ...loginInfo,
-      get(key: string) {
-        return loginInfo[key] ?? "";
-      },
-    };
-  };
+  // 对齐 Legado-E BaseSource.getLoginInfoMap：永不返回 null（无登录信息返回空 Map）。
+  // 部分书源正文规则写 `let novel = source.getLoginInfoMap(); novel.id = …`，
+  // 返回 null 会直接 TypeError（Legado 无信息时也是空 Map，loginUi 默认值播种此处未实现）。
+  const loginInfoMap = () => wrapLegadoMapLike({ ...loginInfo });
 
   const host: JsExtensionHost = {
     source,
@@ -264,6 +259,12 @@ export function createJsExtensionHost(
     loginUrl: source.loginUrl ?? "",
     loginCheckJs: source.loginCheckJs ?? "",
     bookSourceComment: source.bookSourceComment ?? "",
+    /** 对齐 Legado BaseSource.getSource()：返回书源自身（部分书源 eval 注释等） */
+    getSource() {
+      return host.sourceWrapper;
+    },
+    getTag: () => source.bookSourceName,
+    toString: () => source.bookSourceName || source.bookSourceUrl,
     getLoginInfoMap: loginInfoMap,
     getLoginHeaderMap: () => {
       const map = parseLoginHeaderMap(getLoginHeader(source.bookSourceUrl));
@@ -271,6 +272,26 @@ export function createJsExtensionHost(
       return wrapLegadoMapLike(map);
     },
     getLoginInfo: () => loginInfo,
+    // Legado BaseSource.putLoginInfo(info: String)：整串 JSON 覆盖保存，返回是否成功
+    putLoginInfo: (info: unknown) => {
+      try {
+        const parsed = JSON.parse(String(info ?? "")) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          out[k] = String(v ?? "");
+        }
+        setLoginInfo(source.bookSourceUrl, out);
+        Object.assign(loginInfo, out);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    removeLoginInfo: () => {
+      setLoginInfo(source.bookSourceUrl, {});
+      for (const k of Object.keys(loginInfo)) delete loginInfo[k];
+    },
     get: (key: string) =>
       getCacheValue(source.bookSourceUrl, sourceVariableCacheKey(source.bookSourceUrl, key)) ??
       "",
@@ -364,14 +385,14 @@ export function createJsExtensionHost(
       legadoHttpConnect(host, String(url ?? ""), header),
     post: (url: unknown, body: unknown, header?: unknown) =>
       legadoHttpPost(host, String(url ?? ""), body, header),
-    log: (msg: unknown) => host.log(String(msg)),
+    log: (msg: unknown) => host.log(coerceJavaString(msg)),
     toast: (msg: unknown) => {
-      const text = String(msg ?? "");
+      const text = coerceJavaString(msg ?? "");
       host.log(`[toast] ${text}`);
       emitBookSourceToast(text, false);
     },
     longToast: (msg: unknown) => {
-      const text = String(msg ?? "");
+      const text = coerceJavaString(msg ?? "");
       host.log(`[toast] ${text}`);
       emitBookSourceToast(text, true);
     },
@@ -386,6 +407,14 @@ export function createJsExtensionHost(
         throw new Error(`hexDecodeToString: invalid hex input (${h.slice(0, 24)})`);
       }
       return Buffer.from(h, "hex").toString("utf8");
+    },
+    hexDecodeToByteArray: (hex: unknown) => {
+      const h = String(hex ?? "").trim().replace(/\s+/g, "");
+      if (!h) return [];
+      if (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2 !== 0) {
+        throw new Error(`hexDecodeToByteArray: invalid hex input (${h.slice(0, 24)})`);
+      }
+      return Array.from(Buffer.from(h, "hex"));
     },
     md5Encode: (s: unknown) =>
       createHash("md5").update(String(s)).digest("hex"),
@@ -419,12 +448,21 @@ export function createJsExtensionHost(
     encodeURI: (str: unknown, charset?: unknown) =>
       encodeLegadoUri(str, charset),
     desEncodeToBase64String,
+    tripleDESEncodeBase64Str,
+    tripleDESEncodeArgsBase64Str,
+    tripleDESDecodeStr,
+    tripleDESDecodeArgsBase64Str,
     t2s: (text: unknown) => legadoT2s(text),
     s2t: (text: unknown) => legadoS2t(text),
     randomUUID: () => legadoRandomUUID(),
     timeFormatUTC: (time: unknown, format: unknown, offsetHours: unknown) =>
       timeFormatUtc(time, format, offsetHours),
-    getUserAgent: () => getWebViewUserAgent(),
+    /**
+     * Legado AnalyzeUrl.getUserAgent：请求头 UA / AppConfig.userAgent。
+     * 须与 getWebViewUA（WebView/Chromium 默认 UA）区分——
+     * 部分书源用 `java.getUserAgent() === java.getWebViewUA()` 检测「源阅」平台。
+     */
+    getUserAgent: () => DEFAULT_BOOK_SOURCE_USER_AGENT,
     /**
      * 洛雅橙分叉 API（官方 Legado 无）。
      * 部分书源用 `typeof java.readBookConfig == "undefined"` 做客户端校验；
@@ -440,7 +478,12 @@ export function createJsExtensionHost(
     getThemeConfigMap: () => ({}),
     getString: (_rule: string, content?: string) => content ?? "",
     getCookie: (domain: string) => {
-      const d = getDomainFromUrl(domain.includes(".") ? `https://${domain}` : domain);
+      // 可能传完整 URL（如 "https://www.example.com/"），勿重复拼协议，否则 hostname 解析成 "https"
+      const d = getDomainFromUrl(
+        domain.includes("://") || !domain.includes(".")
+          ? domain
+          : `https://${domain}`,
+      );
       return cookieHeaderForUrl(`https://${d}/`);
     },
     timeFormat: (ts: unknown) => timeFormat(ts),
@@ -458,12 +501,25 @@ export function createJsExtensionHost(
       title: string,
       refetchAfterSuccess = false,
     ) => {
-      const body = await getVerificationResult(source.bookSourceUrl, url, title, {
-        refetchAfterSuccess: refetchAfterSuccess === true,
-        source,
-        host,
-      });
-      return toLegadoStrResponse({ url, body, headers: {} });
+      try {
+        const body = await getVerificationResult(source.bookSourceUrl, url, title, {
+          refetchAfterSuccess: refetchAfterSuccess === true,
+          source,
+          host,
+        });
+        return toLegadoStrResponse({ url, body, headers: {} });
+      } catch (e) {
+        // 用户取消 / 窗口打开失败：返回非 200，让书源 login JS 走失败分支。
+        // 若直接把 reject 抛进 vm 沙箱，Node 有时不把 vm 内 await 算作 rejection 已处理，
+        // 会额外打出 unhandledRejection，且外层 instanceof 检测也可能对不上。
+        if (isVerificationCancelled(e)) {
+          return toLegadoStrResponse(
+            { url, body: "", headers: {} },
+            { statusCode: 0, message: "cancelled" },
+          );
+        }
+        throw e;
+      }
     },
     startBrowser: (url: string, title: string) => {
       void getVerificationResult(source.bookSourceUrl, url, title, {
@@ -696,29 +752,39 @@ async function hostAjaxAll(
 async function hostAjax(host: JsExtensionHost, url: unknown): Promise<string> {
   assertJsEvalAlive();
   let urlStr: string;
-  let options: { headers?: Record<string, string>; method?: string; body?: string } = {};
   if (Array.isArray(url)) {
     urlStr = String(url[0] ?? "");
   } else {
     urlStr = String(url ?? "");
   }
   const split = splitUrlFetchOptions(urlStr);
-  if (split.options.headers && Object.keys(split.options.headers).length > 0) {
-    urlStr = split.urlPart;
-    options = normalizeUrlFetchOptions(split.options);
-  } else if (split.options.method || split.options.body) {
-    urlStr = split.urlPart;
-    options = normalizeUrlFetchOptions(split.options);
-  }
+  const hasOptions = Boolean(
+    (split.options.headers && Object.keys(split.options.headers).length > 0) ||
+      split.options.method ||
+      split.options.body ||
+      split.options.type ||
+      split.options.charset ||
+      split.options.webJs ||
+      split.options.webView,
+  );
   try {
-    const res = await fetchStrResponse(urlStr, {
-      source: host.source,
-      headers: options.headers,
-      method: options.method,
-      body: options.body,
-      host,
-      logs: host.logs,
-    });
+    let res: import("./analyzeUrl").StrResponse;
+    if (hasOptions) {
+      // 走 AnalyzeUrl 完整路径，保证 type/webJs/webView 等选项生效（如 data: URL 的 type=ywc hex 转换）
+      const au = new AnalyzeUrl({
+        mUrl: urlStr,
+        source: host.source,
+        host,
+        logs: host.logs,
+      });
+      res = await au.getStrResponse({ skipRateLimit: true });
+    } else {
+      res = await fetchStrResponse(urlStr, {
+        source: host.source,
+        host,
+        logs: host.logs,
+      });
+    }
     assertJsEvalAlive();
     return res.body;
   } catch (e) {
@@ -727,7 +793,6 @@ async function hostAjax(host: JsExtensionHost, url: unknown): Promise<string> {
       phase: "java.ajax",
       sourceName: host.source.bookSourceName,
       url: urlStr,
-      method: options.method,
     });
     const msg = e instanceof Error ? e.message : String(e);
     return msg;

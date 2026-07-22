@@ -163,7 +163,7 @@ const draftMaxLineHeightMultiple = computed(() =>
           />
         </div>
         <p class="settingsHint">
-          在阅读区底部显示「上一章 / 下一章」快捷跳转。
+          在阅读区底部显示「上一章 / 下一章」快捷跳转；仅一章或无章节时不显示。
         </p>
       </div>
 

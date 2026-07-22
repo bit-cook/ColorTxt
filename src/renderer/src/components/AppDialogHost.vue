@@ -142,9 +142,11 @@ function onLogPointerDown(e: MouseEvent) {
         v-if="appDialogModel.kind === 'prompt' && !appDialogModel.promptMultiline"
         ref="promptInputRef"
         v-model="appDialogModel.promptValue"
-        type="text"
+        :type="appDialogModel.promptInputType"
         class="appDialogPromptInput"
         :placeholder="appDialogModel.promptPlaceholder || undefined"
+        :min="appDialogModel.promptInputType === 'number' ? 1 : undefined"
+        :step="appDialogModel.promptInputType === 'number' ? 1 : undefined"
         autocomplete="off"
         @keydown="onPromptKeydown"
       />

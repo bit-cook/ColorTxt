@@ -13,7 +13,7 @@ import {
 } from "@shared/bookSource/bookModel";
 import { normalizeBookSourceBaseUrl, normalizeHttpUrlPath, resolveAbsoluteUrl } from "@shared/bookSource/url";
 import { wordCountFormat } from "@shared/bookSource/wordCountFormat";
-import { formatLegadoBookAuthor } from "@shared/bookSource/formatBookAuthor";
+import { formatLegadoBookAuthor, formatLegadoBookName } from "@shared/bookSource/formatBookAuthor";
 import {
   splitUrlAndRuleVariables,
   extractUrlFetchOptionsSuffix,
@@ -32,12 +32,12 @@ import {
   formatLegadoChapterContent,
   unescapeLegadoHtmlEntities,
   resolveBookInfoField,
-  expandBookInfoRegexTemplates,
   bookInfoSelectorNeedsCompositeResolver,
   stripLegadoKindLabelNoise,
 } from "./bookInfoRules";
 import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoAsciiWhitespace, loadCheerioHtml } from "./legadoDefaultRule";
 import { AnalyzeRule } from "./analyzeRule";
+import { isJsoupElementLike } from "./legadoJsoupShim";
 import {
   AnalyzeUrl,
   ajaxAllStrResponses,
@@ -50,6 +50,28 @@ import { runLoginCheckJs, awaitLoginForSearchPage, isVerificationCancelled } fro
 import { ensureBookSourceJsLib } from "./sharedJsScope";
 import { appendBookSourceErrorLog } from "./bookSourceErrorLog";
 import { timeFormat } from "./legadoJavaApi";
+import { createBookVariableSync } from "./legadoRuleEntity";
+import { getBookCustomVariable } from "../store/bookSourceStore";
+
+function applyPersistedBookVariable(
+  book: Record<string, unknown>,
+  bookPageUrl: string,
+): void {
+  const persisted = getBookCustomVariable(bookPageUrl);
+  if (persisted) {
+    book.variable = persisted;
+    return;
+  }
+  const raw = book.variable;
+  const isEmptyObj =
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    Object.keys(raw as Record<string, unknown>).length === 0;
+  if (raw == null || raw === "" || isEmptyObj) {
+    book.variable = null;
+  }
+}
 
 /**
  * 对齐 Legado WebBook：getStrResponse 后跑 loginCheckJs（搜索/发现/详情/目录/正文均如此）。
@@ -79,19 +101,163 @@ const OG_NOVEL_KIND_RULES = [
   '[property="og:novel:status"]@content',
 ] as const;
 
+/** HTML 详情页才有 OG；JSON API 勿扫选择器 */
+function contentAllowsOgMetaFallback(content: unknown): boolean {
+  if (content != null && typeof content === "object" && !Array.isArray(content)) {
+    return false;
+  }
+  if (typeof content === "string") {
+    const t = content.trim();
+    if (
+      (t.startsWith("{") && t.endsWith("}")) ||
+      (t.startsWith("[") && t.endsWith("]"))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function resolveOgMetaContent(
+  ar: AnalyzeRule,
+  property: string,
+  mContent?: unknown,
+): Promise<string> {
+  const content = mContent ?? ar.currentContent;
+  if (!contentAllowsOgMetaFallback(content)) return "";
+  const list = await ar.getStringList(`[property="${property}"]@content`, mContent);
+  for (const s of list) {
+    const t = String(s ?? "").trim();
+    if (t && !looksLikeUnresolvedKindRule(t)) return t;
+  }
+  return "";
+}
+
 async function resolveOgNovelKindParts(
   ar: AnalyzeRule,
   mContent?: unknown,
 ): Promise<string[]> {
+  const content = mContent ?? ar.currentContent;
+  if (!contentAllowsOgMetaFallback(content)) return [];
   const out: string[] = [];
   for (const rule of OG_NOVEL_KIND_RULES) {
     const list = await ar.getStringList(rule, mContent);
     for (const s of list) {
       const t = stripLegadoKindLabelNoise(s);
-      if (t) out.push(t);
+      if (t && !looksLikeUnresolvedKindRule(t)) out.push(t);
     }
   }
   return out;
+}
+
+/** 未解析的选择器/JsonPath 残留，不可展示为分类 tag */
+function looksLikeUnresolvedKindRule(tag: string): boolean {
+  const t = tag.trim();
+  if (!t) return false;
+  if (/^\$\.?\.?[\w[*]/.test(t) || /\{\{/.test(t)) return true;
+  if (/\[property\s*=/i.test(t) || /@content\b/i.test(t)) return true;
+  if (/^\[.+\]@/.test(t) || /^@@?css:/i.test(t) || /^@xpath:/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/** 发现/搜索列表 kind：过滤评分、日期等 HTML 综合信息噪声（保留「都市」等分类） */
+function shouldKeepExploreKindTag(tag: string): boolean {
+  const t = tag.trim();
+  if (!t) return false;
+  if (/^\d+(\.\d+)?分$/.test(t)) return false;
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(t)) return false;
+  return true;
+}
+
+function isJsonExploreListItem(content: unknown): content is Record<string, unknown> {
+  return isPlainRuleObject(content) && !isJsoupElementLike(content);
+}
+
+function isLikelyExploreAuthorName(author: string, bookName: string): boolean {
+  const t = author.trim();
+  if (!t) return false;
+  if (bookName && t.includes(bookName)) return false;
+  if (
+    t.includes("综合信息") ||
+    t.includes("简介") ||
+    t.includes("作 者") ||
+    t.includes("作者：")
+  ) {
+    return false;
+  }
+  if (/[\/\r\n]/.test(t)) return false;
+  if (t.length > 24) return false;
+  return true;
+}
+
+function cleanupExploreAuthorCandidate(raw: string, bookName: string): string {
+  let t = formatLegadoBookAuthor(raw).trim();
+  if (!t) return "";
+  const direct = t.match(/作\s*者[:：]\s*([^\s/|｜]+)/);
+  if (direct?.[1]) return direct[1].trim();
+  if (bookName && t.includes(bookName)) {
+    t = t.replace(bookName, " ").trim();
+  }
+  if (/[\/|｜]/.test(t)) {
+    const left = t.split(/[\/|｜]/)[0]?.trim() ?? "";
+    if (left) {
+      const tokens = left.split(/\s+/).filter(Boolean);
+      const last = tokens[tokens.length - 1] ?? "";
+      if (last) return last.trim();
+    }
+  }
+  if (t.includes("综合信息")) {
+    t = t.replace(/综合信息[\s\S]*$/u, "").trim();
+  }
+  const m = t.match(/([^\s/|｜]{1,24})$/u);
+  return m?.[1]?.trim() ?? "";
+}
+
+async function resolveExploreListAuthor(
+  ar: AnalyzeRule,
+  rule: string | undefined | null,
+  el: unknown,
+  bookName: string,
+): Promise<string> {
+  const primary = rule?.trim() ?? "";
+  let author = "";
+  if (primary) {
+    author = cleanupExploreAuthorCandidate(await ar.getString(primary, el), bookName);
+    if (isLikelyExploreAuthorName(author, bookName)) return author;
+  }
+
+  const fallbacks = isJsonExploreListItem(el)
+    ? ["$.authorName", "$.AuthorName", "$.data.authorName", "authorName", "AuthorName"]
+    : [
+        "a[id][target]@text",
+        "tag.li.1@tag.a.1@text",
+        "tag.li.1@text##.+综合信息：\\s*([^\\/]+).*##$1",
+      ];
+  for (const fb of fallbacks) {
+    if (fb === primary) continue;
+    author = cleanupExploreAuthorCandidate(await ar.getString(fb, el), bookName);
+    if (isLikelyExploreAuthorName(author, bookName)) return author;
+  }
+  return "";
+}
+
+/** API 列表项 kind 仅含 sysTags 时补上 expand.typeName（对齐 Legado 主分类 tag） */
+function prependJsonExploreTypeName(
+  parts: string[],
+  content: unknown,
+): string[] {
+  if (!isJsonExploreListItem(content)) return parts;
+  const expand = content.expand;
+  if (expand == null || typeof expand !== "object" || Array.isArray(expand)) {
+    return parts;
+  }
+  const typeName = String((expand as Record<string, unknown>).typeName ?? "").trim();
+  if (!typeName) return parts;
+  if (!parts.length) return [typeName];
+  if (parts.includes(typeName)) return parts;
+  return [typeName, ...parts];
 }
 
 /** ruleBookInfo / ruleSearch.kind：含 {{java.*}}、{{$..path}} 等复合表达式时走详情专用解析 */
@@ -106,24 +272,23 @@ async function resolveBookInfoKindParts(
     ar.setContent(mContent, ar.currentBaseUrl);
   }
   const finalizeKindParts = (parts: string[]) =>
-    parts.map(stripLegadoKindLabelNoise).filter(Boolean);
+    prependJsonExploreTypeName(
+      parts
+        .map(stripLegadoKindLabelNoise)
+        .filter((t) => t && !looksLikeUnresolvedKindRule(t) && shouldKeepExploreKindTag(t)),
+      mContent ?? saved,
+    );
   try {
     if (!trimmed) {
       return finalizeKindParts(await resolveOgNovelKindParts(ar, mContent ?? saved));
     }
-    const { baseRule, regex } = splitRuleRegexSuffix(trimmed);
+    const { baseRule } = splitRuleRegexSuffix(trimmed);
 
     let parts: string[] = [];
     if (!bookInfoSelectorNeedsCompositeResolver(baseRule)) {
-      const list = await ar.getStringList(baseRule, mContent ?? saved);
-      if (!regex?.pattern) {
-        parts = finalizeKindParts(list);
-      } else {
-        const expanded = expandBookInfoRegexTemplates(ar, regex);
-        parts = finalizeKindParts(
-          list.map((s) => applyRuleRegex(s.trim(), expanded).trim()),
-        );
-      }
+      // 直接按完整规则解析：避免 `&& ... ##` 在 AnalyzeRule 已处理后再次套 regex
+      // 导致分类 tag（如「都市」）被二次替换清空。
+      parts = finalizeKindParts(await ar.getStringList(trimmed, mContent ?? saved));
     } else {
       const useBookInfoResolver =
         (containsCompositeEvalRule(trimmed) &&
@@ -154,7 +319,7 @@ function warnSuspiciousKindTags(
 ): void {
   for (const tag of kindParts) {
     const t = tag.trim();
-    if (/^\$\.?\.?[\w[*]/.test(t) || /\{\{/.test(t)) {
+    if (looksLikeUnresolvedKindRule(t)) {
       logs.push(`[${sourceName}] 分类标签未正确解析: ${t}`);
     }
   }
@@ -365,11 +530,12 @@ export async function exploreBook(
   });
   let res: StrResponse;
   try {
+    // 对齐 Legado exploreBookAwait：仅 loginCheckJs；无检查脚本时不弹登录启发式
+    // （否则站点导航 `class="login-info"` 等会误判登录墙，如部分站点发现分类）
     if (source.loginCheckJs?.trim()) {
       res = await fetchWithLoginCheck(analyzeUrl, source, "", logs);
     } else {
       res = await analyzeUrl.getStrResponse();
-      res = await awaitLoginForSearchPage(source, res, analyzeUrl, logs);
     }
   } catch (e) {
     if (isVerificationCancelled(e)) {
@@ -443,7 +609,8 @@ async function analyzeBookList(
     .setRuleData({ variable: ruleVariables });
   if (source.bookUrlPattern?.trim()) {
     try {
-      if (new RegExp(source.bookUrlPattern).test(baseUrl)) {
+      // 对齐 Legado BookList：仅搜索走 bookUrlPattern→详情；发现分类 URL 常与详情同形，勿误判
+      if (mode === "search" && new RegExp(source.bookUrlPattern).test(baseUrl)) {
         logs.push("链接为详情页，按 ruleBookInfo 解析");
         const item = await parseInfoSearchItem(
           source,
@@ -543,13 +710,14 @@ async function parseInfoSearchItem(
     if (initEl != null) ar.setContent(initEl, baseUrl);
   }
   const nameRaw = (await resolveBookInfoField(ar, rule.name)).trim();
-  if (!nameRaw || isLikelyBadDetailName(nameRaw)) return null;
+  const name = formatLegadoBookName(nameRaw);
+  if (!name || isLikelyBadDetailName(name)) return null;
   const authorRaw = (await resolveBookInfoField(ar, rule.author)).trim();
   const author =
     authorRaw && !isLikelyBadDetailName(authorRaw)
       ? formatLegadoBookAuthor(authorRaw) || "未知"
       : "未知";
-  const name = stripEmbeddedAuthorFromDetailName(nameRaw, author);
+  const displayName = stripEmbeddedAuthorFromDetailName(name, author);
   // Legado: if (isRedirect) baseUrl else NetworkUtils.getAbsoluteURL(analyzeUrl.url, analyzeUrl.ruleUrl)
   const bookUrl = isRedirect
     ? baseUrl
@@ -564,11 +732,15 @@ async function parseInfoSearchItem(
   const introRaw = await resolveBookInfoField(ar, rule.intro);
   const intro = formatLegadoBookIntro(introRaw) || undefined;
   const rawCover = await resolveBookInfoField(ar, rule.coverUrl);
+  const coverFetchRaw =
+    rawCover.trim() ||
+    (await resolveOgMetaContent(ar, "og:image")) ||
+    "";
   const coverSourceUrl =
-    resolveCoverSourceUrl(source, rawCover, baseUrl, logs) ?? undefined;
+    resolveCoverSourceUrl(source, coverFetchRaw, baseUrl, logs) ?? undefined;
   const coverUrl =
     (coverSourceUrl
-      ? await resolveBookCoverDisplayUrl(source, rawCover, baseUrl, logs)
+      ? await resolveBookCoverDisplayUrl(source, coverFetchRaw, baseUrl, logs)
       : undefined) ?? undefined;
   const lastChapter =
     formatLegadoLastChapterDisplay(await resolveBookInfoField(ar, rule.lastChapter)) ||
@@ -577,7 +749,7 @@ async function parseInfoSearchItem(
   // 对齐 Legado getInfoItem → BookInfo：tocUrl 用 res.url 作 redirectUrl（可含重定向后的书籍页）
   ar.setRedirectUrl(baseUrl);
   ar.setBook({
-    name,
+    name: displayName,
     author,
     bookUrl,
     tocUrl: "",
@@ -607,7 +779,7 @@ async function parseInfoSearchItem(
   }
   return {
     id: `${source.bookSourceUrl}::${bookUrl}::info`,
-    name,
+    name: displayName,
     author,
     kind,
     wordCount,
@@ -646,7 +818,7 @@ async function parseSearchItem(
     const name = await ar.getString(rule.name, el);
     if (!name) return null;
     const author =
-      formatLegadoBookAuthor(await ar.getString(rule.author, el)) || "未知";
+      (await resolveExploreListAuthor(ar, rule.author, el, name)) || "未知";
 
     const kindParts = await resolveBookInfoKindParts(ar, rule.kind, el);
     warnSuspiciousKindTags(kindParts, logs, source.bookSourceName);
@@ -755,6 +927,67 @@ function extractJsonBookIdFromUrlOption(url: string): string {
 }
 
 /**
+ * 部分书源：`Params="bid="+hash` 再拼进 `…&bid="+Params`，query 实为 `bid=bid=hash`。
+ * 裸捕获 `bid=([^&]+)` 会得到 `bid=hash`，再拼章节 URL 变成 `bid=bid=hash` → 接口「无此书」。
+ */
+function normalizeStoredBidValue(raw: string): string {
+  let s = String(raw ?? "").trim();
+  if (!s) return "";
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    /* keep */
+  }
+  while (/^(?:bid|id|bookid|book_id)=/i.test(s)) {
+    s = s.replace(/^(?:bid|id|bookid|book_id)=/i, "").trim();
+  }
+  return s;
+}
+
+/** 从详情/目录 URL 推断 bid；已有 java.put 则不覆盖（仅规范化错误前缀）。 */
+function ensureBidVariable(
+  ar: AnalyzeRule,
+  variables: Record<string, string>,
+  book?: { variable?: unknown } | null,
+  ...urls: string[]
+): void {
+  const syncBid = (bid: string) => {
+    ar.putStored("bid", bid);
+    variables.bid = bid;
+    if (!book) return;
+    const raw = book.variable;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      (raw as Record<string, string>).bid = bid;
+      return;
+    }
+    if (raw == null || raw === "") {
+      book.variable = { bid };
+    }
+  };
+
+  const existingRaw =
+    ar.lookupStored("bid")?.trim() || String(variables.bid ?? "").trim();
+  if (existingRaw) {
+    const normalized = normalizeStoredBidValue(existingRaw);
+    if (normalized) syncBid(normalized);
+    return;
+  }
+  for (const raw of urls) {
+    const url = String(raw || "").trim();
+    if (!url) continue;
+    const pathId = url.match(/\/chapters\/([^/?#,]+)/i)?.[1];
+    const queryId =
+      url.match(/[?&]book_id=([^&]+)/i)?.[1] ??
+      url.match(/[?&]bookId=([^&]+)/i)?.[1] ??
+      url.match(/[?&](?:id|bid|bookid)=([^&]+)/i)?.[1];
+    const bid = normalizeStoredBidValue(pathId || queryId || "");
+    if (!bid) continue;
+    syncBid(bid);
+    return;
+  }
+}
+
+/**
  * 仅当 book.kind 为空时从 tocUrl/bookUrl 兜底（正常路径靠详情/列表已干净的 kind）。
  */
 export function resolveBookKindForChapterRules(
@@ -829,6 +1062,31 @@ export function repairChapterUrlBookId(chapterUrl: string, bookId: string): stri
   return `${urlPart},${JSON.stringify({ ...opts, body: nextBody })}`;
 }
 
+/** 修正已缓存章节 URL 中的 `bid=bid=hash`（query 与 form body） */
+export function repairDuplicateBidInChapterUrl(chapterUrl: string): string {
+  const stripDupBid = (s: string) =>
+    s.replace(/([?&]bid=)(?:bid=)+/gi, "$1").replace(
+      /(^|&)bid=(?:bid=)+/gi,
+      "$1bid=",
+    );
+  const comma = chapterUrl.search(/,\s*\{/);
+  if (comma < 0) return stripDupBid(chapterUrl);
+  const urlPart = stripDupBid(chapterUrl.slice(0, comma));
+  const optRaw = chapterUrl.slice(comma + 1).replace(/^\s*/, "");
+  try {
+    const opts = JSON.parse(optRaw) as Record<string, unknown>;
+    if (typeof opts.body === "string" && /bid=bid=/i.test(opts.body)) {
+      opts.body = stripDupBid(opts.body);
+      return `${urlPart},${JSON.stringify(opts)}`;
+    }
+  } catch {
+    /* keep */
+  }
+  return urlPart === chapterUrl.slice(0, comma)
+    ? chapterUrl
+    : `${urlPart},${optRaw}`;
+}
+
 function syncLegadoHeadersForRules(
   ar: AnalyzeRule,
   host: ReturnType<typeof createJsExtensionHost>,
@@ -897,6 +1155,16 @@ function isLikelyBadDetailName(parsed: string): boolean {
   return /404|not\s*found|403|500|502|503|bad gateway|error|禁止|拒绝|异常/.test(p);
 }
 
+/** 对齐 Legado：已有搜索书名/作者时，未配 canReName 则详情不覆盖 */
+function bookInfoHasName(name: string | undefined | null): boolean {
+  return Boolean(name?.trim());
+}
+
+function bookInfoHasAuthor(author: string | undefined | null): boolean {
+  const a = author?.trim() ?? "";
+  return Boolean(a) && a !== "未知";
+}
+
 function bookInfoLooksEmpty(body: string): boolean {
   const t = body.trim();
   if (!t.startsWith("{")) return !t;
@@ -922,7 +1190,7 @@ function bookInfoInitFailed(body: string, initRule?: string | null): boolean {
   if (/^<js>/i.test(init) || /^@js:/i.test(init)) {
     // data:;base64 + UrlOption.type 会先得到 hex 正文，交由 init JS hexDecode，不能当失败
     if (/^[0-9a-fA-F]+$/.test(t) && t.length % 2 === 0) return false;
-    // SPA hash 书链（如 uc.cn/#!/…）请求不到片段，只会拿到站点 HTML；
+    // SPA hash 书链（如 example.com/#!/…）请求不到片段，只会拿到站点 HTML；
     // init 常只用 java.get('bid') 拼 tocUrl，不依赖正文 → 勿当失败
     if (!t.startsWith("{") && !t.startsWith("[")) {
       if (!t) return true;
@@ -971,25 +1239,39 @@ function tryParseJsonBookInfoContent(body: string): unknown {
   }
 }
 
-/** ruleBookInfo.init 可能返回 JSON 子对象（如 data.book），不可 String() 成 [object Object] */
+/**
+ * ruleBookInfo.init 可能返回 JSON 子对象（如 data.book），不可 String() 成 [object Object]。
+ * 对齐 Legado BookInfo：先 `setContent(body)`（字符串），再跑 init——部分书源 jsLib
+ * 的 `isHtmlString(result)` / `isJsonString(result)` 假定 result 是字符串，
+ * 若预解析成对象会抛 `str.startsWith is not a function`，init 整段失败。
+ */
 async function applyBookInfoInitContent(
   ar: AnalyzeRule,
   initRule: string | undefined | null,
   body: string,
   base: string,
 ): Promise<void> {
-  const parsed = tryParseJsonBookInfoContent(body);
-  ar.setContent(parsed, base);
-
   const init = initRule?.trim() ?? "";
-  if (!init) return;
-
-  let initEl = await ar.getElement(init, parsed);
-  if ((initEl == null || initEl === "") && isPlainRuleObject(parsed)) {
-    const nested = readJsonNestedValue(parsed, init);
-    if (nested != null && nested !== "") initEl = nested;
+  if (!init) {
+    ar.setContent(tryParseJsonBookInfoContent(body), base);
+    return;
   }
-  if (initEl == null || initEl === "") return;
+
+  // Legado：init 入参为原始响应字符串
+  ar.setContent(body, base);
+  let initEl = await ar.getElement(init, body);
+  if (initEl == null || initEl === "") {
+    const parsed = tryParseJsonBookInfoContent(body);
+    if (isPlainRuleObject(parsed)) {
+      const nested = readJsonNestedValue(parsed, init);
+      if (nested != null && nested !== "") initEl = nested;
+    }
+  }
+  if (initEl == null || initEl === "") {
+    // init 失败：仍用解析后的 JSON 供后续字段规则（对齐「正文仍是响应体」）
+    ar.setContent(tryParseJsonBookInfoContent(body), base);
+    return;
+  }
 
   if (typeof initEl === "object") {
     ar.setContent(initEl, base);
@@ -1015,6 +1297,8 @@ export async function getBookInfo(
   author: string,
   logs: string[] = [],
   seed: BookInfoSeed = {},
+  /** 对齐 Legado-E WebBook.getBookInfoAwait；与 ruleBookInfo.canReName 同时为真才允许覆盖已有书名/作者 */
+  canReName = true,
 ): Promise<Book> {
   const host = createJsExtensionHost(source, logs);
   runJsLib(source, host);
@@ -1102,14 +1386,23 @@ export async function getBookInfo(
   }
   ar.setRedirectUrl(redirectUrl);
   await applyBookInfoInitContent(ar, rule.init, body, bookInfoBaseUrl);
-  const detailNameRaw = (await resolveBookInfoField(ar, rule.name)).trim();
-  const detailAuthorRaw = (await resolveBookInfoField(ar, rule.author)).trim();
-  const detailAuthor = formatLegadoBookAuthor(
-    isLikelyBadDetailName(detailAuthorRaw) || !detailAuthorRaw
-      ? author
-      : detailAuthorRaw,
-  ) || "未知";
-  let detailName = isLikelyBadDetailName(detailNameRaw) ? name : detailNameRaw;
+  // Legado-E：mCanReName = canReName && !infoRule.canReName.isNullOrBlank()
+  const mCanReName = canReName && Boolean(rule.canReName?.trim());
+  const parsedName = formatLegadoBookName(
+    (await resolveBookInfoField(ar, rule.name)).trim(),
+  );
+  const parsedAuthor = formatLegadoBookAuthor(
+    (await resolveBookInfoField(ar, rule.author)).trim(),
+  );
+  let detailName = book.name?.trim() || name?.trim() || "";
+  if (parsedName && (mCanReName || !bookInfoHasName(detailName))) {
+    detailName = parsedName;
+  }
+  let detailAuthor = book.author?.trim() || author?.trim() || "";
+  if (parsedAuthor && (mCanReName || !bookInfoHasAuthor(detailAuthor))) {
+    detailAuthor = parsedAuthor;
+  }
+  detailAuthor = formatLegadoBookAuthor(detailAuthor) || "未知";
   detailName = stripEmbeddedAuthorFromDetailName(detailName, detailAuthor);
   const kindParts = await resolveBookInfoKindParts(ar, rule.kind);
   const parsedKind = kindParts.length ? kindParts.join(",") : "";
@@ -1129,9 +1422,13 @@ export async function getBookInfo(
   let intro = parsedIntro || listIntro || book.intro;
   intro = ensureLegadoIntroLeadingTitle(intro, detailName);
   const rawCover = await resolveBookInfoField(ar, rule.coverUrl);
-  const coverFetchRaw = rawCover.trim() || book.coverUrl || "";
+  const ogCover = rawCover.trim()
+    ? ""
+    : await resolveOgMetaContent(ar, "og:image");
+  const coverFetchRaw = rawCover.trim() || ogCover || book.coverUrl || "";
   const coverSourceUrl =
     resolveCoverSourceUrl(source, rawCover, redirectUrl, logs) ||
+    resolveCoverSourceUrl(source, ogCover, redirectUrl, logs) ||
     resolveCoverSourceUrl(source, book.coverUrl, redirectUrl, logs) ||
     undefined;
   const resolvedCover =
@@ -1250,13 +1547,7 @@ export async function getBookInfo(
     // 目录与详情同页（含搜索响应即详情）：缓存 HTML 供 getChapterList
     tocHtml = body;
   }
-  const bidMatch = bookUrl.match(/\/chapters\/([^/?#,]+)/);
-  const idFromQuery =
-    resolvedBookUrl.match(/[?&](?:id|bid|book_id|bookid)=([^&]+)/i)?.[1];
-  const bid = bidMatch?.[1] ?? idFromQuery;
-  if (bid) {
-    ar.putStored("bid", bid);
-  }
+  ensureBidVariable(ar, variables, book, resolvedBookUrl, bookUrl, bookPageUrl);
   const mergedVariable = {
     ...book.variable,
     ...ar.getStoredVariables(),
@@ -1492,7 +1783,7 @@ function filterContentNextUrls(
   return kept;
 }
 
-function isSameBookPageUrl(a: string, b: string): boolean {
+export function isSameBookPageUrl(a: string, b: string): boolean {
   const pa = (a.split(",")[0] ?? a).trim();
   const pb = (b.split(",")[0] ?? b).trim();
   if (!pa || !pb) return false;
@@ -1548,36 +1839,24 @@ async function applyContentReplaceRegex(
   return ar.getString(replaceRegex, normalized);
 }
 
-/** 正文 replaceRegex 行内 {{title}} 等占位 */
+/** 正文 replaceRegex 行内 {{title}} / {{chapter.title}} 等占位 */
 function expandContentRegexPlaceholders(ar: AnalyzeRule, text: string): string {
   return text
-    .replace(/\{\{([\s\S]*?)\}\}/g, (_, expr: string) => {
-      const key = String(expr).trim();
-      if (key === "book.name") return ar.getStored("bookName");
-      return ar.getStored(key);
-    })
+    .replace(/\{\{([\s\S]*?)\}\}/g, (_, expr: string) =>
+      ar.expandLegadoTemplateKey(String(expr)),
+    )
     .replace(/@get:\{([^}]+)\}/gi, (_, key: string) =>
       ar.getStored(String(key).trim()),
     );
 }
 
-/** 正文 replaceRegex：对齐 Legado，`.` 默认不匹配换行 */
+/** 正文 replaceRegex：对齐 Legado，`.` 默认不匹配换行；显式 `(?s)` 等走 compileLegadoRegex */
 function applyContentRuleRegex(
   value: string,
   regex: { pattern: string; replacement: string; replaceFirst?: boolean },
 ): string {
   if (!regex.pattern) return value;
-  try {
-    if (regex.replaceFirst) {
-      const re = new RegExp(regex.pattern);
-      const m = value.match(re);
-      if (!m?.[0]) return value;
-      return m[0].replace(re, regex.replacement ?? "");
-    }
-    return value.replace(new RegExp(regex.pattern, "g"), regex.replacement ?? "");
-  } catch {
-    return value;
-  }
+  return applyRuleRegex(value, regex);
 }
 
 async function fetchContentPage(
@@ -1598,7 +1877,8 @@ async function fetchContentPage(
   const ar = new AnalyzeRule(source, logs, host)
     .setContent(body, contentBaseUrl)
     .setRedirectUrl(redirectUrl)
-    .setBook({ ...book, variable: { ...variables } })
+    // 勿用 ruleVariables 覆盖 book.variable（Legado 为字符串，部分书源靠 += 累加正文）
+    .setBook({ ...book })
     .setChapter(chapter)
     .setRuleData({ variable: { ...variables } })
     .setNextChapterUrl(nextChapterUrl);
@@ -1644,24 +1924,22 @@ export async function getChapterList(
       tocUrl: fetchTocUrl,
     }),
   );
+  applyPersistedBookVariable(book, bookPageUrl);
   const ar = new AnalyzeRule(source, logs, host)
     .setBook(book)
     .setRuleData({ variable: { ...variables } });
   syncLegadoHeadersForRules(ar, host, resolvedBookUrl, variables);
   syncLegadoHeadersForRules(ar, host, resolvedTocUrl, variables);
   ar.setRuleData({ variable: { ...variables } });
-  const bidMatch = bookPageUrl.match(/\/chapters\/([^/?#,]+)/);
-  const idFromQuery =
-    bookPageUrl.match(/[?&]book_id=([^&]+)/i)?.[1] ??
-    fetchTocUrl.match(/[?&]bookId=([^&]+)/i)?.[1] ??
-    bookPageUrl.match(/[?&](?:id|bid)=([^&]+)/i)?.[1] ??
-    fetchTocUrl.match(/[?&]bid=([^&]+)/i)?.[1];
-  const bid = bidMatch?.[1] ?? idFromQuery;
-  if (bid) {
-    ar.putStored("bid", bid);
-    variables.bid = bid;
-    ar.setRuleData({ variable: { ...variables } });
-  }
+  ensureBidVariable(
+    ar,
+    variables,
+    book,
+    bookPageUrl,
+    fetchTocUrl,
+    resolvedBookUrl,
+  );
+  ar.setRuleData({ variable: { ...variables } });
   if (rule.preUpdateJs?.trim()) {
     // 对齐 Legado WebBook.runPreUpdateJs：AnalyzeRule(book, source, preUpdateJs=true)
     const mergeBookInfo = (detail: Book) => {
@@ -1675,13 +1953,20 @@ export async function getChapterList(
       if (detail.wordCount?.trim()) book.wordCount = detail.wordCount;
       if (detail.lastChapter?.trim()) book.lastChapter = detail.lastChapter;
       if (detail.updateTime?.trim()) book.updateTime = detail.updateTime;
-      const vars =
-        book.variable && typeof book.variable === "object" && !Array.isArray(book.variable)
-          ? (book.variable as Record<string, string>)
-          : {};
-      if (detail.variable) Object.assign(vars, detail.variable);
-      book.variable = vars;
-      Object.assign(variables, vars);
+      if (typeof book.variable === "string") {
+        const after = getBookCustomVariable(bookPageUrl);
+        if (after) book.variable = after;
+      } else {
+        const vars =
+          book.variable &&
+          typeof book.variable === "object" &&
+          !Array.isArray(book.variable)
+            ? (book.variable as Record<string, string>)
+            : {};
+        if (detail.variable) Object.assign(vars, detail.variable);
+        book.variable = vars;
+        Object.assign(variables, vars);
+      }
       ar.setBook(book).setRuleData({ variable: { ...variables } });
     };
     const java = {
@@ -1701,6 +1986,7 @@ export async function getChapterList(
             wordCount: String(book.wordCount || bookInput.wordCount || ""),
             lastChapter: String(book.lastChapter || bookInput.lastChapter || ""),
           },
+          false,
         );
         mergeBookInfo(detail);
       },
@@ -1732,6 +2018,7 @@ export async function getChapterList(
             wordCount: hit.wordCount,
             lastChapter: hit.lastChapter,
           },
+          false,
         );
         mergeBookInfo(detail);
       },
@@ -1744,6 +2031,7 @@ export async function getChapterList(
         baseUrl: source.bookSourceUrl,
         host,
         java,
+        bookVariableSync: createBookVariableSync(bookPageUrl),
       });
     } catch (e) {
       appendBookSourceErrorLog(logs, e, {
@@ -1777,7 +2065,6 @@ export async function getChapterList(
   const bookUrlForTocCmp = String(bookInput.bookUrl || "").trim();
   const tocUrlForTocCmp = String(bookInput.tocUrl || bookInput.bookUrl || "").trim();
   if (tocHtmlCached && bookUrlForTocCmp && bookUrlForTocCmp === tocUrlForTocCmp) {
-    logs.push("使用详情缓存的 tocHtml 解析目录");
     const chapters: BookChapter[] = [];
     const { listRule, reversePrefix } = parseTocListRule(rule.chapterList ?? "");
     const base = tocUrlForTocCmp;
@@ -1799,19 +2086,21 @@ export async function getChapterList(
         ? await arToc.getString(rule.updateTime, el)
         : "";
       if (updateTag && !chapterCtx.tag) chapterCtx.tag = updateTag;
-      const isVolume = isTruthy(await arToc.getString(rule.isVolume, el));
+      const isVolume = await resolveChapterIsVolume(arToc, rule.isVolume, el);
       if (!title) continue;
       if (!url) {
         if (isVolume) url = `${title}${chapters.length}`;
         else url = base;
       }
       if (!url && !isVolume) continue;
+      const tag = String(chapterCtx.tag || updateTag || "").trim();
       chapters.push({
         title,
         url: url || base,
         isVolume,
         isVip: isTruthy(await arToc.getString(rule.isVip, el)),
         isPay: isTruthy(await arToc.getString(rule.isPay, el)),
+        ...(tag ? { tag } : {}),
       });
     }
     // 须与下方联网拉目录同一套 `-` 语义（修前误写成 reversePrefix 才 reverse）
@@ -1884,7 +2173,7 @@ export async function getChapterList(
           logs.push(
             `目录接口错误: ${parsed.errors.title ?? parsed.errors.details ?? "验签或权限失败"}`,
           );
-        } else if (!parsed.data?.chapter_lists && /fanqie|fqnovel|novel\/api/i.test(base)) {
+        } else if (!parsed.data?.chapter_lists && /novel\/api/i.test(base)) {
           logs.push("目录接口未返回 chapter_lists 字段");
         }
       } catch {
@@ -1903,19 +2192,21 @@ export async function getChapterList(
         ? await ar.getString(rule.updateTime, el)
         : "";
       if (updateTag && !chapterCtx.tag) chapterCtx.tag = updateTag;
-      const isVolume = isTruthy(await ar.getString(rule.isVolume, el));
+      const isVolume = await resolveChapterIsVolume(ar, rule.isVolume, el);
       if (!title) continue;
       if (!url) {
         if (isVolume) url = `${title}${chapters.length}`;
         else url = base;
       }
       if (!url && !isVolume) continue;
+      const tag = String(chapterCtx.tag || updateTag || "").trim();
       chapters.push({
         title,
         url: url || base,
         isVolume,
         isVip: isTruthy(await ar.getString(rule.isVip, el)),
         isPay: isTruthy(await ar.getString(rule.isPay, el)),
+        ...(tag ? { tag } : {}),
       });
     }
   };
@@ -2011,15 +2302,18 @@ export async function getChapterContent(
       tocUrl: resolvedTocUrl,
     }),
   );
+  applyPersistedBookVariable(book, bookPageUrl);
   // ads-read 的 BookID 须用 toc/book 上的数字 id，勿用 kind 标签
   const bookIdForChapter =
     resolvedTocUrl.match(/[?&]bookId=([^&]+)/i)?.[1] ??
     resolvedTocUrl.match(/[?&]book_id=([^&]+)/i)?.[1] ??
     bookPageUrl.match(/[?&](?:bookid|bookId|book_id)=([^&]+)/i)?.[1] ??
     ( /^\d+$/.test(kind) ? kind : "");
-  const fetchChapterUrl = repairChapterUrlBookId(
-    chapterUrl,
-    bookIdForChapter ? decodeURIComponent(bookIdForChapter) : "",
+  const fetchChapterUrl = repairDuplicateBidInChapterUrl(
+    repairChapterUrlBookId(
+      chapterUrl,
+      bookIdForChapter ? decodeURIComponent(bookIdForChapter) : "",
+    ),
   );
   if (fetchChapterUrl !== chapterUrl) {
     chapter = { ...chapter, url: fetchChapterUrl };
@@ -2030,18 +2324,28 @@ export async function getChapterContent(
     .setRuleData({ variable: { ...variables } });
   syncLegadoHeadersForRules(arInit, host, resolvedBookUrl, variables);
   syncLegadoHeadersForRules(arInit, host, resolvedTocUrl, variables);
-  const bidMatch = bookPageUrl.match(/\/chapters\/([^/?#,]+)/);
-  const idFromQuery =
-    bookPageUrl.match(/[?&](?:id|bid|bookid)=([^&]+)/i)?.[1] ??
-    resolvedTocUrl.match(/[?&](?:id|bid|bookid)=([^&]+)/i)?.[1];
-  const bid = bidMatch?.[1] ?? idFromQuery;
-  if (bid) {
-    arInit.putStored("bid", bid);
-    variables.bid = bid;
-    arInit.setRuleData({ variable: { ...variables } });
-  }
+  ensureBidVariable(
+    arInit,
+    variables,
+    book,
+    bookPageUrl,
+    resolvedTocUrl,
+    resolvedBookUrl,
+  );
+  arInit.setRuleData({ variable: { ...variables } });
   const rule = source.ruleContent ?? {};
   const titleRule = rule.title?.trim() || rule.chapterName?.trim() || "";
+  const chapterTitle = String(chapter.title ?? "");
+  const isVolume = Boolean(
+    (chapter as { isVolume?: unknown }).isVolume === true ||
+      (chapter as { isVolume?: unknown }).isVolume === "true",
+  );
+
+  // 对齐 Legado WebBook.getContent：一级目录（合成 url=标题+序号）不跑正文规则
+  if (isVolume && fetchChapterUrl.startsWith(chapterTitle)) {
+    logs.push("一级目录正文不解析规则");
+    return String((chapter as { tag?: unknown }).tag ?? "").trim();
+  }
 
   // 对齐 Legado：chapter.url == book.bookUrl 且有 tocHtml 时用缓存，免再请求
   const tocHtmlCached = coerced.tocHtml?.trim() ?? "";
@@ -2247,7 +2551,13 @@ export async function getChapterContent(
     String(book.name ?? ""),
   );
 
-  return content.trim();
+  content = content.trim();
+  // 对齐 Legado BookContent：非分卷正文为空则抛错（阅读器显示「获取正文失败」）
+  if (!isVolume && !content) {
+    throw new Error("内容为空");
+  }
+
+  return content;
 }
 
 /**
@@ -2280,6 +2590,26 @@ function isTruthy(s: string): boolean {
   const v = s.trim().toLowerCase();
   if (!v) return false;
   return v !== "false" && v !== "no" && v !== "not" && v !== "0";
+}
+
+/**
+ * 分卷标记：优先 isVolume 规则；规则为空时读 JS 目录项上的布尔/字符串字段
+ * （部分书源 chapterList 直接返回 `{ isVolume: true }` 且未写 isVolume 规则）。
+ */
+async function resolveChapterIsVolume(
+  ar: AnalyzeRule,
+  rule: string | undefined | null,
+  el: unknown,
+): Promise<boolean> {
+  if (rule?.trim()) {
+    return isTruthy(await ar.getString(rule, el));
+  }
+  if (el != null && typeof el === "object" && !Array.isArray(el)) {
+    const v = (el as Record<string, unknown>).isVolume;
+    if (typeof v === "boolean") return v;
+    if (v != null && v !== "") return isTruthy(String(v));
+  }
+  return false;
 }
 
 /** 常见搜索/列表页路径（详情 HTML 有时仍挂在搜索 URL 上） */

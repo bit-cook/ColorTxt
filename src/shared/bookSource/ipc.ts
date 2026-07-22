@@ -13,6 +13,7 @@ import type {
   ExploreKind,
   SearchBookItem,
 } from "./types";
+import type { LoginUiRow } from "./loginUi";
 
 export const BOOK_SOURCE_IPC = {
   list: "bookSource:list",
@@ -33,6 +34,8 @@ export const BOOK_SOURCE_IPC = {
   downloadEvent: "bookSource:downloadEvent",
   getLoginInfo: "bookSource:getLoginInfo",
   setLoginInfo: "bookSource:setLoginInfo",
+  /** 求值 loginUi（@js:/<js>）得到登录框按钮/输入行 */
+  getLoginUi: "bookSource:getLoginUi",
   browserLogin: "bookSource:browserLogin",
   login: "bookSource:login",
   /** 执行正文规则 payAction（对齐 Legado ReadBookActivity.payAction） */
@@ -230,6 +233,9 @@ export type BookSourceIpcApi = {
     url: string,
     info: Record<string, string>,
   ) => Promise<{ ok: boolean }>;
+  bookSourceGetLoginUi: (
+    sourceUrl: string,
+  ) => Promise<{ rows: LoginUiRow[]; logs?: string[]; message?: string }>;
   bookSourceBrowserLogin: (
     sourceUrl: string,
     title?: string,

@@ -58,9 +58,72 @@ function hasGorgonHeader(headers?: Record<string, string>): boolean {
   return Boolean(headers?.["X-Gorgon"] ?? headers?.["x-gorgon"]);
 }
 
-/** 对齐 Legado NetworkUtils.encodedQuery：已编码 query 不再拆分重编码 */
+/** Legado NetworkUtils.notNeedEncodingQuery：含 `+`，故 `order=foo+` 视为已编码、勿再 encode */
+const LEGADO_QUERY_SAFE =
+  /[A-Za-z0-9!$&()*+,\-./:;=?@[\]^_`{|}~]/;
+
+/**
+ * 对齐 Legado NetworkUtils.encodedQuery：
+ * 仅含「查询安全字符」或合法 `%XX` 时视为已编码，整段 query 原样保留。
+ * 旧实现只认 `%XX`，会把 `novel_wordnumber+` 拆参后编成 `%2B`，部分接口因此 400。
+ */
 function isLegadoEncodedQuery(query: string): boolean {
-  return /%[0-9A-Fa-f]{2}/.test(query);
+  for (let i = 0; i < query.length; i++) {
+    const c = query[i]!;
+    if (LEGADO_QUERY_SAFE.test(c)) continue;
+    if (c === "%" && i + 2 < query.length) {
+      const h1 = query[i + 1]!;
+      const h2 = query[i + 2]!;
+      if (/[0-9A-Fa-f]/.test(h1) && /[0-9A-Fa-f]/.test(h2)) {
+        i += 2;
+        continue;
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 对齐 Legado AnalyzeUrl.queryEncoder（RFC3986 UNRESERVED ∪ !$%&()*+,/:;=?@[]^`{|}）：
+ * 对整段 query 做百分号编码，保留 `+&=` 等分隔/字面量；已有 `%XX` 不二次编码。
+ */
+function encodeLegadoQueryString(params: string, charset?: string): string {
+  if (!params) return "";
+  if (isLegadoEncodedQuery(params)) return params;
+  const cs = charset?.trim().toLowerCase();
+  let out = "";
+  for (let i = 0; i < params.length; ) {
+    const c = params[i]!;
+    if (c === "%" && i + 2 < params.length) {
+      const h1 = params[i + 1]!;
+      const h2 = params[i + 2]!;
+      if (/[0-9A-Fa-f]/.test(h1) && /[0-9A-Fa-f]/.test(h2)) {
+        out += params.slice(i, i + 3);
+        i += 3;
+        continue;
+      }
+    }
+    // queryEncoder 另允许 `%`（非法 `%` 单独出现时仍百分号编码）
+    if (c.charCodeAt(0) < 128 && (LEGADO_QUERY_SAFE.test(c) || c === "%")) {
+      out += c;
+      i += 1;
+      continue;
+    }
+    // 按 Unicode 码点切片，避免把代理对拆开
+    const cp = params.codePointAt(i)!;
+    const char = String.fromCodePoint(cp);
+    i += char.length;
+    if (!cs || cs === "utf-8" || cs === "utf8") {
+      out += encodeURIComponent(char);
+      continue;
+    }
+    const buf = iconv.encode(char, cs);
+    out += Array.from(buf)
+      .map((b) => `%${b.toString(16).padStart(2, "0").toUpperCase()}`)
+      .join("");
+  }
+  return out;
 }
 
 function augmentGorgonHeaders(
@@ -558,9 +621,14 @@ export class AnalyzeUrl {
       if (signedGet || isLegadoEncodedQuery(queryPart)) {
         this.url = u;
         this.fieldMap = new Map();
-      } else {
+      } else if (charset?.trim().toLowerCase() === "escape") {
+        // Legado：charset=escape 时走逐字段 EncoderUtils.escape
         this.fieldMap = analyzeFields(queryPart, charset);
         this.url = buildQueryUrl(this.urlNoQuery, this.fieldMap);
+      } else {
+        // 对齐 queryEncoder：整段编码并保留字面量 `+`（勿拆参后 encodeURIComponent → %2B）
+        this.url = `${this.urlNoQuery}?${encodeLegadoQueryString(queryPart, charset)}`;
+        this.fieldMap = new Map();
       }
     } else {
       this.urlNoQuery = u;

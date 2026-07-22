@@ -1,8 +1,10 @@
 import { applyRuleRegex, splitRuleRegexSuffix } from "./legadoDefaultRule";
+import { compileLegadoRegex } from "./analyzeByRegex";
 import { JSONPath } from "jsonpath-plus";
 import { looksLikeLegadoJs } from "./legadoRuleSplit";
 import { parseLegadoLooseJsonObject } from "./legadoLooseJson";
 import { parseLegadoHeaderJson } from "./sourceRequestHeaders";
+import { isJsoupElementLike } from "./legadoJsoupShim";
 
 const PUT_PATTERN = /@put:\s*(\{[^}]+\})/gi;
 /** Legado 内联 @put 形如 `{bid:id}`；勿匹配 `{{$.path}}` 等 JS/模板占位 */
@@ -33,6 +35,8 @@ export function isLegadoLiteralUrlRule(rule: string): boolean {
   const t = rule.trim();
   if (!t) return false;
   if (t.includes("{{") || t.includes("{$") || /@get:/i.test(t)) return false;
+  // 含 `$1` 等捕获组引用须走 makeUpRule，不可当字面 URL（如部分书源 chapterUrl）
+  if (/\$\d{1,2}/.test(t)) return false;
   // 与 splitLegadoCompoundRule 一致：组合符存在时须分段解析
   if (/(?:&&|\|\||%%)/.test(t)) return false;
   if (/^(?:https?:\/\/|data:|javascript:)/i.test(t)) return true;
@@ -122,13 +126,22 @@ export function isLegadoEmbeddedRuleExpr(expr: string): boolean {
   );
 }
 
-/** {{}} 内是否含须 Rhino 求值的 JS 表达式（非 JSONPath / result / 嵌套规则） */
+/** {{}} 内是否须 Rhino 求值的 JS 表达式（非 JSONPath / result / 嵌套规则 / book 绑定） */
 export function legadoTemplateNeedsJsEval(rule: string): boolean {
   if (!rule.includes("{{")) return false;
   for (const m of rule.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
     const key = m[1].trim();
     if (key === "result" || isLegadoJsonPathExpr(key)) continue;
     if (isLegadoEmbeddedRuleExpr(key)) continue;
+    if (
+      key === "title" ||
+      key === "chapter.title" ||
+      key === "bookName" ||
+      key === "book.name" ||
+      key === "book.author"
+    ) {
+      continue;
+    }
     return true;
   }
   return false;
@@ -452,21 +465,25 @@ export function splitMakeUpRegexSuffix(text: string): MakeUpRuleResult {
 
 export function applyMakeUpRegex(value: string, meta: MakeUpRuleResult): string {
   if (!meta.replaceRegex) return value;
+  // 对齐 Legado SourceRule.makeUpRule：`rule = ruleStrS[0].trim()` 后再 replaceRegex。
+  // 部分书源 kind：`{{…##·|\d.*}}##.*\s` 展开后带尾部空白时，不 trim 会使 `.*\s` 整段匹配成空。
+  const text = value.trim();
   const regex = {
     pattern: meta.replaceRegex,
     replacement: meta.replacement,
   };
   if (meta.replaceFirst) {
     try {
-      const re = new RegExp(regex.pattern);
-      const m = value.match(re);
+      const re = compileLegadoRegex(regex.pattern, "");
+      if (!re) return value;
+      const m = text.match(re);
       if (!m?.[0]) return value;
       return m[0].replace(re, regex.replacement);
     } catch {
       return value;
     }
   }
-  return applyRuleRegex(value, regex);
+  return applyRuleRegex(text, regex);
 }
 
 export function extractEvalSegments(rule: string): {
@@ -495,7 +512,14 @@ export function extractEvalSegments(rule: string): {
 }
 
 export function isPlainRuleObject(content: unknown): content is Record<string, unknown> {
-  return content != null && typeof content === "object" && !Array.isArray(content);
+  // getElements 返回的 Jsoup Element 也是 object，不可当 JSON 条目走 readJsonField
+  //（否则 `{{@@.class@text##…}}` 等列表 kind 规则会整段取空）
+  return (
+    content != null &&
+    typeof content === "object" &&
+    !Array.isArray(content) &&
+    !isJsoupElementLike(content)
+  );
 }
 
 /** JSONPath / 规则取值：字符串、数字、布尔、图片对象 `{ orign: "url" }` */
@@ -569,6 +593,52 @@ export function readJsonNestedValue(
   return val;
 }
 
+/** 列表项已是 `$.data` 子对象时，误写 `$.data.authorName` 等路径的回退 */
+function jsonFieldPathFallbacks(path: string): string[] {
+  const out: string[] = [];
+  if (path.startsWith("$.data.")) {
+    out.push(`$.${path.slice("$.data.".length)}`);
+  }
+  if (path.includes(".data.expand.")) {
+    out.push(path.replace(/\.data\.expand\./g, ".expand."));
+  }
+  return out.filter((p, i, arr) => p !== path && arr.indexOf(p) === i);
+}
+
+function readJsonPathFieldValue(
+  content: Record<string, unknown>,
+  path: string,
+): string {
+  try {
+    const results = JSONPath({ path, json: content, wrap: false });
+    if (Array.isArray(results)) {
+      const allScalar = results.every(
+        (v) =>
+          v == null ||
+          typeof v === "string" ||
+          typeof v === "number" ||
+          typeof v === "boolean",
+      );
+      const joinMulti =
+        allScalar || path.includes("..") || path.includes("[*]");
+      if (joinMulti) {
+        const sep =
+          path.includes("[*]") && !path.includes("..") && !allScalar
+            ? ","
+            : "\n";
+        return results
+          .map((v) => coerceLegadoMediaUrl(v))
+          .filter(Boolean)
+          .join(sep);
+      }
+      return coerceLegadoMediaUrl(results[0]);
+    }
+    return coerceLegadoMediaUrl(results);
+  } catch {
+    return "";
+  }
+}
+
 export function readJsonField(content: Record<string, unknown>, fieldRule: string): string {
   const { baseRule, regex } = splitRuleRegexSuffix(fieldRule.trim());
   const key = baseRule.trim();
@@ -577,36 +647,10 @@ export function readJsonField(content: Record<string, unknown>, fieldRule: strin
   const jsonPath = legadoJsonPathFromRule(key);
   if (jsonPath || key.startsWith("$.") || key.startsWith("$[")) {
     const path = jsonPath ?? key;
-    try {
-      const results = JSONPath({ path, json: content, wrap: false });
-      if (Array.isArray(results)) {
-        // 对齐 Legado getString：标量数组整表 join（如 $.tagList），勿只取 [0]
-        const allScalar = results.every(
-          (v) =>
-            v == null ||
-            typeof v === "string" ||
-            typeof v === "number" ||
-            typeof v === "boolean",
-        );
-        const joinMulti =
-          allScalar || path.includes("..") || path.includes("[*]");
-        if (joinMulti) {
-          const sep =
-            path.includes("[*]") && !path.includes("..") && !allScalar
-              ? ","
-              : "\n";
-          val = results
-            .map((v) => coerceLegadoMediaUrl(v))
-            .filter(Boolean)
-            .join(sep);
-        } else {
-          val = coerceLegadoMediaUrl(results[0]);
-        }
-      } else {
-        val = coerceLegadoMediaUrl(results);
-      }
-    } catch {
-      val = "";
+    const paths = [path, ...jsonFieldPathFallbacks(path)];
+    for (const p of paths) {
+      val = readJsonPathFieldValue(content, p);
+      if (val) break;
     }
   } else {
     const parts = key.split(".");

@@ -16,7 +16,7 @@ import {
 } from "../composables/useBookSource";
 import { useBookshelfCoverUrls } from "../composables/useBookshelfCoverUrls";
 import type { BookSourceListItem, ExploreKind, SearchBookItem } from "@shared/bookSource/types";
-import { appLog } from "../../services/appDialog";
+import { appLog, appPrompt } from "../../services/appDialog";
 import { legadoFlexChildStyle } from "@shared/bookSource/legadoFlexStyle";
 import "./findBookListShared.css";
 
@@ -70,7 +70,10 @@ const exploreLoading = ref(false);
 const exploreLoadingMore = ref(false);
 /** 用户点击顶栏「刷新」触发的加载（用于图标旋转，不含初次进入 / 滚动加载更多） */
 const exploreRefreshing = ref(false);
+/** 即将请求的页码（滚动加载用） */
 const explorePage = ref(1);
+/** 当前列表已加载的页码（顶栏「第 N 页」展示） */
+const exploreLoadedPage = ref(1);
 const exploreHasMore = ref(true);
 const exploreError = ref("");
 const exploreLogs = ref<string[]>([]);
@@ -296,6 +299,7 @@ async function onKindClick(source: BookSourceListItem, kind: ExploreKind) {
   explorePaneOpen.value = true;
   exploreBooks.value = [];
   explorePage.value = 1;
+  exploreLoadedPage.value = 1;
   exploreHasMore.value = true;
   exploreError.value = "";
   exploreLogs.value = [];
@@ -345,10 +349,12 @@ async function loadExplorePage(append: boolean, requestSeq?: number) {
     if (isStale()) return;
     if (r.logs?.length) exploreLogs.value = r.logs;
     const items = r.items ?? [];
-    if (!append && !items.length && (r.message || r.logs?.length)) {
-      exploreError.value = r.message?.trim() || "加载失败";
+    // 仅有 message 时视为失败；空列表但有日志可能是登录提示等软空结果（对齐 Legado toast）
+    if (!append && !items.length && r.message?.trim()) {
+      exploreError.value = r.message.trim();
       exploreHasMore.value = false;
       exploreBooks.value = [];
+      exploreLoadedPage.value = capturedPage;
       return;
     }
     exploreError.value = "";
@@ -367,14 +373,16 @@ async function loadExplorePage(append: boolean, requestSeq?: number) {
       if (items.length === 0 || added === 0) {
         exploreHasMore.value = false;
       } else {
-        explorePage.value += 1;
+        exploreLoadedPage.value = capturedPage;
+        explorePage.value = capturedPage + 1;
         exploreHasMore.value = true;
       }
     } else {
       exploreBooks.value = items;
+      exploreLoadedPage.value = capturedPage;
       if (items.length === 0) exploreHasMore.value = false;
       else {
-        explorePage.value += 1;
+        explorePage.value = capturedPage + 1;
         exploreHasMore.value = true;
       }
     }
@@ -389,6 +397,29 @@ async function loadExplorePage(append: boolean, requestSeq?: number) {
       exploreLoadingMore.value = false;
     }
   }
+  // 对齐 Legado ExploreShow：列表撑不满视口（!canScrollVertically）时继续拉下一页
+  // （如部分书源发现列表第 1 页仅数本，否则永远无法滚动触发加载）
+  if (!isStale() && exploreHasMore.value && exploreBooks.value.length) {
+    await nextTick();
+    await maybeAutoFillExplore(seq);
+  }
+}
+
+/**
+ * 内容高度不足以出现纵向滚动时自动加载更多（对齐 Legado
+ * `!recyclerView.canScrollVertically(1) → scrollToBottom`）。
+ */
+async function maybeAutoFillExplore(seq: number) {
+  if (seq !== exploreRequestSeq) return;
+  if (!exploreShow.value || !exploreHasMore.value) return;
+  if (exploreLoading.value || exploreLoadingMore.value) return;
+  const el = exploreBodyRef.value;
+  if (!el) return;
+  // 再等一帧：VirtualList 量完行高后再判断是否可滚动
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  if (seq !== exploreRequestSeq) return;
+  if (el.scrollHeight > el.clientHeight + 48) return;
+  await loadExplorePage(true, seq);
 }
 
 function onExploreScroll(ev: Event) {
@@ -401,7 +432,11 @@ function onExploreScroll(ev: Event) {
   ) {
     return;
   }
-  if (el.scrollHeight <= el.clientHeight + 48) return;
+  // 撑不满视口：与滚到底部一样继续加载（对齐 Legado）
+  if (el.scrollHeight <= el.clientHeight + 48) {
+    void loadExplorePage(true);
+    return;
+  }
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 48) {
     void loadExplorePage(true);
   }
@@ -421,6 +456,39 @@ async function onRefreshExplore() {
   const seq = bumpExploreRequestSeq();
   exploreBooks.value = [];
   explorePage.value = 1;
+  exploreLoadedPage.value = 1;
+  exploreHasMore.value = true;
+  exploreError.value = "";
+  exploreLogs.value = [];
+  exploreLoadingMore.value = false;
+  if (exploreBodyRef.value) exploreBodyRef.value.scrollTop = 0;
+  exploreRefreshing.value = true;
+  try {
+    await loadExplorePage(false, seq);
+  } finally {
+    exploreRefreshing.value = false;
+  }
+}
+
+async function onSetExplorePage() {
+  if (!exploreShow.value || exploreLoading.value || exploreRefreshing.value) {
+    return;
+  }
+  const input = await appPrompt("输入要跳转的页码", {
+    title: "",
+    defaultValue: String(exploreLoadedPage.value || 1),
+    placeholder: "例如 1",
+    inputType: "number",
+  });
+  if (input == null) return;
+  const page = Math.floor(Number(String(input).trim()));
+  if (!Number.isFinite(page) || page < 1) {
+    return;
+  }
+  const seq = bumpExploreRequestSeq();
+  exploreBooks.value = [];
+  explorePage.value = page;
+  exploreLoadedPage.value = page;
   exploreHasMore.value = true;
   exploreError.value = "";
   exploreLogs.value = [];
@@ -576,6 +644,16 @@ defineExpose({ refreshSources });
           >
             <RefreshIcon :spinning="exploreRefreshing" />
           </IconButton>
+          <button
+            type="button"
+            class="findDiscoverPageBtn"
+            title="设置页数"
+            aria-label="设置页数"
+            :disabled="exploreLoading || exploreRefreshing || !exploreShow"
+            @click="onSetExplorePage"
+          >
+            第 {{ exploreLoadedPage }} 页
+          </button>
         </div>
       </header>
       <div class="findDiscoverExploreBodyWrap">
@@ -1047,6 +1125,26 @@ defineExpose({ refreshSources });
   align-items: center;
   margin-left: auto;
   flex-shrink: 0;
+}
+.findDiscoverPageBtn {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--btn-bg, transparent);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.findDiscoverPageBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--btn-bg, transparent));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+.findDiscoverPageBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .findDiscoverSubLogBtn {
   flex-shrink: 0;

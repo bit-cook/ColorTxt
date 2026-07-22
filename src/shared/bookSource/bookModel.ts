@@ -35,9 +35,19 @@ export function searchBookToBook(item: SearchBookItem): Book {
   };
 }
 
-/** 供 AnalyzeRule.setBook：引擎内与 Legado Book 字段对齐的纯对象 */
+/** 供 AnalyzeRule.setBook：Legado Book 字段对齐的纯对象 */
 export function toEngineBook(book: Book): Record<string, unknown> {
   const kind = stripNumericIdPrefix(book.kind);
+  const rawVar = (book as Book & { variable?: unknown }).variable;
+  let variable: unknown;
+  if (typeof rawVar === "string") {
+    variable = rawVar;
+  } else if (rawVar && typeof rawVar === "object" && !Array.isArray(rawVar)) {
+    const keys = Object.keys(rawVar as Record<string, unknown>);
+    variable = keys.length ? { ...(rawVar as Record<string, string>) } : null;
+  } else {
+    variable = null;
+  }
   return {
     name: book.name ?? "",
     author: book.author ?? "",
@@ -49,7 +59,7 @@ export function toEngineBook(book: Book): Record<string, unknown> {
     updateTime: book.updateTime ?? "",
     tocUrl: (book.tocUrl ?? "").trim(),
     bookUrl: (book.bookUrl || "").trim(),
-    variable: book.variable ? { ...book.variable } : {},
+    variable,
   };
 }
 

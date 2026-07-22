@@ -145,7 +145,7 @@ const authorLabel = computed(() => formatCoverAuthor(props.author));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* 26px：最外层 8px padding + 白边 4px padding + 粗黑框 3px border + 粗黑框 2 px padding + 细黑框 1 px border + 细黑框 8px padding */
+  /* 26px：最外层 8px padding + 白边 4px padding + 粗黑框 3px border + 粗黑框 2px padding + 细黑框 1px border + 细黑框 8px padding */
   max-height: calc(var(--book-cover-height) - 26px);
   font-family: "KingHwa OldSong", "Songti SC", SimSun, serif;
   font-weight: bold;

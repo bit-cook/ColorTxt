@@ -7,6 +7,7 @@ import {
 import { getWebViewUserAgent } from "./bookSourceUserAgent";
 import {
   cookieHeaderForUrl,
+  getCookieStoreDomain,
   getDomainFromUrl,
   setCookieFromResponse,
 } from "./cookieManager";
@@ -105,17 +106,34 @@ async function persistWebViewCookies(
       `${c.name}=${c.value}; Domain=${c.domain ?? domain}; Path=${c.path ?? "/"}`,
     );
   }
+  // Chromium Cookie 异步落盘（~30s 周期）；dev 重启/崩溃会丢刚写入的登录 Cookie
+  await webContents.session.cookies.flushStore().catch(() => {});
 }
 
-/** 将 CookieJar 写入 Electron session，供页面脚本/AJAX 使用 */
-async function seedSessionCookies(
+/** 清掉 session 里该可注册域的全部 Cookie（种入 jar 前保证状态确定） */
+async function clearSessionDomainCookies(
   webContents: Electron.WebContents,
   pageUrl: string,
 ): Promise<void> {
-  const header = cookieHeaderForUrl(pageUrl);
+  const storeDomain = getCookieStoreDomain(pageUrl);
+  const cookies = await webContents.session.cookies.get({});
+  for (const c of cookies) {
+    const d = (c.domain ?? "").replace(/^\./, "");
+    if (d !== storeDomain && !d.endsWith(`.${storeDomain}`)) continue;
+    const url = `http${c.secure ? "s" : ""}://${d}${c.path ?? "/"}`;
+    await webContents.session.cookies.remove(url, c.name).catch(() => {});
+  }
+}
+
+/** 将 Cookie 头写入 Electron session，供页面脚本/AJAX 使用 */
+async function seedSessionCookies(
+  webContents: Electron.WebContents,
+  pageUrl: string,
+  header: string,
+): Promise<void> {
   if (!header.trim()) return;
-  const domain = getDomainFromUrl(pageUrl);
-  const cookieUrl = `https://${domain}/`;
+  const storeDomain = getCookieStoreDomain(pageUrl);
+  const cookieUrl = `https://${getDomainFromUrl(pageUrl)}/`;
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -123,14 +141,25 @@ async function seedSessionCookies(
     const value = part.slice(eq + 1).trim();
     if (!name) continue;
     try {
+      // 域级 Cookie：登录态多存于 .domain 级 Cookie，host-only 注入会被同名域 Cookie 遮蔽/漏发
       await webContents.session.cookies.set({
         url: cookieUrl,
         name,
         value,
+        domain: storeDomain,
         path: "/",
       });
     } catch {
-      /* ignore invalid cookie */
+      try {
+        await webContents.session.cookies.set({
+          url: cookieUrl,
+          name,
+          value,
+          path: "/",
+        });
+      } catch {
+        /* ignore invalid cookie */
+      }
     }
   }
 }
@@ -211,11 +240,14 @@ export async function runBackstageWebView(
       ...headers,
     };
   }
-  // 对齐 Legado CookieManager：WebView 请求带上 CookieJar（部分书源 AJAX 正文依赖登录态）
-  if (pageUrl.startsWith("http") && !headers.Cookie?.trim() && !headers.cookie?.trim()) {
-    const ck = cookieHeaderForUrl(pageUrl);
-    if (ck) headers.Cookie = ck;
-  }
+  // 对齐 Legado CookieManager：WebView 以 CookieJar 为准（部分书源 AJAX 正文依赖登录态）。
+  // Cookie 走 session 注入而非请求头：extraHeaders 只作用于首个请求，且会与 session Cookie 重复
+  const cookieHeader =
+    headers.Cookie?.trim() ||
+    headers.cookie?.trim() ||
+    (pageUrl.startsWith("http") ? cookieHeaderForUrl(pageUrl) : "");
+  delete headers.Cookie;
+  delete headers.cookie;
   const userAgent =
     headers["User-Agent"] ??
     headers["user-agent"] ??
@@ -241,7 +273,12 @@ export async function runBackstageWebView(
     wc.setUserAgent(userAgent);
     attachTrustAnyCertificate(wc);
     if (pageUrl.startsWith("http")) {
-      await seedSessionCookies(wc, pageUrl);
+      // 状态确定性 = CookieJar：先清掉 session 里该域残留（历史游客会话等），再种 jar。
+      // 否则 session 旧 Cookie 会让「已登录 jar」的 webView 以游客身份打开
+      await clearSessionDomainCookies(wc, pageUrl);
+      if (cookieHeader) {
+        await seedSessionCookies(wc, pageUrl, cookieHeader);
+      }
     }
 
     if (opts.overrideUrlRegex) {
@@ -365,19 +402,34 @@ async function loadWebViewContent(
       timeoutMs,
     );
     let settled = false;
+    const cleanup = () => {
+      wc.removeListener("did-finish-load", done);
+      wc.removeListener("did-fail-load", fail);
+    };
     const done = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cleanup();
       resolve();
     };
     const failHard = (err: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cleanup();
       reject(err);
     };
-    const fail = (_: unknown, code: number, desc: string) => {
+    const fail = (
+      _: unknown,
+      code: number,
+      desc: string,
+      _validatedURL: string,
+      isMainFrame: boolean,
+    ) => {
+      // 子框架（广告/统计 iframe）失败不影响主文档；
+      // 误当整页失败会让 getCsrfToken 类 webView 调用永远拿不到正文
+      if (isMainFrame === false) return;
       // 软失败：等 did-finish-load 或总超时（部分站 TIMED_OUT 后仍出正文）
       if (isSoftWebViewLoadError(code)) return;
       failHard(new Error(`webView 加载失败: ${desc || code}`));
@@ -387,7 +439,8 @@ async function loadWebViewContent(
       failHard(err instanceof Error ? err : new Error(String(err)));
     };
     wc.once("did-finish-load", done);
-    wc.once("did-fail-load", fail);
+    // 勿用 once：子框架失败会消费掉监听器，漏掉之后真正的主框架失败
+    wc.on("did-fail-load", fail);
 
     if (html) {
       void wc

@@ -7,6 +7,7 @@ import type { Book, BookSourceRecord } from "@shared/bookSource/types";
 import { coerceBook } from "@shared/bookSource/bookModel";
 import {
   getChapterContent,
+  isSameBookPageUrl,
   stripLeadingDuplicateChapterTitle,
 } from "./webBook";
 import { readChapterCache, saveChapterCache } from "./chapterCache";
@@ -17,6 +18,8 @@ export type ChapterContentChapter = {
   title: string;
   url: string;
   index: number;
+  isVolume?: boolean;
+  tag?: string;
 };
 
 export async function getChapterContentWithCache(
@@ -37,6 +40,10 @@ export async function getChapterContentWithCache(
   const book = coerceBook(bookInput);
   const bookName = book.name || "";
   const bookUrl = book.bookUrl || "";
+  const contentRule = source.ruleContent?.content?.trim() ?? "";
+  const skipChapterCache =
+    contentRule.startsWith("<js>") &&
+    Boolean(bookUrl && chapterUrl && isSameBookPageUrl(chapterUrl, bookUrl));
 
   const finalize = (raw: string, fromCache: boolean) => ({
     content: raw,
@@ -44,7 +51,7 @@ export async function getChapterContentWithCache(
     displayTitle: chapter.title || "",
   });
 
-  if (preferCache && bookUrl && chapterUrl) {
+  if (preferCache && bookUrl && chapterUrl && !skipChapterCache) {
     const cached = await readChapterCache(
       bookName,
       bookUrl,
@@ -85,7 +92,13 @@ export async function getChapterContentWithCache(
     options?.chapterUrls,
   );
 
-  if (bookUrl && chapterUrl && typeof content === "string" && content.length) {
+  if (
+    bookUrl &&
+    chapterUrl &&
+    typeof content === "string" &&
+    content.length &&
+    !skipChapterCache
+  ) {
     try {
       await saveChapterCache(
         bookName,

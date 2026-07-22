@@ -108,6 +108,7 @@ import unlockIcon from "./assets/unlock.svg?raw";
 import disclaimerIcon from "./assets/disclaimer.svg?raw";
 import desktopShortcutIcon from "./assets/desktop_shortcut.svg?raw";
 import cacheIcon from "./assets/cache.svg?raw";
+import subheadIcon from "./assets/subhead.svg?raw";
 
 /** 角色卡「语音」播放动画帧：speak_0 → speak_1 → speak */
 export const speakIconAnimFrames = [
@@ -266,4 +267,6 @@ export const icons = {
   desktopShortcut: desktopShortcutIcon,
   /** 离线缓存 */
   cache: cacheIcon,
+  /** 目录附加信息（章名下 tag） */
+  subhead: subheadIcon,
 } as const;

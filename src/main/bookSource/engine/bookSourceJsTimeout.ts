@@ -1,10 +1,26 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-/** 单次书源规则 JS 超时（需覆盖 bookList 内多次 java.ajax；与搜索单源 30s 对齐） */
+/**
+ * 同步 JS 的 CPU 超时（vm.runInContext timeout）：防死循环脚本阻塞主进程。
+ * 勿调大——同步执行期间主进程完全卡死。
+ */
 export const BOOK_SOURCE_JS_TIMEOUT_MS = (() => {
   const raw = process.env.BOOK_SOURCE_JS_TIMEOUT_MS?.trim();
   if (raw && /^\d+$/.test(raw)) return Math.max(50, Number(raw));
   return 30_000;
+})();
+
+/**
+ * 异步 JS 的墙钟超时（java.ajax 链等网络等待为主，不阻塞主进程）。
+ * 须显著大于 CPU 超时：部分书源发现页 bookList 会对几十本书串行补拉详情，
+ * Legado/Rhino 无整段 JS 超时（只有单请求超时），30s 会把仍在正常等网络的
+ * 规则掐死（串行补拉超时 → 分类永远「加载失败」）。
+ * 搜索仍由 searchService 的单源 30s 兜底，不受此值影响。
+ */
+export const BOOK_SOURCE_JS_WALL_TIMEOUT_MS = (() => {
+  const raw = process.env.BOOK_SOURCE_JS_WALL_TIMEOUT_MS?.trim();
+  if (raw && /^\d+$/.test(raw)) return Math.max(50, Number(raw));
+  return 180_000;
 })();
 
 export class BookSourceJsTimeoutError extends Error {
@@ -66,10 +82,10 @@ export function runWithJsEvalDeadline<T>(
   return deadlineStorage.run(state, fn);
 }
 
-/** 异步求值期间挂载 deadline（await 链内仍可 assertAlive） */
+/** 异步求值期间挂载 deadline（await 链内仍可 assertAlive）；默认墙钟超时 */
 export async function runWithJsEvalDeadlineAsync<T>(
   fn: () => Promise<T>,
-  timeoutMs: number = BOOK_SOURCE_JS_TIMEOUT_MS,
+  timeoutMs: number = BOOK_SOURCE_JS_WALL_TIMEOUT_MS,
 ): Promise<T> {
   const state: DeadlineState = {
     deadlineAt: Date.now() + Math.max(1, timeoutMs),
@@ -81,8 +97,10 @@ export async function runWithJsEvalDeadlineAsync<T>(
 /** 墙钟超时：异步整段求值失败后向上抛出，并标记 deadline 已过期 */
 export function raceWithJsTimeout<T>(
   promise: Promise<T>,
-  timeoutMs: number = BOOK_SOURCE_JS_TIMEOUT_MS,
+  timeoutMs: number = BOOK_SOURCE_JS_WALL_TIMEOUT_MS,
 ): Promise<T> {
+  // 超时赢得 race 后，原 promise 稍后的 reject 无人消费会打 UnhandledPromiseRejection
+  promise.catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {

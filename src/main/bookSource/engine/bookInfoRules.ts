@@ -14,6 +14,7 @@ import { applyRuleRegex, splitRuleRegexSuffix, trimLegadoAsciiWhitespace, trimLe
 import { splitSourceRule } from "./legadoRuleSplit";
 import { evalJsExpression } from "./rhinoRuntime";
 import { coerceJavaString } from "./legadoJavaShims";
+import { decodeHtmlEntities } from "@shared/htmlRemnantCleanup";
 
 function coerceLegadoRuleString(value: unknown): string {
   if (value == null) return "";
@@ -134,8 +135,7 @@ async function resolveBookInfoWithJsChain(
       continue;
     }
     if (containsCompositeEvalRule(trimmed) && trimmed.includes("{{")) {
-      const { text, meta } = await expandBookInfoMakeUpRule(ar, trimmed, result);
-      result = applyBookInfoMakeUpResult(text, meta, trimmed);
+      result = await resolveBookInfoMakeUpField(ar, trimmed, result);
       continue;
     }
     result = await ar.getPlainString(trimmed, result);
@@ -162,11 +162,33 @@ export async function resolveBookInfoField(
     if (/(?:<js>|@js:)/i.test(cleanRule)) {
       return resolveBookInfoWithJsChain(ar, cleanRule, content);
     }
-    const { text, meta } = await expandBookInfoMakeUpRule(ar, cleanRule, content);
-    return applyBookInfoMakeUpResult(text, meta, cleanRule);
+    return resolveBookInfoMakeUpField(ar, cleanRule, content);
   }
 
   return ar.getPlainString(cleanRule, content);
+}
+
+/**
+ * 展开 {{}} / @get 后解析字段。
+ * 对齐 Legado SourceRule：`{{}}` 出现在 `##` 之后时 mode 仍为 Default，
+ * 须先对选择器段 `getString`，再 `replaceRegex`（如 intro 的 `id.x@html##^##前缀{{js}}`）。
+ */
+async function resolveBookInfoMakeUpField(
+  ar: AnalyzeRule,
+  cleanRule: string,
+  content: unknown,
+): Promise<string> {
+  const { baseRule } = splitRuleRegexSuffix(cleanRule);
+  const { text, meta } = await expandBookInfoMakeUpRule(ar, cleanRule, content);
+  if (!bookInfoSelectorNeedsCompositeResolver(baseRule)) {
+    const selector = (meta.rule || text).trim();
+    const extracted = selector ? await ar.getPlainString(selector, content) : "";
+    // 对齐 Legado：选择器未命中时 getString 为 null，不跑 replaceRegex
+    // （否则 ##^##前缀 会把空结果变成仅广告前缀，如爱久久网改版后无 #mainSoftIntro）
+    if (!trimLegadoAsciiWhitespace(extracted)) return "";
+    return applyBookInfoMakeUpResult(extracted, meta, cleanRule);
+  }
+  return applyBookInfoMakeUpResult(text, meta, cleanRule);
 }
 
 async function resolveBookInfoOnObject(
@@ -186,8 +208,7 @@ async function resolveBookInfoOnObject(
     if (/(?:<js>|@js:)/i.test(cleanRule)) {
       return resolveBookInfoWithJsChain(ar, cleanRule, content);
     }
-    const { text, meta } = await expandBookInfoMakeUpRule(ar, cleanRule, content);
-    return applyBookInfoMakeUpResult(text, meta, cleanRule);
+    return resolveBookInfoMakeUpField(ar, cleanRule, content);
   }
 
   const { baseRule, regex } = splitRuleRegexSuffix(cleanRule);
@@ -233,12 +254,18 @@ async function expandBookInfoMakeUpRule(
       out += ar.lookupStored(part.expr);
     } else if (isLegadoInlineRule(part.expr)) {
       const expr = trimLegadoRulePreservingRegexReplace(part.expr);
-      if (/&&|\|\||%%/.test(expr)) {
+      // @@/@css/XPath 与 && 组合须走选择器；Jsoup Element 不可当 JSON 字段读
+      const forceSelector =
+        /&&|\|\||%%/.test(expr) ||
+        /^@@/i.test(expr) ||
+        /^@css:/i.test(expr) ||
+        /^@xpath:/i.test(expr) ||
+        expr.startsWith("//") ||
+        (expr.startsWith("/") && !expr.startsWith("$."));
+      if (forceSelector || !isPlainRuleObject(content)) {
         out += await ar.getPlainString(expr, content);
-      } else if (isPlainRuleObject(content)) {
-        out += readJsonField(content, expr);
       } else {
-        out += await ar.getPlainString(expr, content);
+        out += readJsonField(content, expr);
       }
     } else {
       try {
@@ -374,10 +401,12 @@ const LEGADO_INDENT_WS = "[\\t\\n\\r\\f\\v \\u3000]";
 /** Legado HtmlFormatter.format / formatKeepImg：HTML 正文转纯文本 */
 function formatLegadoHtmlContent(html: string, keepImg = false): string {
   if (!trimLegadoAsciiWhitespace(html)) return "";
+  // JSON/API 常返回转义实体（如部分书源 novelIntro 的 &lt;br/&gt;），须先解码再剥标签
+  const decoded = html.includes("&") ? unescapeLegadoHtmlEntities(html) : html;
   const tagStrip = keepImg
     ? /<\/?(?!img\b)[a-zA-Z]+(?=[ >])[^<>]*>/gi
     : /<\/?[a-zA-Z]+(?=[ >])[^<>]*>/gi;
-  return html
+  return decoded
     .replace(/(&nbsp;|&lrm;)+/gi, " ")
     .replace(/\u200E/g, "")
     .replace(/(&ensp;|&emsp;)/gi, " ")
@@ -401,19 +430,8 @@ export function formatLegadoChapterContent(html: string): string {
   return formatLegadoHtmlContent(html, true);
 }
 
+/** 对齐 Legado StringEscapeUtils.unescapeHtml4（含 &hellip; / &nbsp; 等命名实体） */
 export function unescapeLegadoHtmlEntities(text: string): string {
   if (!text.includes("&")) return text;
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, d: string) => {
-      const cp = Number(d);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => {
-      const cp = Number.parseInt(h, 16);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
-    })
-    .replace(/&amp;/g, "&");
+  return decodeHtmlEntities(text);
 }

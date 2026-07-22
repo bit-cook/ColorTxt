@@ -22,12 +22,31 @@ function looksLikeBase64(text: string): boolean {
 }
 
 function toBuffer(data: unknown): Buffer {
-  if (data == null) return Buffer.alloc(0);
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof Uint8Array) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.from(data);
+  if (data == null) {
+    throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+  }
+  if (Buffer.isBuffer(data)) {
+    if (data.length === 0) {
+      throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+    }
+    return data;
+  }
+  if (data instanceof Uint8Array) {
+    if (data.length === 0) {
+      throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+    }
+    return Buffer.from(data);
+  }
+  if (Array.isArray(data)) {
+    if (data.length === 0) {
+      throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+    }
+    return Buffer.from(data);
+  }
   const text = String(data).trim();
-  if (!text) return Buffer.alloc(0);
+  if (!text) {
+    throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+  }
   if (/^[0-9a-fA-F]+$/.test(text) && text.length % 2 === 0) {
     return Buffer.from(text, "hex");
   }
@@ -73,8 +92,22 @@ function normalizeKey(raw: unknown, algorithm: string): Buffer {
     key = key.length > 24 ? key.subarray(0, 24) : Buffer.concat([key, Buffer.alloc(24 - key.length)]);
   } else if (algorithm.startsWith("aes-256") && key.length !== 32) {
     key = key.length > 32 ? key.subarray(0, 32) : Buffer.concat([key, Buffer.alloc(32 - key.length)]);
-  } else if (algorithm.startsWith("des-ede3") && key.length !== 24) {
-    key = key.length > 24 ? key.subarray(0, 24) : Buffer.concat([key, Buffer.alloc(24 - key.length)]);
+  } else if (algorithm.startsWith("des-ede3")) {
+    // 须先于 `des-` 判断：des-ede3-cbc 也 startsWith("des-")，原先在已是 24 字节时仍被截成 8 → Invalid key length
+    if (key.length === 16) {
+      // Java/Hutool 两密钥 3DES：K1|K2|K1
+      key = Buffer.concat([key, key.subarray(0, 8)]);
+    } else if (key.length !== 24) {
+      key =
+        key.length > 24
+          ? key.subarray(0, 24)
+          : Buffer.concat([key, Buffer.alloc(24 - key.length)]);
+    }
+  } else if (algorithm.startsWith("des-ede") && key.length !== 16) {
+    key =
+      key.length > 16
+        ? key.subarray(0, 16)
+        : Buffer.concat([key, Buffer.alloc(16 - key.length)]);
   } else if (algorithm.startsWith("des-") && key.length !== 8) {
     key = key.length > 8 ? key.subarray(0, 8) : Buffer.concat([key, Buffer.alloc(8 - key.length)]);
   }
@@ -109,6 +142,12 @@ export function createSymmetricCrypto(
 
   const runCipher = (data: unknown, encrypt: boolean) => {
     const input = toBuffer(data);
+    const block = algorithm.startsWith("des") ? 8 : 16;
+    if (!encrypt && !algorithm.endsWith("-ecb") && input.length % block !== 0) {
+      throw new Error(
+        `CryptoException: Input length (${input.length}) not multiple of block size (${block})`,
+      );
+    }
     if (algorithm.endsWith("-ecb")) {
       const fn = encrypt ? createCipheriv : createDecipheriv;
       const c = fn(algorithm, normalizedKey, null);
@@ -150,9 +189,18 @@ export function aesBase64DecodeToString(
   transformation: unknown,
   iv: unknown,
 ): string {
-  const text = String(data ?? "").trim().replace(/-/g, "+").replace(/_/g, "/");
-  if (!text) return "";
+  // 对齐 Hutool：空密文抛 IllegalArgumentException: Null input buffer（勿静默返回空串）
+  if (data == null) {
+    throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+  }
+  const text = String(data).trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!text) {
+    throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+  }
   const buf = Buffer.from(text, "base64");
+  if (!buf.length) {
+    throw new Error("CryptoException: IllegalArgumentException: Null input buffer");
+  }
   return createSymmetricCrypto(
     transformation ?? "AES/CBC/PKCS5Padding",
     key,

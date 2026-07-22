@@ -8,6 +8,7 @@ import { icons } from "../../icons";
 import type { BookSourceRecord } from "@shared/bookSource/types";
 import {
   collectLoginFormData,
+  loginUiNeedsEval,
   parseLoginUi,
   type LoginUiRow,
 } from "@shared/bookSource/loginUi";
@@ -22,7 +23,9 @@ const modelValue = defineModel<boolean>({ default: false });
 
 const form = ref<Record<string, string>>({});
 const loading = ref(false);
+const rowsLoading = ref(false);
 const lastLogs = ref<string[]>([]);
+const evaluatedRows = ref<LoginUiRow[]>([]);
 
 const menuBtnRef = ref<HTMLElement | null>(null);
 const menu = useAnchoredAppShellMenu({
@@ -43,8 +46,13 @@ function bindMenuPanel(el: HTMLElement | null) {
   menuPanelRef.value = el;
 }
 
-const rows = computed((): LoginUiRow[] => parseLoginUi(props.source?.loginUi));
-const hasLoginUi = computed(() => rows.value.length > 0);
+// @js:/<js> 的 loginUi 需主进程求值（见 evaluatedRows）；纯 JSON 直接静态解析
+const rows = computed((): LoginUiRow[] =>
+  loginUiNeedsEval(props.source?.loginUi)
+    ? evaluatedRows.value
+    : parseLoginUi(props.source?.loginUi),
+);
+const hasLoginUi = computed(() => Boolean(props.source?.loginUi?.trim()));
 const hasLoginUrl = computed(() => Boolean(props.source?.loginUrl?.trim()));
 
 const formData = computed(() => collectLoginFormData(rows.value, form.value));
@@ -53,17 +61,63 @@ watch(
   () => [modelValue.value, props.source?.bookSourceUrl] as const,
   async ([open]) => {
     if (!open || !props.source) return;
+    const source = props.source;
     form.value = await window.colorTxt.bookSourceGetLoginInfo(
-      props.source.bookSourceUrl,
+      source.bookSourceUrl,
     );
     lastLogs.value = [];
+    evaluatedRows.value = [];
     closeMenu();
+    if (loginUiNeedsEval(source.loginUi)) {
+      rowsLoading.value = true;
+      try {
+        const r = await window.colorTxt.bookSourceGetLoginUi(
+          source.bookSourceUrl,
+        );
+        // 组件可能已切换书源/关闭，避免覆盖新状态
+        if (props.source?.bookSourceUrl !== source.bookSourceUrl) return;
+        evaluatedRows.value = r.rows ?? [];
+        if (r.logs?.length) lastLogs.value = r.logs;
+        if (r.message) appToast(r.message, { kind: "danger" });
+      } finally {
+        rowsLoading.value = false;
+      }
+    }
+    // toggle/select 默认值填入 form，供显示与提交
+    for (const row of rows.value) {
+      if (
+        (row.type === "toggle" || row.type === "select") &&
+        form.value[row.name] == null
+      ) {
+        form.value[row.name] =
+          row.default ?? row.chars?.[0] ?? "";
+      }
+    }
   },
 );
 
-function feedbackFromLogs(logs: string[]) {
+/** toggle：点击循环到下一候选值并执行 action（对齐 Legado SourceLoginDialog toggle） */
+function onToggle(row: LoginUiRow) {
+  const chars = row.chars ?? [];
+  if (chars.length === 0) return;
+  const cur = form.value[row.name] ?? row.default ?? chars[0]!;
+  const nextIdx = (chars.indexOf(cur) + 1) % chars.length;
+  form.value[row.name] = chars[nextIdx]!;
+  if (row.action?.trim()) void runLogin({ buttonAction: row.action });
+}
+
+function toggleLabel(row: LoginUiRow): string {
+  const cur = form.value[row.name] ?? row.default ?? row.chars?.[0] ?? "";
+  const left = row.style?.layout_justifySelf !== "right";
+  const name = row.name.trim();
+  return left ? `${cur}${name}` : `${name}${cur}`;
+}
+
+function feedbackFromLogs(logs: string[], options?: { silentErrors?: boolean }) {
   lastLogs.value = logs;
-  // java.toast 已由 AppToastHost 经 IPC 弹出；此处仅补错误类日志提示
+  // java.toast 已由 AppToastHost 经 IPC 弹出；此处仅补错误类日志提示。
+  // loginUi 按钮对齐 Legado handleButtonClick：JS 错误只记日志（「更多 → 日志」可查），不弹错
+  if (options?.silentErrors) return;
   const errLine = [...logs]
     .reverse()
     .find((l) => l.startsWith("JS 错误:") || l.startsWith("loginCheckJs 错误:"));
@@ -80,7 +134,9 @@ async function runLogin(options?: { buttonAction?: string }) {
       { ...formData.value },
       options,
     );
-    if (r.logs?.length) feedbackFromLogs(r.logs);
+    if (r.logs?.length) {
+      feedbackFromLogs(r.logs, { silentErrors: Boolean(options?.buttonAction) });
+    }
     if (r.ok) {
       if (!options?.buttonAction) {
         appToast("已保存登录信息", { kind: "success" });
@@ -120,7 +176,7 @@ async function onRemoveLoginHeader() {
   const ok = await appConfirm("删除此书源的登录头？");
   if (!ok) return;
   await window.colorTxt.bookSourceRemoveLoginHeader(source.bookSourceUrl);
-  appToast("已删除登录头");
+  appToast("已删除登录头", { kind: "info" });
 }
 
 async function onShowLogs() {
@@ -130,17 +186,6 @@ async function onShowLogs() {
     : "（暂无日志）";
   await appLog(text);
 }
-
-async function onClearLogin() {
-  const source = props.source;
-  if (!source) return;
-  closeMenu();
-  const ok = await appConfirm("清除此书源的登录信息？");
-  if (!ok) return;
-  await window.colorTxt.bookSourceLogin(source.bookSourceUrl, {});
-  form.value = {};
-  appToast("已清除");
-}
 </script>
 
 <template>
@@ -148,7 +193,7 @@ async function onClearLogin() {
     v-model="modelValue"
     title=""
     :show-close-button="false"
-    max-width="480px"
+    max-width="1000px"
     :mask-closable="true"
     :esc-closable="true"
     panel-class="bsLoginModal"
@@ -185,6 +230,10 @@ async function onClearLogin() {
         此书源未配置登录规则。
       </p>
 
+      <p v-else-if="rowsLoading && rows.length === 0" class="bsLoginHint">
+        正在加载登录选项…
+      </p>
+
       <template v-else>
         <div class="bsLoginFlex">
           <template v-for="(row, idx) in rows" :key="`${row.name}-${idx}`">
@@ -208,6 +257,15 @@ async function onClearLogin() {
             >
               {{ row.name.trim() }}
             </button>
+            <button
+              v-else-if="row.type === 'toggle' || row.type === 'select'"
+              type="button"
+              class="bsLoginChipBtn"
+              :disabled="loading"
+              @click="onToggle(row)"
+            >
+              {{ toggleLabel(row) }}
+            </button>
           </template>
         </div>
       </template>
@@ -230,14 +288,14 @@ async function onClearLogin() {
       <button type="button" class="appShellMenuItem" @click="onShowLogs">
         日志
       </button>
-      <button type="button" class="appShellMenuItem" @click="onClearLogin">
-        清除登录信息
-      </button>
     </AppShellMenuTeleport>
   </AppModal>
 </template>
 
 <style>
+.appModalPanel.bsLoginModal {
+  width: auto;
+}
 .appModalPanel.bsLoginModal .appModalTitleCluster {
   flex: 1;
   min-width: 0;

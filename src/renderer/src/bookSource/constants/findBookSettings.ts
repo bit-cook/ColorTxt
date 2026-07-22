@@ -17,6 +17,9 @@ export const DEFAULT_FIND_BOOK_DOWNLOAD_AFTER_ACTION: FindBookDownloadAfterActio
 /** 找书阅读器底部「上一章 / 下一章」工具栏（默认开启） */
 export const defaultFindBookChapterNavToolbarEnabled = true;
 
+/** 目录章名下附加信息（ruleToc.updateTime → tag；默认关闭） */
+export const defaultFindBookShowChapterTag = false;
+
 export const FIND_BOOK_DOWNLOAD_AFTER_ACTION_OPTIONS = [
   { id: "none" as const, label: "无动作" },
   { id: "openMain" as const, label: "在主界面打开" },
@@ -155,6 +158,8 @@ export type PersistedFindBookSettings = {
   /** 阅读器侧栏是否展开（非全屏） */
   showSidebar?: boolean;
   sidebarWidth?: number;
+  /** 目录是否显示章节附加信息（BookChapter.tag） */
+  showChapterTag?: boolean;
   timedScroll?: Partial<TimedScrollSettings>;
   pomodoro?: Partial<PomodoroSettings>;
 };

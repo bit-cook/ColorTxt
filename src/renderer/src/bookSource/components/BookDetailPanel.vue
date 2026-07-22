@@ -11,6 +11,7 @@ import DefaultBookCover from "./DefaultBookCover.vue";
 import BookSourceCenterState from "./BookSourceCenterState.vue";
 import EditBookSourcePanel from "./EditBookSourcePanel.vue";
 import BookSourceLoginPanel from "./BookSourceLoginPanel.vue";
+import ReaderImageLightbox from "../../components/ReaderImageLightbox.vue";
 import { icons } from "../../icons";
 import {
   useBookSourceDetail,
@@ -25,6 +26,7 @@ import type {
 import { appLog, appPrompt } from "../../services/appDialog";
 import { appToast } from "../../services/appToast";
 import { useFindBookBookshelf } from "../composables/useFindBookBookshelf";
+import { useFindBookSettings } from "../composables/useFindBookSettings";
 import { useChapterCacheMarks } from "../composables/useChapterCacheMarks";
 import { confirmClearBookChapterCache } from "../services/clearBookChapterCache";
 import { sortContentChaptersDisplay } from "../sortContentChaptersDisplay";
@@ -44,6 +46,8 @@ import type { BookSourceEditTab } from "../editBookSourceFields";
 
 /** 与 .bookDetailChapterItem 固定行高一致（外层滚动虚拟列表） */
 const CHAPTER_ROW_STRIDE = 40;
+/** 章名下有 tag（updateTime）时两行展示的行距 */
+const CHAPTER_ROW_STRIDE_WITH_TAG = 56;
 
 const props = defineProps<{
   item: SearchBookItem | null;
@@ -62,7 +66,10 @@ const emit = defineEmits<{
 const modelValue = defineModel<boolean>({ default: false });
 
 const coverFailed = ref(false);
+const coverLightboxSrc = ref("");
 const chapterSortDesc = ref(false);
+const findBookSettings = useFindBookSettings();
+const showChapterTag = findBookSettings.showChapterTag;
 const showEdit = ref(false);
 const editingUrl = ref<string | null>(null);
 const showLogin = ref(false);
@@ -218,6 +225,14 @@ const showUpdateTimeLine = computed(() => {
 const displayChapters = computed(() =>
   sortContentChaptersDisplay(contentChapterList.value, chapterSortDesc.value),
 );
+const hasChapterTags = computed(() =>
+  displayChapters.value.some((ch) => Boolean(ch.tag?.trim())),
+);
+const chapterRowStride = computed(() =>
+  showChapterTag.value && hasChapterTags.value
+    ? CHAPTER_ROW_STRIDE_WITH_TAG
+    : CHAPTER_ROW_STRIDE,
+);
 const chapterCount = computed(() => displayChapters.value.length);
 const breadcrumbSourceName = computed(
   () => displayItem.value?.originName?.trim() ?? "",
@@ -322,7 +337,7 @@ function onToggleBookshelf() {
     });
     if (next) applyBooks(next);
   }
-  appToast(added ? "已放入书架" : "已从书架移除");
+  appToast(added ? "已放入书架" : "已从书架移除", { kind: "info" });
 }
 
 const displayBookUrl = computed(
@@ -543,10 +558,18 @@ watch(
 watch(modelValue, (open) => {
   if (!open) {
     coverFailed.value = false;
+    coverLightboxSrc.value = "";
     return;
   }
   void refreshChapterCacheStatus();
 });
+
+function openCoverLightbox() {
+  if (showDefaultCover.value) return;
+  const url = displayCover.value.trim();
+  if (!url) return;
+  coverLightboxSrc.value = url;
+}
 
 function onBack() {
   modelValue.value = false;
@@ -554,6 +577,11 @@ function onBack() {
 
 function toggleChapterSort() {
   chapterSortDesc.value = !chapterSortDesc.value;
+}
+
+function toggleShowChapterTag() {
+  showChapterTag.value = !showChapterTag.value;
+  findBookSettings.persistAll();
 }
 
 async function onShowLogs() {
@@ -810,6 +838,7 @@ async function onDownloadOrStop() {
     />
 
     <BookSourceLoginPanel v-model="showLogin" :source="loginSource" />
+    <ReaderImageLightbox v-model="coverLightboxSrc" />
     <div class="bookDetailShell">
       <BookSourceCenterState v-if="loading">
         <span class="bookDetailLoadingHint" aria-live="polite">
@@ -830,10 +859,12 @@ async function onDownloadOrStop() {
             />
             <img
               v-else
-              class="bookDetailCover"
+              class="bookDetailCover bookDetailCover--zoomable"
               :src="displayCover"
               alt=""
               referrerpolicy="no-referrer"
+              title="点击查看大图"
+              @click="openCoverLightbox"
               @error="coverFailed = true"
             />
             <div class="bookDetailMeta">
@@ -869,6 +900,14 @@ async function onDownloadOrStop() {
           <div class="bookDetailSectionHead">
             <div class="bookDetailSectionHeadLeft">
               <h3 class="bookDetailSectionTitle">目录</h3>
+              <IconButton
+                v-if="hasChapterTags"
+                :icon-html="icons.subhead"
+                :title="showChapterTag ? '隐藏附加信息' : '显示附加信息'"
+                :aria-label="showChapterTag ? '隐藏附加信息' : '显示附加信息'"
+                :pressed="showChapterTag"
+                @click="toggleShowChapterTag"
+              />
               <span
                 v-if="lastReadChapterTitleLabel"
                 class="bookDetailLastRead"
@@ -899,7 +938,7 @@ async function onDownloadOrStop() {
             v-else
             class="bookDetailChapterList"
             :item-count="chapterCount"
-            :row-stride="CHAPTER_ROW_STRIDE"
+            :row-stride="chapterRowStride"
             :overscan="12"
             :external-scroll-el="detailScrollEl"
             :item-key="(i) => displayChapters[i]?.url ?? i"
@@ -926,7 +965,16 @@ async function onDownloadOrStop() {
                   "
                   :aria-label="displayChapters[index].isPay ? '已购买' : 'VIP'"
                 />
-                <span class="bookDetailChapterTitle">{{ displayChapters[index].title }}</span>
+                <span class="bookDetailChapterText">
+                  <span class="bookDetailChapterTitle">{{
+                    displayChapters[index].title
+                  }}</span>
+                  <span
+                    v-if="showChapterTag && displayChapters[index].tag?.trim()"
+                    class="bookDetailChapterTitleTag"
+                    >{{ displayChapters[index].tag.trim() }}</span
+                  >
+                </span>
                 <span
                   v-if="isLastReadChapter(displayChapters[index])"
                   class="bookDetailChapterLastRead"
@@ -1119,6 +1167,9 @@ img.bookDetailCover {
   object-fit: cover;
   background: var(--scrollbar-track);
 }
+img.bookDetailCover--zoomable {
+  cursor: zoom-in;
+}
 .bookDetailMeta {
   flex: 1;
   min-width: 0;
@@ -1153,6 +1204,7 @@ img.bookDetailCover {
   background: var(--book-source-tag);
   color: white;
   user-select: none;
+  white-space: nowrap;
 }
 
 .bookDetailUpdateTime,
@@ -1265,9 +1317,23 @@ img.bookDetailCover {
   gap: 8px;
   min-width: 0;
 }
-.bookDetailChapterTitle {
+.bookDetailChapterText {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+}
+.bookDetailChapterTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookDetailChapterTitleTag {
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

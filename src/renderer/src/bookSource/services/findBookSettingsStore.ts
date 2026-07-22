@@ -41,6 +41,7 @@ import {
   DEFAULT_FIND_BOOK_DOWNLOAD_CATEGORY,
   DEFAULT_FIND_BOOK_PROXY_SETTINGS,
   defaultFindBookChapterNavToolbarEnabled,
+  defaultFindBookShowChapterTag,
   findBookSettingsKey,
   isFindBookDownloadAfterAction,
   normalizeFindBookProxySettings,
@@ -168,6 +169,7 @@ export function snapshotFindBookSettingsFromStore(state: {
   fullscreenShowSystemTime: boolean;
   showSidebar: boolean;
   sidebarWidth: number;
+  showChapterTag: boolean;
   timedScrollSettings: TimedScrollSettings;
   pomodoroSettings: PomodoroSettings;
 }): PersistedFindBookSettings {
@@ -200,6 +202,7 @@ export function snapshotFindBookSettingsFromStore(state: {
     fullscreenShowSystemTime: state.fullscreenShowSystemTime,
     showSidebar: state.showSidebar,
     sidebarWidth: state.sidebarWidth,
+    showChapterTag: state.showChapterTag,
     timedScroll: state.timedScrollSettings,
     pomodoro: state.pomodoroSettings,
   };
@@ -310,6 +313,10 @@ export function createInitialFindBookSettingsState() {
             Math.floor(data.sidebarWidth),
           )
         : 270 - SIDEBAR_ACTIVITY_BAR_WIDTH,
+    showChapterTag:
+      typeof data.showChapterTag === "boolean"
+        ? data.showChapterTag
+        : defaultFindBookShowChapterTag,
     timedScrollSettings: mergeTimedScrollSettings(data.timedScroll),
     pomodoroSettings: mergePomodoroSettings(data.pomodoro),
   };

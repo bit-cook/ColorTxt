@@ -5,7 +5,18 @@
  * Rhino 另有两类与标准 JS 不兼容的写法，须在 eval 前预处理：
  * 1. `.map([a,b]=>` — 数组解构箭头参数须写成 `.map(([a,b])=>`
  * 2. 脚本末尾表达式（如 `JSON.stringify(list)`）Rhino 会作为返回值，Node 须补 `return`
+ * 3. 正则 `\ ({1,4}`（空格后误写 `({n,m}`）→ `( {1,4}`，否则 V8 `Nothing to repeat`
+ * 4. `function f(key){ let key = … }` — Rhino 允许形参与 let 同名，V8 会 SyntaxError
+ * 5. 零宽/格式字符（如 `getSource\u200b()`）— Rhino 可跑，V8 `missing ) after argument list`
  */
+
+/**
+ * 去掉书源 JS 中的零宽/格式字符（部分书源 `source.getSource​()` 等）。
+ * 须在 inline / prepare 之前执行。
+ */
+export function stripLegadoJsFormatChars(script: string): string {
+  return script.replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "");
+}
 
 /** Legado/Rhino：`.map([title,id]=>` → `.map(([title,id])=>` */
 export function fixRhinoBareArrayArrowParams(script: string): string {
@@ -13,6 +24,109 @@ export function fixRhinoBareArrayArrowParams(script: string): string {
     /(\.[\w$]+\s*\(\s*)\[([^\]]+)\]\s*=>/g,
     "$1([$2])=>",
   );
+}
+
+/**
+ * 部分书源剥 HTML 标签的正则写成 `\ ({1,4}`（`\` + 空格 + `({n,m}`）。
+ * V8 会解析成「空格」后开分组，分组内开头就是量词 → `Nothing to repeat`。
+ * 语义应为 `( {1,4}`（分组内 1～4 个空格）。此处改写以对齐可运行结果。
+ */
+export function fixRhinoIncompatibleRegexLiterals(script: string): string {
+  return script.replace(/\\ \(\{(\d+(?:,\d*)?)\}/g, "( {$1}");
+}
+
+/**
+ * Rhino 允许 `function f(key){ let key = "…" }`（形参与体内 let/const 同名）；
+ * V8 抛 `SyntaxError: Identifier 'key' has already been declared`，整段 jsLib 加载失败
+ * （如 check_token 未进入共享作用域）。将冲突形参改名为 `_legado_$n_$name`。
+ */
+export function fixRhinoParamLetRedeclarations(script: string): string {
+  let out = "";
+  let i = 0;
+  while (i < script.length) {
+    const rest = script.slice(i);
+    const m = /(?:async\s+)?function\b\s*([\w$]*)\s*\(/.exec(rest);
+    if (!m || m.index == null) {
+      out += script.slice(i);
+      break;
+    }
+    const fnStart = i + m.index;
+    out += script.slice(i, fnStart);
+    const header = m[0];
+    const paramsOpen = fnStart + header.length - 1; // '('
+    const paramsClose = findMatchingParen(script, paramsOpen);
+    if (paramsClose < 0) {
+      out += script.slice(fnStart);
+      break;
+    }
+    let bodyOpen = paramsClose + 1;
+    while (bodyOpen < script.length && /\s/.test(script[bodyOpen]!)) bodyOpen++;
+    if (script[bodyOpen] !== "{") {
+      // 无函数体（罕见）；原样拷贝签名后继续
+      out += script.slice(fnStart, bodyOpen);
+      i = bodyOpen;
+      continue;
+    }
+    const bodyClose = findMatchingBrace(script, bodyOpen);
+    if (bodyClose < 0) {
+      out += script.slice(fnStart);
+      break;
+    }
+    const paramsRaw = script.slice(paramsOpen + 1, paramsClose);
+    const body = script.slice(bodyOpen + 1, bodyClose);
+    const fixedParams = renameParamsRedeclaredWithLetConst(paramsRaw, body);
+    out +=
+      header.slice(0, -1) +
+      "(" +
+      fixedParams +
+      ")" +
+      script.slice(paramsClose + 1, bodyOpen) +
+      "{" +
+      body +
+      "}";
+    i = bodyClose + 1;
+  }
+  return out;
+}
+
+/** 形参列表中与函数体内 `let`/`const`/`var` 同名的项改名 */
+function renameParamsRedeclaredWithLetConst(
+  paramsRaw: string,
+  body: string,
+): string {
+  const names = splitFunctionParamNames(paramsRaw);
+  if (!names.length) return paramsRaw;
+  const redeclared = names.filter((name) =>
+    new RegExp(`\\b(?:let|const|var)\\s+${escapeRegExp(name)}\\b`).test(body),
+  );
+  if (!redeclared.length) return paramsRaw;
+  let out = paramsRaw;
+  let n = 0;
+  for (const name of redeclared) {
+    const repl = `_legado_p${n++}_${name}`;
+    out = out.replace(
+      new RegExp(`(^|[,\\s])(${escapeRegExp(name)})(?=\\s*([,)=]|$))`, "g"),
+      `$1${repl}`,
+    );
+  }
+  return out;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function splitFunctionParamNames(paramsRaw: string): string[] {
+  const names: string[] = [];
+  for (const part of paramsRaw.split(",")) {
+    const t = part.trim();
+    if (!t) continue;
+    // 跳过解构 / rest：`{a}`, `[a]`, `...a`
+    if (/^[{[]/.test(t) || t.startsWith("...")) continue;
+    const id = t.replace(/\s*=\s*[\s\S]*$/, "").trim();
+    if (/^[\w$]+$/.test(id)) names.push(id);
+  }
+  return names;
 }
 
 function hasLegadoTopLevelStatements(script: string): boolean {
@@ -44,6 +158,38 @@ function findTrailingExpressionStartLine(lines: string[], endLineIdx: number): n
     }
   }
   return endLineIdx;
+}
+
+/**
+ * 多行三元续行：`cond ?\n  a : b` 或 `cond\n  ? a\n  : b`。
+ * 返回表达式起始行；非三元续行返回 -1。
+ */
+function findTrailingTernaryStartLine(lines: string[], endLineIdx: number): number {
+  let k = endLineIdx - 1;
+  while (k >= 0 && !lines[k]!.trim()) k--;
+  if (k < 0) return -1;
+  const prev = lines[k]!.trim();
+  const last = lines[endLineIdx]!.trim();
+  const prevEndsOp = /[?:]\s*$/.test(prev);
+  const lastStartsOp = /^[?:]/.test(last);
+  if (!prevEndsOp && !lastStartsOp) return -1;
+
+  let start = endLineIdx;
+  for (let j = endLineIdx; j >= 0; j--) {
+    const t = lines[j]!.trim();
+    if (!t) continue;
+    start = j;
+    let p = j - 1;
+    while (p >= 0 && !lines[p]!.trim()) p--;
+    if (p < 0) break;
+    const pt = lines[p]!.trim();
+    // 上一行以三元/运算符收尾，或本行以 `?`/`:` 开头 → 继续并入
+    if (/[?:+\-*/%&|,=]\s*$/.test(pt) || /^[?:]/.test(t)) continue;
+    break;
+  }
+  const slice = lines.slice(start, endLineIdx + 1).join("\n");
+  if (!/\?/.test(slice)) return -1;
+  return start;
 }
 
 /** 跳过正则字面量；start 指向开头 `/`，返回结束下标（flags 之后） */
@@ -246,6 +392,42 @@ function legadoDeclAssignReturnName(line: string): string | null {
 }
 
 /**
+ * `if (cond) a = expr`（无花括号）：Rhino 完成值是赋值结果。
+ * 用于末行补 `return a`，避免写成非法的 `return if (...)`。
+ */
+function legadoSingleLineIfAssignName(line: string): string | null {
+  const t = line.trim().replace(/;\s*$/, "");
+  if (!/^if\s*\(/.test(t)) return null;
+  let depth = 0;
+  let i = t.indexOf("(");
+  if (i < 0) return null;
+  for (; i < t.length; i++) {
+    const ch = t[i]!;
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        i += 1;
+        break;
+      }
+    }
+  }
+  if (depth !== 0) return null;
+  const rest = t.slice(i).trim();
+  if (rest.startsWith("{")) return null;
+  const m = rest.match(/^([\w$]+)\s*=/);
+  return m?.[1] ?? null;
+}
+
+/** 是否整行（或仅）为 JS 行注释 / 块注释 */
+function isLegadoCommentOnlyLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return true;
+  if (t.startsWith("//")) return true;
+  return /^\/\*[\s\S]*\*\/$/.test(t);
+}
+
+/**
  * 单行内多个顶层语句（如 `java.put(...);java.put(...);result`）时，
  * 返回最后一句起始下标；无顶层 `;` 则返回 0。
  */
@@ -351,22 +533,30 @@ export function ensureLegadoScriptReturn(script: string): string {
 
   const lines = trimmed.split("\n");
   let i = lines.length - 1;
-  while (i >= 0 && !lines[i].trim()) i--;
+  // 跳过末尾空行与纯注释（如 `//java.log(a)`），否则会收成 `return //…; })()`，
+  // 行注释吃掉 IIFE 收尾 → Unexpected end of input（部分论坛书源 bookList）
+  while (i >= 0 && isLegadoCommentOnlyLine(lines[i]!)) i--;
   if (i < 0) return trimmed;
 
-  const last = lines[i].trim();
+  const last = lines[i]!.trim();
   // 仅看最后一行：函数体内的 return 不影响顶层表达式作返回值（Legado/Rhino 行为）
   if (!last || last.startsWith("return ")) return trimmed;
 
   /**
    * 单行多语句须先于「整行 var x=… → return x」处理。
    * 否则 `var l=…;if(…){a+l}else{b}` 会被收成 `return l`，丢掉 if 里的真正返回值。
+   *
+   * 先去掉行尾分号再找「最后一句」：否则
+   * `sign=md5(); r=…; "http://…"+r;` 会把空语句当最后一句，落到下方把整行写成
+   * `return sign=md5(); …`，return 在首个 `;` 处结束，只返回 MD5（发现分类 URL 变成
+   * `http://host/<md5>`）。
    */
-  const lastStmtStartInLine = findLastTopLevelStatementStart(last);
+  const lastBody = last.replace(/;\s*$/, "");
+  const lastStmtStartInLine = findLastTopLevelStatementStart(lastBody);
   if (lastStmtStartInLine > 0) {
     const indent = lines[i].match(/^\s*/)?.[0] ?? "";
-    const before = last.slice(0, lastStmtStartInLine);
-    const stmt = last.slice(lastStmtStartInLine).replace(/;\s*$/, "").trim();
+    const before = lastBody.slice(0, lastStmtStartInLine);
+    const stmt = lastBody.slice(lastStmtStartInLine).trim();
     if (stmt.startsWith("return ")) return trimmed;
     // 末行仅为 `});` / `);`（闭括号 + 分号）时 stmt 为空，不是多语句；
     // 若此处直接 return，会漏掉 `List.map(…);` / `JSON.stringify($$);` 的顶层 return
@@ -386,22 +576,69 @@ export function ensureLegadoScriptReturn(script: string): string {
     }
   }
 
-  const declNameFromLast = legadoDeclAssignReturnName(last);
+  const declNameFromLast = legadoDeclAssignReturnName(lastBody);
   if (declNameFromLast) {
     const indent = lines[i].match(/^\s*/)?.[0] ?? "";
     return `${trimmed}\n${indent}return ${declNameFromLast};`;
+  }
+  // `if (cond) a = …`：补 return a（勿 `return if`）
+  const ifAssignName = legadoSingleLineIfAssignName(lastBody);
+  if (ifAssignName) {
+    return `${trimmed}\nreturn ${ifAssignName};`;
   }
   /**
    * switch/if 等块末尾给 result 赋值：Rhino 从作用域读 result，Node 须补 return。
    * 末行常为 `}` 或 `};`（部分书源 if/else 后多余分号）；若只认 `endsWith("}")`，
    * `};` 会落到下方被改成 `return }` → SyntaxError，搜索 bookUrl 整批失败。
    */
-  const lastNoTrailSemi = last.replace(/;\s*$/, "");
+  const lastNoTrailSemi = lastBody;
   if (lastNoTrailSemi.endsWith("}")) {
     if (/\bresult\s*=/.test(trimmed) && !/\breturn\s+result\b/.test(trimmed)) {
       return `${trimmed}\nreturn result;`;
     }
+    /**
+     * Rhino：`list\nif(list==""){"提示"}` — if 未命中时 completion 仍为上一表达式。
+     * Node 须在块后补 `return list`（部分论坛书源正文）；仅认裸标识符，避免
+     * `doSomething()\nif…` 被写成 `return doSomething()` 而二次调用。
+     */
+    let prevIdx = i - 1;
+    while (prevIdx >= 0 && isLegadoCommentOnlyLine(lines[prevIdx]!)) prevIdx--;
+    if (prevIdx >= 0) {
+      const prev = lines[prevIdx]!.trim().replace(/;\s*$/, "");
+      if (
+        /^[\w$]+$/.test(prev) &&
+        !/^(if|else|for|while|function|try|catch|switch|return|true|false|null|undefined)$/.test(
+          prev,
+        )
+      ) {
+        const afterPrev = lines.slice(prevIdx + 1).join("\n");
+        if (!new RegExp(String.raw`\breturn\s+${prev}\b`).test(afterPrev)) {
+          return `${trimmed}\nreturn ${prev};`;
+        }
+      }
+    }
+    // 勿在块外一律 `return url`：url 常仅在 if 内赋值，未进入分支会 ReferenceError
+    // （部分书源 tocUrl 等）。`url=…` 由 injectTrailingReturnInBraceBlock 在分支内补 return。
     return trimmed;
+  }
+
+  /**
+   * 多行三元：`cond ?\n  a : b` — 勿把末行写成 `return a : b`（Unexpected token return）。
+   * return 加在含条件/`?` 的起始行。
+   */
+  {
+    const ternStart = findTrailingTernaryStartLine(lines, i);
+    if (ternStart >= 0 && ternStart < i) {
+      const start = lines[ternStart].trim();
+      if (!start.startsWith("return ")) {
+        const indent = lines[ternStart].match(/^\s*/)?.[0] ?? "";
+        lines[ternStart] = `${indent}return ${start.replace(/;\s*$/, "")}`;
+      }
+      if (!lines[i].trimEnd().endsWith(";")) {
+        lines[i] = `${lines[i].trimEnd()};`;
+      }
+      return lines.join("\n");
+    }
   }
 
   /**
@@ -413,11 +650,39 @@ export function ensureLegadoScriptReturn(script: string): string {
     if (/^\(/.test(expr) && !/^\s*return\b/.test(expr)) {
       return `return ${expr};`;
     }
+    /**
+     * 顶层声明 + 尾部 IIFE（部分书源 bookList：一串 function 后
+     * `(() => { return handlerFactory()() })()`）：向上找 IIFE 起始行补 return，
+     * 否则 IIFE 结果被丢掉且 promise 脱管（外层拿到 undefined，内部错误变 unhandled）。
+     */
+    for (let j = i; j >= 1; j--) {
+      if (!lines[j].trim().startsWith("(")) continue;
+      // 上一非空行须为语句边界（`}`/`;`），避免把前一表达式的续行当成 IIFE 起点
+      let k = j - 1;
+      while (k >= 0 && !lines[k].trim()) k--;
+      const prev = k >= 0 ? lines[k].trim() : "";
+      if (prev && !/[;}]$/.test(prev)) continue;
+      const tailExpr = lines
+        .slice(j, i + 1)
+        .join("\n")
+        .trim()
+        .replace(/;\s*$/, "");
+      if (/^\s*return\b/.test(tailExpr)) return trimmed;
+      try {
+        // eslint-disable-next-line no-new-func -- 仅作语法探测：确认 j..i 是完整表达式
+        new Function(`return (${tailExpr});`);
+      } catch {
+        continue;
+      }
+      const head = lines.slice(0, j).join("\n");
+      const indent = lines[j].match(/^\s*/)?.[0] ?? "";
+      return `${head}\n${indent}return ${tailExpr};`;
+    }
     return trimmed;
   }
 
   // 单行模板字符串：`${...}` 含 `}`，不可当多行表达式回溯（否则会误 return 上一句变量）
-  const lastExpr = last.replace(/;\s*$/, "");
+  const lastExpr = lastBody;
   if (lastExpr.startsWith("`") && lastExpr.endsWith("`")) {
     const indent = lines[i].match(/^\s*/)?.[0] ?? "";
     lines[i] = `${indent}return ${lastExpr};`;
@@ -427,8 +692,8 @@ export function ensureLegadoScriptReturn(script: string): string {
   // 顶层 if/for 等语句后的单行返回值（如 loginCheckJs 末尾 result）勿回溯到 if 行
   // 不用 `}` 触发回溯：否则 `/files/...${sid}/...` 一类模板会被当成多行并跳到上一句
   const looksMultilineExpr =
-    /[)\]]/.test(last) &&
-    !/^(if|else|for|while|function|try|catch|class)\b/.test(last);
+    /[)\]]/.test(lastBody) &&
+    !/^(if|else|for|while|function|try|catch|class)\b/.test(lastBody);
   const startLine = looksMultilineExpr
     ? findTrailingExpressionStartLine(lines, i)
     : i;
@@ -457,8 +722,30 @@ export function ensureLegadoIfElseBranchReturn(script: string): string {
     /^(\s*if\s*\([\s\S]*?\)\s*\{\s*)([\w$]+\(\))(\s*\}\s*else\s*\{\s*)([\w$]+\(\))(\s*\})\s*$/,
     "$1return $2$3return $4$5",
   );
-  // `if (cond) { ...; expr } else { ...; expr }`（目录规则等）：仅处理脚本末尾的 if/else
+  // `if (cond) expr; else { …; expr }` / 有无花括号均可（SF 轻小说 kind 等）：
+  // 仅处理脚本末尾的 if/else，给分支末表达式补 return
   return injectReturnIntoIfElseBranchEnds(s);
+}
+
+/** 跳过空白与行/块注释（if 链后的 `//}catch…` 不算后续语句） */
+function skipLegadoTrailingNoise(script: string, from: number): number {
+  let i = from;
+  while (i < script.length) {
+    while (i < script.length && /\s/.test(script[i]!)) i++;
+    if (i >= script.length) break;
+    if (script.startsWith("//", i)) {
+      while (i < script.length && script[i] !== "\n") i++;
+      continue;
+    }
+    if (script.startsWith("/*", i)) {
+      const end = script.indexOf("*/", i + 2);
+      if (end < 0) return script.length;
+      i = end + 2;
+      continue;
+    }
+    break;
+  }
+  return i;
 }
 
 /** if/else 链结束后是否还有顶层语句（loginCheckJs 在 if 后还有 `result`） */
@@ -468,9 +755,7 @@ function ifElseChainIsTerminal(
   chainEnd: number,
 ): boolean {
   if (braceDepthBefore(script, ifStart) !== 0) return false;
-  let i = chainEnd + 1;
-  while (i < script.length && /\s/.test(script[i]!)) i++;
-  return i >= script.length;
+  return skipLegadoTrailingNoise(script, chainEnd + 1) >= script.length;
 }
 
 /**
@@ -570,10 +855,191 @@ export function ensureLegadoTryCatchBranchReturn(script: string): string {
   return result;
 }
 
-/** 解析 if 后紧随的 else / else if 链，返回整条链结束下标 */
-function findIfElseChainEnd(script: string, thenBraceClose: number): number {
-  let end = thenBraceClose;
-  let after = thenBraceClose + 1;
+/**
+ * 无花括号单语句结束下标（含末尾 `;`；若靠 ASI 在 `else` 前结束则不含换行）。
+ * `from` 为语句起点（已跳过前导空白亦可）。
+ */
+function findBracelessStatementEnd(src: string, from: number): number {
+  let i = from;
+  while (i < src.length && /\s/.test(src[i]!)) i++;
+  if (i >= src.length || src[i] === "{") return -1;
+
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let escape = false;
+
+  for (; i < src.length; i++) {
+    const ch = src[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inSingle) {
+      if (ch === "\\") escape = true;
+      else if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inTemplate) {
+      if (ch === "\\") escape = true;
+      else if (ch === "`") inTemplate = false;
+      continue;
+    }
+
+    if (ch === "/" && i + 1 < src.length) {
+      const next = src[i + 1]!;
+      if (next === "/") {
+        const nl = src.indexOf("\n", i + 2);
+        i = nl < 0 ? src.length : nl;
+        continue;
+      }
+      if (next === "*") {
+        const end = src.indexOf("*/", i + 2);
+        if (end < 0) return src.length - 1;
+        i = end + 1;
+        continue;
+      }
+      if (canStartRegexLiteral(src, i)) {
+        i = skipRegexLiteral(src, i) - 1;
+        continue;
+      }
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === "`") {
+      inTemplate = true;
+      continue;
+    }
+
+    if (ch === "(") {
+      depthParen++;
+      continue;
+    }
+    if (ch === ")") {
+      depthParen = Math.max(0, depthParen - 1);
+      continue;
+    }
+    if (ch === "[") {
+      depthBracket++;
+      continue;
+    }
+    if (ch === "]") {
+      depthBracket = Math.max(0, depthBracket - 1);
+      continue;
+    }
+    if (ch === "{") {
+      depthBrace++;
+      continue;
+    }
+    if (ch === "}") {
+      if (depthBrace === 0) return Math.max(from, i - 1);
+      depthBrace--;
+      continue;
+    }
+
+    if (depthParen !== 0 || depthBracket !== 0 || depthBrace !== 0) continue;
+
+    if (ch === ";") return i;
+
+    // ASI：换行后紧跟 else → 语句在换行前结束
+    if (ch === "\n" || ch === "\r") {
+      let j = i + 1;
+      if (ch === "\r" && src[j] === "\n") j++;
+      while (j < src.length && /[ \t\f\v]/.test(src[j]!)) j++;
+      if (/^else\b/.test(src.slice(j))) {
+        let end = i - 1;
+        while (end >= from && /[ \t\f\v]/.test(src[end]!)) end--;
+        return end >= from ? end : -1;
+      }
+    }
+  }
+
+  let end = src.length - 1;
+  while (end >= from && /\s/.test(src[end]!)) end--;
+  return end >= from ? end : -1;
+}
+
+/** 跳过前导空白与行/块注释（SF bookList：`if(cond)\n//旧代码\nexpr;`） */
+function skipLegadoLeadingCommentsAndWs(src: string, from: number): number {
+  let i = Math.max(0, from);
+  while (i < src.length) {
+    while (i < src.length && /\s/.test(src[i]!)) i++;
+    if (i >= src.length) break;
+    if (src.startsWith("//", i)) {
+      const nl = src.indexOf("\n", i + 2);
+      i = nl < 0 ? src.length : nl + 1;
+      continue;
+    }
+    if (src.startsWith("/*", i)) {
+      const end = src.indexOf("*/", i + 2);
+      if (end < 0) return src.length;
+      i = end + 2;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+/** 无花括号分支表达式前补 return（对齐 Rhino 以末表达式为返回值） */
+function injectReturnIntoBracelessStatement(
+  src: string,
+  start: number,
+  end: number,
+): { text: string; changed: boolean; nextIndex: number } {
+  if (start < 0 || end < start || end >= src.length) {
+    return { text: src, changed: false, nextIndex: end + 1 };
+  }
+  // 不可把 return 插到前导注释前：`return //旧代码` 会吃掉真表达式并弄断 else
+  const exprStart = skipLegadoLeadingCommentsAndWs(src, start);
+  if (exprStart > end) {
+    return { text: src, changed: false, nextIndex: end + 1 };
+  }
+  const raw = src.slice(exprStart, end + 1);
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith("return ")) {
+    return { text: src, changed: false, nextIndex: end + 1 };
+  }
+  if (/^(if|for|while|switch|try|function|async|with)\b/.test(trimmed)) {
+    return { text: src, changed: false, nextIndex: end + 1 };
+  }
+  const leadWs = raw.match(/^\s*/)?.[0] ?? "";
+  const expr = trimmed.replace(/;\s*$/, "");
+  if (!expr || /^(continue|break|throw)\b/.test(expr)) {
+    return { text: src, changed: false, nextIndex: end + 1 };
+  }
+  const rewritten = `${leadWs}return ${expr};`;
+  const text = src.slice(0, exprStart) + rewritten + src.slice(end + 1);
+  return {
+    text,
+    changed: true,
+    nextIndex: exprStart + rewritten.length,
+  };
+}
+
+/**
+ * then 分支结束后（花括号 `}` 或无括号语句末尾），定位整条 if/else 链终点。
+ * 支持 `else {…}` / `else stmt;` / `else if (…) …`。
+ */
+function findIfElseChainEnd(script: string, thenEnd: number): number {
+  let end = thenEnd;
+  let after = thenEnd + 1;
   while (after < script.length && /\s/.test(script[after]!)) after++;
   while (/^else\b/.test(script.slice(after))) {
     after += 4;
@@ -584,13 +1050,19 @@ function findIfElseChainEnd(script: string, thenBraceClose: number): number {
       const parenOpen = after + ifMatch[0].length - 1;
       const parenClose = findMatchingParen(script, parenOpen);
       if (parenClose < 0) break;
-      let braceOpen = parenClose + 1;
-      while (braceOpen < script.length && /\s/.test(script[braceOpen]!)) braceOpen++;
-      if (script[braceOpen] !== "{") break;
-      const braceClose = findMatchingBrace(script, braceOpen);
-      if (braceClose < 0) break;
-      end = braceClose;
-      after = braceClose + 1;
+      let bodyStart = parenClose + 1;
+      while (bodyStart < script.length && /\s/.test(script[bodyStart]!)) bodyStart++;
+      if (script[bodyStart] === "{") {
+        const braceClose = findMatchingBrace(script, bodyStart);
+        if (braceClose < 0) break;
+        end = braceClose;
+        after = braceClose + 1;
+      } else {
+        const stmtEnd = findBracelessStatementEnd(script, bodyStart);
+        if (stmtEnd < 0) break;
+        end = stmtEnd;
+        after = stmtEnd + 1;
+      }
       while (after < script.length && /\s/.test(script[after]!)) after++;
       continue;
     }
@@ -599,12 +1071,35 @@ function findIfElseChainEnd(script: string, thenBraceClose: number): number {
       if (elseClose < 0) break;
       return elseClose;
     }
-    break;
+    const elseStmtEnd = findBracelessStatementEnd(script, after);
+    if (elseStmtEnd < 0) break;
+    return elseStmtEnd;
   }
   return end;
 }
 
-/** 在顶层 if/else 花括号块末尾表达式前插入 return（不改写已有 return） */
+/** 处理 else / else if 分支：花括号块或无括号单语句补 return */
+function injectReturnIntoElseBranch(
+  src: string,
+  elseKeywordStart: number,
+): { text: string; changed: boolean; nextIndex: number } | null {
+  let after = elseKeywordStart + 4;
+  while (after < src.length && /\s/.test(src[after]!)) after++;
+  if (/^if\s*\(/.test(src.slice(after))) {
+    // else if：交给外层下一次扫描 if
+    return null;
+  }
+  if (src[after] === "{") {
+    const elseClose = findMatchingBrace(src, after);
+    if (elseClose < 0) return null;
+    return injectTrailingReturnInBraceBlock(src, after, elseClose);
+  }
+  const elseEnd = findBracelessStatementEnd(src, after);
+  if (elseEnd < 0) return null;
+  return injectReturnIntoBracelessStatement(src, after, elseEnd);
+}
+
+/** 在顶层 if/else 分支末尾表达式前插入 return（含无花括号分支；不改写已有 return） */
 function injectReturnIntoIfElseBranchEnds(script: string): string {
   let result = script;
   // 反复扫描，直到无法再改写
@@ -621,56 +1116,69 @@ function injectReturnIntoIfElseBranchEnds(script: string): string {
         continue;
       }
 
-      let braceOpen = parenClose + 1;
-      while (braceOpen < result.length && /\s/.test(result[braceOpen]!)) braceOpen++;
-      if (result[braceOpen] !== "{") {
-        ifRe.lastIndex = startIdx + 1;
-        continue;
+      let bodyStart = parenClose + 1;
+      while (bodyStart < result.length && /\s/.test(result[bodyStart]!)) bodyStart++;
+
+      const bracedThen = result[bodyStart] === "{";
+      let thenEnd: number;
+      if (bracedThen) {
+        thenEnd = findMatchingBrace(result, bodyStart);
+        if (thenEnd < 0) {
+          ifRe.lastIndex = startIdx + 1;
+          continue;
+        }
+      } else {
+        thenEnd = findBracelessStatementEnd(result, bodyStart);
+        if (thenEnd < 0) {
+          ifRe.lastIndex = startIdx + 1;
+          continue;
+        }
       }
 
-      const braceClose = findMatchingBrace(result, braceOpen);
-      if (braceClose < 0) {
-        ifRe.lastIndex = startIdx + 1;
-        continue;
-      }
-
-      const chainEnd = findIfElseChainEnd(result, braceClose);
+      const chainEnd = findIfElseChainEnd(result, thenEnd);
       // loginCheckJs：`if (…) { …; java.log(…) } \n result` — if 非末尾语句时勿往分支里塞 return
       if (!ifElseChainIsTerminal(result, startIdx, chainEnd)) {
-        ifRe.lastIndex = Math.max(braceClose + 1, startIdx + 1);
+        ifRe.lastIndex = Math.max(thenEnd + 1, startIdx + 1);
         continue;
       }
 
-      const injected = injectTrailingReturnInBraceBlock(result, braceOpen, braceClose);
-      if (injected.changed) {
-        result = injected.text;
-        changed = true;
-        ifRe.lastIndex = Math.max(injected.nextIndex, startIdx + 1);
-        continue;
+      if (bracedThen) {
+        const injected = injectTrailingReturnInBraceBlock(result, bodyStart, thenEnd);
+        if (injected.changed) {
+          result = injected.text;
+          changed = true;
+          ifRe.lastIndex = Math.max(injected.nextIndex, startIdx + 1);
+          continue;
+        }
+      } else {
+        const injected = injectReturnIntoBracelessStatement(
+          result,
+          bodyStart,
+          thenEnd,
+        );
+        if (injected.changed) {
+          result = injected.text;
+          changed = true;
+          ifRe.lastIndex = Math.max(injected.nextIndex, startIdx + 1);
+          continue;
+        }
       }
 
       // else / else if 紧随其后
-      let after = braceClose + 1;
+      let after = thenEnd + 1;
       while (after < result.length && /\s/.test(result[after]!)) after++;
       if (!/^else\b/.test(result.slice(after))) {
-        ifRe.lastIndex = Math.max(braceClose + 1, startIdx + 1);
+        ifRe.lastIndex = Math.max(thenEnd + 1, startIdx + 1);
         continue;
       }
-      after += 4;
-      while (after < result.length && /\s/.test(result[after]!)) after++;
-      if (result[after] === "{") {
-        const elseClose = findMatchingBrace(result, after);
-        if (elseClose >= 0) {
-          const elseInj = injectTrailingReturnInBraceBlock(result, after, elseClose);
-          if (elseInj.changed) {
-            result = elseInj.text;
-            changed = true;
-            ifRe.lastIndex = Math.max(elseInj.nextIndex, startIdx + 1);
-            continue;
-          }
-        }
+      const elseInj = injectReturnIntoElseBranch(result, after);
+      if (elseInj?.changed) {
+        result = elseInj.text;
+        changed = true;
+        ifRe.lastIndex = Math.max(elseInj.nextIndex, startIdx + 1);
+        continue;
       }
-      ifRe.lastIndex = Math.max(braceClose + 1, startIdx + 1);
+      ifRe.lastIndex = Math.max(thenEnd + 1, startIdx + 1);
     }
     if (!changed) break;
   }
@@ -756,6 +1264,64 @@ function braceDepthBefore(src: string, endExclusive: number): number {
   return depth;
 }
 
+/** 表达式在字符串/正则/模板外是否含 `;`（多语句） */
+function legadoExprHasTopLevelSemicolon(expr: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let escape = false;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inSingle) {
+      if (ch === "\\") escape = true;
+      else if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inTemplate) {
+      if (ch === "\\") escape = true;
+      else if (ch === "`") inTemplate = false;
+      continue;
+    }
+    if (ch === "/" && i + 1 < expr.length) {
+      const next = expr[i + 1]!;
+      if (next === "/") return false; // 行注释：后续不再有顶层语句
+      if (next === "*") {
+        const end = expr.indexOf("*/", i + 2);
+        if (end < 0) return false;
+        i = end + 1;
+        continue;
+      }
+      if (canStartRegexLiteral(expr, i)) {
+        i = skipRegexLiteral(expr, i) - 1;
+        continue;
+      }
+    }
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === "`") {
+      inTemplate = true;
+      continue;
+    }
+    if (ch === ";") return true;
+  }
+  return false;
+}
+
 function injectTrailingReturnInBraceBlock(
   src: string,
   braceOpen: number,
@@ -790,8 +1356,81 @@ function injectTrailingReturnInBraceBlock(
 
     const indent = innerLines[li]?.match(/^\s*/)?.[0] ?? "";
     const expr = t.replace(/;\s*$/, "");
-    // 分支内单表达式（含 `java.get('x')+l`）补 return；排除控制流与多语句
-    if (/[;\n]/.test(expr) || /\b(if|for|while|switch|try|function|class)\b/.test(expr)) {
+    // java.put/log 等副作用：保留执行，再 return 其写入的 result/url（勿 return put 本身）
+    if (/^java\.(put|log|toast|startBrowser|startBrowserAwait)\s*\(/.test(expr)) {
+      let retVar: string | null = null;
+      const putArg = expr.match(
+        /^java\.put\s*\(\s*(['"])[^'"]*\1\s*,\s*([\w$]+)\s*\)/,
+      );
+      if (putArg?.[2]) retVar = putArg[2];
+      if (!retVar) {
+        for (let j = li - 1; j >= 0; j--) {
+          const prev = innerLines[j]?.trim() ?? "";
+          if (!prev) continue;
+          if (/^result\s*=/.test(prev)) {
+            retVar = "result";
+            break;
+          }
+          if (/^url\s*=/.test(prev)) {
+            retVar = "url";
+            break;
+          }
+          break;
+        }
+      }
+      if (retVar) {
+        innerLines[li] = `${indent}${expr};\n${indent}return ${retVar};`;
+        const newInner = innerLines.join("\n");
+        const text =
+          src.slice(0, braceOpen + 1) + newInner + src.slice(braceClose);
+        return {
+          text,
+          changed: true,
+          nextIndex: braceOpen + 1 + newInner.length + 1,
+        };
+      }
+      li--;
+      continue;
+    }
+    // 分支内单表达式（含 `java.get('x')+l`）补 return；排除控制流与多语句。
+    // 勿用 `/[;]/` 粗测：书源正则常含 `&quot;`（实体以 `;` 结尾），会误判为多语句，
+    // 导致 try 末尾三元无法 return（只能靠 catch 赋值 + 外层 `return result` 刷 TypeError 日志）。
+    // 勿把 `class` 列入关键字：`/class="…"/` 同样会被 `\bclass\b` 误伤。
+    if (/\b(if|for|while|switch|try|function)\b/.test(expr)) {
+      break;
+    }
+    // 顶层 `;` 多语句：`json=…; url=…` → 对末句补 return（部分书源 tocUrl 等）
+    if (legadoExprHasTopLevelSemicolon(expr)) {
+      const lastStart = findLastTopLevelStatementStart(expr);
+      if (lastStart > 0) {
+        const before = expr.slice(0, lastStart);
+        const stmt = expr.slice(lastStart).trim();
+        if (
+          stmt &&
+          !stmt.startsWith("return ") &&
+          !/^(if|for|while|switch|try|with|continue|break|function)\b/.test(stmt)
+        ) {
+          const declName = legadoDeclAssignReturnName(stmt);
+          const assignName = stmt.match(/^([\w$]+)\s*=/)?.[1];
+          let rewritten: string | null = null;
+          if (declName) {
+            rewritten = `${indent}${before}${stmt}; return ${declName};`;
+          } else if (assignName) {
+            rewritten = `${indent}${before}${stmt}; return ${assignName};`;
+          } else {
+            rewritten = `${indent}${before}return ${stmt};`;
+          }
+          innerLines[li] = rewritten;
+          const newInner = innerLines.join("\n");
+          const text =
+            src.slice(0, braceOpen + 1) + newInner + src.slice(braceClose);
+          return {
+            text,
+            changed: true,
+            nextIndex: braceOpen + 1 + newInner.length + 1,
+          };
+        }
+      }
       break;
     }
     // 保留字/字面量可作表达式；排除不可出现在 return 后的标识符式关键字
@@ -842,8 +1481,13 @@ export const LEGADO_RESULT_LIST_PRELUDE = `let result = (() => {
   return r;
 })();`;
 
+/**
+ * 脚本已自带 `let/const/var result` 时用此版：只给**沙箱**上的 result 补 List API，
+ * 不可读写裸标识符 `result`——与后续声明同处一作用域时，`typeof result` 也会踩 TDZ
+ * （`Cannot access 'result' before initialization`，如发现分类 `let result=[]`）。
+ */
 export const LEGADO_RESULT_LIST_PRELUDE_INPLACE = `(() => {
-  const r = typeof result !== "undefined" ? result : globalThis.result;
+  const r = globalThis.result;
   if (!Array.isArray(r) || typeof r.toArray === "function") return;
   const def = (k, v) => Object.defineProperty(r, k, {
     configurable: true, writable: true, enumerable: false, value: v
@@ -856,7 +1500,7 @@ export const LEGADO_RESULT_LIST_PRELUDE_INPLACE = `(() => {
 
 /** 同步/异步 Legado JS 通用预处理 */
 export function prepareLegadoJs(script: string): string {
-  let s = script.trim();
+  let s = stripLegadoJsFormatChars(script).trim();
   if (/^<js>/i.test(s)) {
     s = s.replace(/^<js>/i, "").replace(/<\/js>\s*$/i, "").trim();
   } else if (/^@js:/i.test(s)) {
@@ -865,6 +1509,8 @@ export function prepareLegadoJs(script: string): string {
     s = s.replace(/^js:\s*/i, "").trim();
   }
   s = fixRhinoBareArrayArrowParams(s);
+  s = fixRhinoIncompatibleRegexLiterals(s);
+  s = fixRhinoParamLetRedeclarations(s);
   s = ensureLegadoWithBlockReturn(s);
   s = ensureLegadoIfElseBranchReturn(s);
   s = ensureLegadoTryCatchBranchReturn(s);
@@ -1012,6 +1658,11 @@ export function collectAsyncFunctionNames(script: string): string[] {
     /\basync\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g,
     /\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*async\s+function\b/g,
     /\b(?:(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*async\s+(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g,
+    // 属性赋值：`u.login = async function()` / `u.handNovels = async (…) =>`
+    // （loginCheckJs 把 util 方法 objStringify 后经 java.put 传给规则脚本再 eval 还原，
+    //  调用点 `util.login()` 须能按名注入 await）
+    /\b[A-Za-z_$][\w$]*\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*async\s+function\b/g,
+    /\b[A-Za-z_$][\w$]*\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*async\s+(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g,
   ];
   for (const re of patterns) {
     let m: RegExpExecArray | null;
@@ -1023,29 +1674,44 @@ export function collectAsyncFunctionNames(script: string): string[] {
 }
 
 /**
- * 将 `eval(String(source.bookSourceComment))` 展开为注释正文，使 prepare 可改写其中的
- * java.ajaxAll 等异步调用，并保持与 Legado `eval` 相同作用域（run / host 等泄漏到外层）。
+ * 将 `eval(String(source.bookSourceComment))` /
+ * `eval(String(source.getSource().bookSourceComment))` 展开为注释正文，
+ * 使 prepare 可改写其中的 java.ajaxAll 等异步调用，并保持与 Legado `eval` 相同作用域。
  */
 export function inlineBookSourceCommentEvals(
   script: string,
   sourceComment: string | null | undefined,
 ): string {
-  if (sourceComment == null || sourceComment === "") return script;
-  if (!/\beval\s*\(\s*(?:String\s*\(\s*)?source\.bookSourceComment/.test(script)) {
-    return script;
+  if (sourceComment == null || sourceComment === "") {
+    return stripLegadoJsFormatChars(script);
   }
+  const cleaned = stripLegadoJsFormatChars(script);
+  // source.bookSourceComment 或 source.getSource().bookSourceComment（部分书源等）
+  const commentRef =
+    String.raw`source(?:\s*\.\s*getSource\s*\(\s*\))?\s*\.\s*bookSourceComment`;
+  const hasCommentEval = new RegExp(
+    String.raw`\beval\s*\(\s*(?:String\s*\(\s*)?${commentRef}`,
+  ).test(cleaned);
+  if (!hasCommentEval) return cleaned;
   // 注释自身再 eval 自身时避免死循环
-  if (/\beval\s*\(\s*(?:String\s*\(\s*)?source\.bookSourceComment/.test(sourceComment)) {
-    return script;
+  if (
+    new RegExp(
+      String.raw`\beval\s*\(\s*(?:String\s*\(\s*)?${commentRef}`,
+    ).test(sourceComment)
+  ) {
+    return cleaned;
   }
-  return script
+  return cleaned
     .replace(
-      /\beval\s*\(\s*String\s*\(\s*source\.bookSourceComment\s*\)\s*\)\s*;?/g,
+      new RegExp(
+        String.raw`\beval\s*\(\s*String\s*\(\s*${commentRef}\s*\)\s*\)\s*;?`,
+        "g",
+      ),
       // 必须用函数替换：字符串替换会把注释里的 $$ 吃成 $（MDN: $$ → $）
       () => `${sourceComment}\n`,
     )
     .replace(
-      /\beval\s*\(\s*source\.bookSourceComment\s*\)\s*;?/g,
+      new RegExp(String.raw`\beval\s*\(\s*${commentRef}\s*\)\s*;?`, "g"),
       () => `${sourceComment}\n`,
     );
 }
@@ -1086,6 +1752,136 @@ export function awaitAsyncFunctionCalls(
   return s.replace(/\bawait\s+await\s+/g, "await ");
 }
 
+/** 沙箱注入的串行 forEach helper 名（见 sharedJsScope / rhinoRuntime） */
+export const LEGADO_FOREACH_SERIAL_NAME = "__legadoForEachSerial";
+
+/**
+ * `novels.forEach(async v => { await java.ajax… })`：Rhino 中同步阻塞；
+ * Node 原生 forEach 不等回调，函数会在列表处理完成前返回（详情字段缺失）。
+ * 改写为 `await __legadoForEachSerial(novels, async v => …)` 串行结算。
+ */
+function rewriteAsyncForEachSerial(script: string): string {
+  return script.replace(
+    /\b([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*forEach\s*\(\s*async\b/g,
+    (_m, expr: string) => `await ${LEGADO_FOREACH_SERIAL_NAME}(${expr}, async`,
+  );
+}
+
+/** 顶层逗号切分实参（跳过字符串/括号嵌套） */
+function splitTopLevelArgs(argsInner: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inStr: "'" | '"' | "`" | null = null;
+  let escaped = false;
+  let start = 0;
+  for (let i = 0; i < argsInner.length; i++) {
+    const c = argsInner[i]!;
+    if (inStr) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") {
+      inStr = c;
+      continue;
+    }
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(argsInner.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(argsInner.slice(start));
+  return out;
+}
+
+/** 调用点第 i 个实参是否为含 await 的（或 async）函数字面量 */
+function findAsyncCallbackArgPositions(
+  script: string,
+  name: string,
+  paramCount: number,
+): Set<number> {
+  const out = new Set<number>();
+  const escaped = name.replace(/\$/g, "\\$");
+  const callRe = new RegExp(`(?<!function\\s)\\b${escaped}\\s*\\(`, "g");
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(script))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(script, open);
+    if (close < 0) continue;
+    const args = splitTopLevelArgs(script.slice(open + 1, close));
+    for (let i = 0; i < Math.min(args.length, paramCount); i++) {
+      const a = args[i]!.trim();
+      const isFnLiteral =
+        /^(?:async\b|function\b|\((?:[^()]|\([^()]*\))*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(
+          a,
+        );
+      if (!isFnLiteral) continue;
+      if (/^async\b/.test(a) || /\bawait\b/.test(a)) out.add(i);
+    }
+  }
+  return out;
+}
+
+/**
+ * 回调形参被调用时补 await（单次改写一个函数体）。
+ * jsLib 常见 `cacheGetAndSet(key, supplyFunc)`：调用点传入含 `await java.ajax`
+ * 的回调后 supplyFunc() 返回 Promise —— 不 await 会把 Promise 当结果写缓存
+ * （JSON.stringify(Promise) === "{}"，二次读取拿到坏缓存）。
+ */
+function awaitAsyncCallbackParamInvocationsOnce(script: string): string | null {
+  const defRe = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = defRe.exec(script))) {
+    const params = m[2]!
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => /^[A-Za-z_$][\w$]*$/.test(p));
+    if (!params.length) continue;
+    const bodyOpen = m.index + m[0].length - 1;
+    const bodyClose = findMatchingBrace(script, bodyOpen);
+    if (bodyClose < 0) continue;
+    const asyncIdx = findAsyncCallbackArgPositions(script, m[1]!, params.length);
+    if (!asyncIdx.size) continue;
+
+    const body = script.slice(bodyOpen + 1, bodyClose);
+    let newBody = body;
+    for (const idx of asyncIdx) {
+      const p = params[idx];
+      if (!p) continue;
+      newBody = newBody.replace(
+        new RegExp(
+          `(?<![\\w$.])(?<!await\\s)(?<!function\\s)(?<!new\\s)${p.replace(/\$/g, "\\$")}\\s*\\(`,
+          "g",
+        ),
+        `await ${p}(`,
+      );
+    }
+    if (newBody !== body) {
+      return script.slice(0, bodyOpen + 1) + newBody + script.slice(bodyClose);
+    }
+  }
+  return null;
+}
+
+function awaitAsyncCallbackParamInvocations(script: string): string {
+  let s = script;
+  for (let i = 0; i < 16; i++) {
+    const next = awaitAsyncCallbackParamInvocationsOnce(s);
+    if (next == null) break;
+    s = next;
+  }
+  return s;
+}
+
 /** 交替提升 async 与补 await，直到嵌套调用链稳定 */
 export function promoteLegadoAsyncCallChain(
   script: string,
@@ -1093,10 +1889,12 @@ export function promoteLegadoAsyncCallChain(
 ): string {
   let s = script;
   for (let i = 0; i < 8; i++) {
-    const next = awaitAsyncFunctionCalls(
+    let next = awaitAsyncFunctionCalls(
       promoteFunctionsToAsyncForAwait(s),
       extraAsyncNames,
     );
+    next = rewriteAsyncForEachSerial(next);
+    next = awaitAsyncCallbackParamInvocations(next);
     if (next === s) break;
     s = next;
   }
@@ -1287,19 +2085,50 @@ export function prepareJsLibAsyncBody(script: string): {
   };
 }
 
+const loginCheckAsyncNamesCache = new Map<string, string[]>();
+
+/**
+ * loginCheckJs 中转 async 的函数名（如 `u.login = function(){ startBrowserAwait… }`）。
+ * 这类方法经 objStringify → java.put → 规则脚本 eval 还原后仍是 async 函数，
+ * 规则脚本中 `util.login()` 等调用点须按名注入 await，否则拿到悬空 Promise
+ * （登录窗取消时变成 unhandledRejection，列表也会在登录完成前就返回）。
+ */
+export function collectLoginCheckJsAsyncNames(
+  loginCheckJs: string | null | undefined,
+  extraAsyncNames: readonly string[] = [],
+): string[] {
+  const raw = loginCheckJs?.trim();
+  if (!raw) return [];
+  const key = `${raw.length}\0${extraAsyncNames.join(",")}\0${raw.slice(0, 200)}`;
+  const cached = loginCheckAsyncNamesCache.get(key);
+  if (cached) return cached;
+  let names: string[] = [];
+  try {
+    names = collectAsyncFunctionNames(
+      injectLegadoAsyncAwaits(fixRhinoBareArrayArrowParams(raw), extraAsyncNames),
+    );
+  } catch {
+    /* 收集失败时按无 async 名处理 */
+  }
+  loginCheckAsyncNamesCache.set(key, names);
+  return names;
+}
+
 export function prepareLegadoAsyncJs(
   script: string,
   extraAsyncNames: readonly string[] = [],
 ): string {
   let s = prepareLegadoJs(script);
   s = injectLegadoAsyncAwaits(s, extraAsyncNames);
-  return `(async () => { ${s} })()`;
+  return `(async () => {\n${s}\n})()`;
 }
 
 /**
  * `await fn(...).member` 实际是 `await (fn(...).member)`（. 优先于 await）。
  * 异步 fn 返回 Promise 时须写成 `(await fn(...)).member`。
- * 同样处理 `await this.fn(...).member`。
+ * 同样处理 `await this.fn(...).member`，以及紧跟的再调用 / 下标：
+ * `await handlerFactory()()` / `await fn(...)[0]` 须包成 `(await fn(...))()`，
+ * 否则是对 Promise 本身调用（"handlerFactory(...) is not a function"）。
  */
 function wrapAwaitCallMemberAccess(script: string): string {
   let s = script;
@@ -1321,7 +2150,12 @@ function wrapAwaitCallMemberAccess(script: string): string {
       if (closeParen < 0) continue;
 
       const after = s.slice(closeParen + 1);
-      if (!after.startsWith(".") || !/^[A-Za-z_$]/.test(after.slice(1))) {
+      const isMemberAccess =
+        after.startsWith(".") && /^[A-Za-z_$]/.test(after.slice(1));
+      // 仅认紧贴的 `(`/`[`（无空白），避免误伤下一行以 `(` 开头的独立语句
+      const isImmediateCallOrIndex =
+        after.startsWith("(") || after.startsWith("[");
+      if (!isMemberAccess && !isImmediateCallOrIndex) {
         continue;
       }
 

@@ -6,6 +6,7 @@ import {
   removeCacheValue,
 } from "../store/bookSourceStore";
 import { createJsExtensionHost } from "./jsExtensions";
+import { parseLegadoLenientJson } from "./legadoLooseJson";
 import { evalJsAsync } from "./rhinoRuntime";
 
 const kindsMemoryCache = new Map<string, ExploreKind[]>();
@@ -27,7 +28,7 @@ function isValidExploreRuleCache(text: string): boolean {
   if (!t || t === "undefined" || t === "null" || t === "[]") return false;
   if (isJsonArray(t)) {
     try {
-      const parsed = JSON.parse(t) as unknown;
+      const parsed = parseLegadoLenientJson(t) as unknown;
       return Array.isArray(parsed) && parsed.length > 0;
     } catch {
       return false;
@@ -45,7 +46,8 @@ function isBrokenExploreKinds(kinds: ExploreKind[]): boolean {
 }
 
 function parseExploreKindsJson(ruleStr: string): ExploreKind[] {
-  const parsed = JSON.parse(ruleStr) as unknown;
+  // 对齐 Legado GSON：允许多行 @js: 写在 url 字符串里（裸换行等控制字符）
+  const parsed = parseLegadoLenientJson(ruleStr) as unknown;
   if (!Array.isArray(parsed)) return [];
   const kinds: ExploreKind[] = [];
   for (const item of parsed) {
@@ -54,7 +56,7 @@ function parseExploreKindsJson(ruleStr: string): ExploreKind[] {
       const t = item.trim();
       if (!t) continue;
       try {
-        const obj = JSON.parse(t) as ExploreKind;
+        const obj = parseLegadoLenientJson(t) as ExploreKind;
         if (obj?.title?.trim()) kinds.push(obj);
       } catch {
         kinds.push({ title: t });

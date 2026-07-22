@@ -351,15 +351,21 @@ export function setSourceVariable(
   putCacheValue(sourceUrl, SOURCE_VARIABLE_CACHE_KEY, variable);
 }
 
-/** Legado Book.variable JSON 中的 custom 字段（按 bookUrl 缓存） */
+/** Legado Book.variable JSON 中的 custom 字段，或整段自由文本（按 bookUrl 缓存） */
 const BOOK_VARIABLE_CACHE_KEY = "variable";
 
 export function getBookCustomVariable(bookUrl: string): string {
   const raw = getCacheValue(bookUrl, BOOK_VARIABLE_CACHE_KEY);
   if (!raw) return "";
+  // 旧版仅存 { custom }；部分书源等书源把整段正文累加在 variable 字符串里
+  if (!raw.trim().startsWith("{")) return raw;
   try {
     const obj = JSON.parse(raw) as Record<string, string>;
-    return obj.custom ?? "";
+    if (typeof obj.custom === "string") return obj.custom;
+    // 误写入的 { url: bookUrl } 等导航残留，不当正文
+    const keys = Object.keys(obj).filter((k) => k !== "get");
+    if (keys.length === 1 && keys[0] === "url") return "";
+    return raw;
   } catch {
     return raw;
   }
@@ -373,7 +379,7 @@ export function setBookCustomVariable(
     removeCacheValue(bookUrl, BOOK_VARIABLE_CACHE_KEY);
     return;
   }
-  putCacheValue(bookUrl, BOOK_VARIABLE_CACHE_KEY, JSON.stringify({ custom }));
+  putCacheValue(bookUrl, BOOK_VARIABLE_CACHE_KEY, custom);
 }
 
 export function getCookieJar(domain: string): Record<string, string> {

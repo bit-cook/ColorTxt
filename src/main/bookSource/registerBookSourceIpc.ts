@@ -40,6 +40,7 @@ import {
 } from "./checkSourceService";
 import { openBrowserLogin } from "./engine/jsExtensions";
 import {
+  getLoginUiRows,
   runLoginUiButton,
   runSourceLogin,
 } from "./engine/loginCheck";
@@ -254,6 +255,23 @@ export function registerBookSourceIpcHandlers(): void {
       return { ok: true };
     },
   );
+
+  ipcMain.handle(BOOK_SOURCE_IPC.getLoginUi, async (_e, sourceUrl: unknown) => {
+    if (typeof sourceUrl !== "string") return { rows: [] };
+    const source = getBookSource(sourceUrl);
+    if (!source) return { rows: [], message: "书源不存在" };
+    const logs: string[] = [];
+    try {
+      const rows = await getLoginUiRows(source, {}, logs);
+      return { rows, logs };
+    } catch (e) {
+      return {
+        rows: [],
+        message: e instanceof Error ? e.message : String(e),
+        logs,
+      };
+    }
+  });
 
   ipcMain.handle(
     BOOK_SOURCE_IPC.browserLogin,
@@ -608,6 +626,7 @@ export function registerBookSourceIpcHandlers(): void {
         title: p.chapterTitle,
         url: p.chapterUrl,
         index: p.chapterIndex,
+        isVolume: Boolean(p.isVolume),
       };
       const cacheDir =
         typeof p.cacheDir === "string" && p.cacheDir.trim()
@@ -639,7 +658,13 @@ export function registerBookSourceIpcHandlers(): void {
           url: p.chapterUrl,
         });
       }
-      return { message: summarizeBookSourceError(e), logs };
+      const detail = summarizeBookSourceError(e);
+      return {
+        message: detail.startsWith("获取正文失败")
+          ? detail
+          : `获取正文失败\n\n${detail}`,
+        logs,
+      };
     }
   });
 

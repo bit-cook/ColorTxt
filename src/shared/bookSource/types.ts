@@ -185,6 +185,8 @@ export type BookChapter = {
   isVolume: boolean;
   isVip: boolean;
   isPay?: boolean;
+  /** 目录副信息（对齐 Legado BookChapter.tag / ruleToc.updateTime） */
+  tag?: string;
 };
 
 export type BookSourceGetBookInfoPayload = {
@@ -235,6 +237,8 @@ export type BookSourceGetChapterContentPayload = {
   chapterUrl: string;
   chapterTitle: string;
   chapterIndex: number;
+  /** 分卷标题章（对齐 Legado BookChapter.isVolume） */
+  isVolume?: boolean;
   nextChapterUrl?: string;
   /**
    * 全书章节 URL 列表（内容章，阅读序）。

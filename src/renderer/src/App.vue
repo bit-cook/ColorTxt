@@ -1857,7 +1857,7 @@ const showReaderChapterNav = computed(
   () =>
     chapterNavToolbarEnabled.value &&
     Boolean(currentFile.value) &&
-    chapters.value.length > 0,
+    chapters.value.length > 1,
 );
 
 const readerChapterNavUiVisible = computed(
@@ -1913,7 +1913,7 @@ function applyChaptersFromReaderPlainText() {
 
 async function onToggleReaderEdit() {
   if (readerEditMode.value && aiSmartFormatReviewSession.value) {
-    appToast("排版预览进行中，请先点击「应用」或「放弃」。");
+    appToast("排版预览进行中，请先点击「应用」或「放弃」。", { kind: "info" });
     return;
   }
   if (readerEditMode.value) {
@@ -1949,7 +1949,7 @@ async function onToggleReaderEdit() {
     // 成功时保持 suppress，待流式加载结束 syncChapters 后解除
   } else {
     if (!canEnterReaderEditMode.value) {
-      appToast("请等待当前文件加载完成后再进入编辑模式。");
+      appToast("请等待当前文件加载完成后再进入编辑模式。", { kind: "info" });
       return;
     }
     pendingReaderEditRestoreAnchor.value =

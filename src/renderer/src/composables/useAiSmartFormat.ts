@@ -191,7 +191,7 @@ export function useAiSmartFormat(deps: {
       unlockSmartFormatRunning();
       appToast(
         stats?.stopped ? "已停止排版（无变更）" : "排版完成（无变更）",
-        stats?.stopped ? { kind: "warning" } : undefined,
+        stats?.stopped ? { kind: "warning" } : { kind: "info" },
       );
       return;
     }
@@ -362,7 +362,7 @@ export function useAiSmartFormat(deps: {
   async function runSmartFormat(scope: AiSmartFormatScope): Promise<void> {
     if (running.value || reviewOpen.value) return;
     if (!canUseSmartFormat()) {
-      appToast("请先在设置 → 编辑中启用 AI 智能排版选项");
+      appToast("请先在设置 → 编辑中启用 AI 智能排版选项", { kind: "info" });
       return;
     }
     const settings = { ...deps.aiSmartFormat.value };
@@ -388,7 +388,7 @@ export function useAiSmartFormat(deps: {
     const fullText = reader.getAllText?.() ?? "";
     const lineCount = reader.getModelLineCount?.() ?? 0;
     if (!fullText.trim()) {
-      appToast("当前没有可排版的正文");
+      appToast("当前没有可排版的正文", { kind: "info" });
       return;
     }
     let plans: SmartFormatSegmentPlan[] = [];
@@ -402,7 +402,7 @@ export function useAiSmartFormat(deps: {
     } else {
       const range = reader.getSelectionRange?.();
       if (!range || range.isEmpty()) {
-        appToast("请先选中要排版的文本");
+        appToast("请先选中要排版的文本", { kind: "info" });
         return;
       }
       plans = planSelectionSegments(
@@ -413,7 +413,7 @@ export function useAiSmartFormat(deps: {
       );
     }
     if (plans.length === 0) {
-      appToast("无法切分排版范围");
+      appToast("无法切分排版范围", { kind: "info" });
       return;
     }
     const rangeStart = plans[0]!.startLine;
@@ -547,7 +547,7 @@ export function useAiSmartFormat(deps: {
   }
   function discardSmartFormatReview() {
     closeReview();
-    appToast("已放弃排版结果");
+    appToast("已放弃排版结果", { kind: "info" });
   }
   return {
     running,

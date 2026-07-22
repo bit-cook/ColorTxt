@@ -1,4 +1,4 @@
-import { app, BrowserView, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserView, BrowserWindow, clipboard, ipcMain, Menu } from "electron";
 import type { WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -31,6 +31,18 @@ const FOOTER_PADDING = 10;
 /** 内边距 10px × 2 + 按钮行高约 32px */
 const FOOTER_HEIGHT = FOOTER_PADDING * 2 + 32;
 const VERIFICATION_ACTION_CHANNEL = "bookSource:verificationAction";
+/** 登录/验证底栏「更多」：主进程弹出原生菜单（避免 HTML 菜单被内容 BrowserView 盖住） */
+const VERIFICATION_TOOL_CHANNEL = "bookSource:verificationTool";
+
+type VerificationToolbarAction = (confirmed: boolean) => void;
+/** 底栏「更多」点击 → 主进程 Menu.popup */
+type VerificationToolbarTool = (tool: "openMore") => void;
+
+const toolbarActionHandlers = new Map<number, VerificationToolbarAction>();
+const toolbarToolHandlers = new Map<number, VerificationToolbarTool>();
+
+/** 对齐主窗口 / 找书窗口 IconButton「更多」：纵向三点 */
+const MORE_ICON_SVG = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M512 408.43693868c-56.95968355 0-103.56306132 46.60337778-103.56306132 103.56306132s46.60337778 103.56306132 103.56306132 103.56306132 103.56306132-46.60337778 103.56306132-103.56306132-46.60337778-103.56306132-103.56306132-103.56306132z m0-310.68918519c-56.95968355 0-103.56306132 46.60337778-103.56306132 103.56306133s46.60337778 103.56306132 103.56306132 103.56306132 103.56306132-46.60337778 103.56306132-103.56306132-46.60337778-103.56306132-103.56306132-103.56306133z m0 621.37837037c-56.95968355 0-103.56306132 46.60337778-103.56306132 103.56306132s46.60337778 103.56306132 103.56306132 103.56306133 103.56306132-46.60337778 103.56306132-103.56306133-46.60337778-103.56306132-103.56306132-103.56306132z"/></svg>`;
 
 /** 书源登录/验证窗口图标 */
 function resolveLoginVerificationIconPath(): string {
@@ -68,7 +80,6 @@ type ActiveVerification =
 const pending = new Map<string, Pending>();
 const captchaPending = new Map<string, Pending>();
 const activeWindows = new Map<string, ActiveVerification>();
-const toolbarActionHandlers = new Map<number, (confirmed: boolean) => void>();
 const captchaFinishHandlers = new Map<
   string,
   (payload: { ok: boolean; code: string }) => void
@@ -103,6 +114,10 @@ function ensureVerificationIpc(): void {
   ipcMain.on(VERIFICATION_ACTION_CHANNEL, (event, confirmed: unknown) => {
     toolbarActionHandlers.get(event.sender.id)?.(confirmed === true);
   });
+  ipcMain.on(VERIFICATION_TOOL_CHANNEL, (event, tool: unknown) => {
+    if (tool !== "openMore") return;
+    toolbarToolHandlers.get(event.sender.id)?.(tool);
+  });
   ipcMain.handle(BOOK_SOURCE_IPC.captchaReply, (_event, payload: unknown) => {
     const p =
       payload && typeof payload === "object"
@@ -126,6 +141,7 @@ function verificationToolbarHtml(): string {
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;" />
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -140,11 +156,16 @@ function verificationToolbarHtml(): string {
   .bar {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 8px;
     height: 100%;
     padding: ${FOOTER_PADDING}px;
     border-top: 1px solid var(--border, rgba(0,0,0,.12));
+  }
+  .bar-left, .bar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   button {
     padding: 6px 14px;
@@ -161,6 +182,23 @@ function verificationToolbarHtml(): string {
     color: #fff;
   }
   button.primary:hover { background: #79bbff; border-color: #79bbff; }
+  /* 对齐渲染进程 IconButton：透明底、无描边、30×30、图标 16 */
+  button.iconBtn {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--icon-fg, #2c2c2c);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.16s ease;
+  }
+  button.iconBtn:hover { background: var(--icon-hover, rgba(0,0,0,.06)); }
+  button.iconBtn:focus { outline: none; }
+  button.iconBtn svg { width: 16px; height: 16px; display: block; }
   @media (prefers-color-scheme: dark) {
     html, body {
       --bg: #2b2b2b;
@@ -168,6 +206,8 @@ function verificationToolbarHtml(): string {
       --border: rgba(255,255,255,.12);
       --btn-bg: #3a3a3a;
       --btn-hover: #444;
+      --icon-fg: #ddd;
+      --icon-hover: rgba(255,255,255,.1);
     }
     button.primary { background: #409eff; border-color: #409eff; }
     button.primary:hover { background: #3375b9; border-color: #3375b9; }
@@ -176,15 +216,26 @@ function verificationToolbarHtml(): string {
 </head>
 <body>
   <div class="bar">
-    <button type="button" id="cancel">取消</button>
-    <button type="button" class="primary" id="ok">完成</button>
+    <div class="bar-left">
+      <button type="button" class="iconBtn" id="more" title="更多" aria-label="更多" aria-haspopup="menu">
+        ${MORE_ICON_SVG}
+      </button>
+    </div>
+    <div class="bar-right">
+      <button type="button" id="cancel">取消</button>
+      <button type="button" class="primary" id="ok">完成</button>
+    </div>
   </div>
   <script>
     const { ipcRenderer } = require("electron");
-    const channel = ${JSON.stringify(VERIFICATION_ACTION_CHANNEL)};
-    function send(ok) { ipcRenderer.send(channel, ok); }
+    const actionChannel = ${JSON.stringify(VERIFICATION_ACTION_CHANNEL)};
+    const toolChannel = ${JSON.stringify(VERIFICATION_TOOL_CHANNEL)};
+    function send(ok) { ipcRenderer.send(actionChannel, ok); }
     document.getElementById("ok").onclick = () => send(true);
     document.getElementById("cancel").onclick = () => send(false);
+    document.getElementById("more").onclick = () => {
+      ipcRenderer.send(toolChannel, "openMore");
+    };
   </script>
 </body>
 </html>`;
@@ -203,6 +254,7 @@ function closeVerificationWindow(sourceKey: string): void {
   if (existing.kind === "browser") {
     for (const id of existing.toolbarIds) {
       toolbarActionHandlers.delete(id);
+      toolbarToolHandlers.delete(id);
     }
     if (!existing.win.isDestroyed()) {
       existing.win.removeAllListeners("close");
@@ -240,6 +292,8 @@ async function persistSessionCookies(
       `${c.name}=${c.value}; Domain=${c.domain}; Path=${c.path ?? "/"}`,
     );
   }
+  // Chromium Cookie 异步落盘（~30s 周期）；不 flush 的话 dev 重启/崩溃会丢刚登录的会话
+  await webContents.session.cookies.flushStore().catch(() => {});
 }
 
 async function readVerificationBody(
@@ -445,10 +499,15 @@ async function openVerificationWindowAsync(
   );
   content.webContents.setUserAgent(userAgent);
 
+  const clearToolbarHandlers = () => {
+    toolbarActionHandlers.delete(footer.webContents.id);
+    toolbarToolHandlers.delete(footer.webContents.id);
+  };
+
   const finish = async (confirmed: boolean) => {
     if (finished) return;
     finished = true;
-    toolbarActionHandlers.delete(footer.webContents.id);
+    clearToolbarHandlers();
     activeWindows.delete(sourceKey);
     if (confirmed && !content.webContents.isDestroyed()) {
       await finishVerification(
@@ -478,6 +537,23 @@ async function openVerificationWindowAsync(
   toolbarActionHandlers.set(footer.webContents.id, (confirmed) => {
     safeFinish(confirmed);
   });
+  toolbarToolHandlers.set(footer.webContents.id, (tool) => {
+    if (tool !== "openMore" || win.isDestroyed()) return;
+    const copyUrl = () => {
+      if (content.webContents.isDestroyed()) return;
+      const current = content.webContents.getURL();
+      clipboard.writeText(current || pageUrl);
+      host?.log(`[验证] 已复制 URL: ${current || pageUrl}`);
+    };
+    const openDevTools = () => {
+      if (content.webContents.isDestroyed()) return;
+      content.webContents.openDevTools({ mode: "detach" });
+    };
+    Menu.buildFromTemplate([
+      { label: "复制 URL", click: copyUrl },
+      { label: "开发者工具", click: openDevTools },
+    ]).popup({ window: win });
+  });
 
   activeWindows.set(sourceKey, {
     kind: "browser",
@@ -485,10 +561,20 @@ async function openVerificationWindowAsync(
     toolbarIds: [footer.webContents.id],
   });
 
+  // 对齐 Legado SourceVerification / BackstageWebView：证书异常仍 proceed，
+  // 否则主机名与证书 SAN 不一致时登录页整页空白（ERR_TLS_CERT_ALTNAME_INVALID）
+  content.webContents.on(
+    "certificate-error",
+    (event, _url, _error, _cert, callback) => {
+      event.preventDefault();
+      callback(true);
+    },
+  );
+
   const syncCookies = () => {
-    const pageUrl = content.webContents.getURL();
-    if (pageUrl && !pageUrl.startsWith("about:")) {
-      void persistSessionCookies(content.webContents, pageUrl);
+    const currentUrl = content.webContents.getURL();
+    if (currentUrl && !currentUrl.startsWith("about:")) {
+      void persistSessionCookies(content.webContents, currentUrl);
     }
   };
   content.webContents.on("did-navigate", syncCookies);
@@ -505,7 +591,7 @@ async function openVerificationWindowAsync(
 
   win.on("resize", () => layoutVerificationViews(win, footer, content));
   win.on("close", () => {
-    toolbarActionHandlers.delete(footer.webContents.id);
+    clearToolbarHandlers();
     if (!finished) safeFinish(false);
     else activeWindows.delete(sourceKey);
   });

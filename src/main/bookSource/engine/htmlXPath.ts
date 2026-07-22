@@ -14,12 +14,52 @@ export function escapeBareAmpersands(html: string): string {
   return html.replace(/&(?!([a-zA-Z][a-zA-Z0-9]*|#\d+|#x[\da-fA-F]+);)/g, "&amp;");
 }
 
+/**
+ * xmldom 遇到未声明前缀的属性（如 SVG `xlink:href` 无 `xmlns:xlink`）会抛
+ * `NamespaceError: prefix is non-null and namespace is null`，整页 XPath 失败
+ *（部分书源目录 `//ol[@id=chapterList]/*`）。
+ */
+export function ensureXmldomNamespaceDecls(html: string): string {
+  let s = html;
+  if (/\bxlink:/i.test(s) && !/\bxmlns:xlink\s*=/i.test(s)) {
+    if (/<html\b/i.test(s)) {
+      s = s.replace(
+        /<html\b([^>]*)>/i,
+        `<html$1 xmlns:xlink="http://www.w3.org/1999/xlink">`,
+      );
+    } else {
+      s = `<?xml version="1.0" encoding="UTF-8"?><html xmlns:xlink="http://www.w3.org/1999/xlink">${s}</html>`;
+    }
+  }
+  return s;
+}
+
+function prepareHtmlForXmldom(html: string): string {
+  return escapeBareAmpersands(ensureXmldomNamespaceDecls(html));
+}
+
 export function parseHtmlDocument(html: string): Document {
-  const safe = escapeBareAmpersands(html);
-  return new DOMParser({ onError: silentOnError }).parseFromString(
-    safe,
-    "text/html",
-  );
+  const parser = new DOMParser({ onError: silentOnError });
+  try {
+    return parser.parseFromString(prepareHtmlForXmldom(html), "text/html");
+  } catch {
+    // 结构破损页面（如 </br>、标签错配）xmldom 会直接抛 fatalError，
+    // 导致 nextContentUrl 等 XPath 静默取空；先经 cheerio/parse5 纠错重排再解析
+    const fixed = cheerio.load(html).html() ?? html;
+    try {
+      return parser.parseFromString(prepareHtmlForXmldom(fixed), "text/html");
+    } catch {
+      // 仍失败时再剥未声明前缀属性（xlink:href → xlink-href）
+      const stripped = prepareHtmlForXmldom(fixed).replace(
+        /\s([a-zA-Z_][\w.-]*):([a-zA-Z_][\w.-]*)(\s*=\s*(?:"[^"]*"|'[^']*'))/g,
+        (full, prefix: string, local: string, eq: string) => {
+          if (String(prefix).toLowerCase() === "xmlns") return full;
+          return ` ${prefix}-${local}${eq}`;
+        },
+      );
+      return parser.parseFromString(stripped, "text/html");
+    }
+  }
 }
 
 /**
@@ -190,6 +230,23 @@ export function xpathViaCheerio(
     return list ? texts : (texts[0] ?? "");
   }
 
+  // //ol[@id="chapterList"]/* 等：用 cheerio 取子节点（避免 xmldom 命名空间整页失败）
+  const idChildren = trimmed.match(
+    /^\/\/(?:\*|[A-Za-z_][\w.-]*)\[@id=['"]([^'"]+)['"]\]\/\*$/,
+  );
+  if (idChildren) {
+    const $ = cheerio.load(html);
+    const kids = $(`[id="${idChildren[1]}"]`).children();
+    if (list) {
+      return kids.toArray().map((n) => $.html(n) ?? "").filter(Boolean);
+    }
+    return kids
+      .map((_, n) => $(n).text().trim())
+      .get()
+      .filter(Boolean)
+      .join("\n");
+  }
+
   return undefined;
 }
 
@@ -229,6 +286,63 @@ function serializeXPathNode(node: Node): string {
   return textOfXPathNode(node);
 }
 
+/**
+ * JsoupXpath（Legado AnalyzeByXPath）扩展函数，标准 XPath 无此语法：
+ * - `html()` / `html`：内部 HTML
+ * - `outerHtml()`：含自身标签的 HTML
+ * - `allText()`：节点下全部文本
+ * 例：`//div[@class='content']/html()`
+ */
+export function splitJsoupXPathExtract(rule: string): {
+  baseRule: string;
+  extract: "html" | "outerHtml" | "allText" | null;
+} {
+  const trimmed = rule.trim();
+  const m = trimmed.match(/^(.*)\/(html|outerHtml|allText)\(\)?$/i);
+  if (!m?.[1]?.trim() || !m[2]) {
+    return { baseRule: trimmed, extract: null };
+  }
+  const name = m[2].toLowerCase();
+  const extract =
+    name === "html"
+      ? "html"
+      : name === "outerhtml"
+        ? "outerHtml"
+        : name === "alltext"
+          ? "allText"
+          : null;
+  if (!extract) return { baseRule: trimmed, extract: null };
+  return { baseRule: m[1].trim(), extract };
+}
+
+function innerHtmlOfElementNode(node: Node): string {
+  const nt = (node as { nodeType?: number }).nodeType;
+  if (nt !== 1) return textOfXPathNode(node);
+  const children = (node as { childNodes?: ArrayLike<Node> }).childNodes;
+  if (!children?.length) return "";
+  const ser = new XMLSerializer();
+  let out = "";
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    if (!child) continue;
+    try {
+      out += ser.serializeToString(child as never);
+    } catch {
+      out += textOfXPathNode(child);
+    }
+  }
+  return out.replace(/\sxmlns(?::\w+)?="[^"]*"/g, "");
+}
+
+function applyJsoupXPathExtract(
+  node: Node,
+  extract: "html" | "outerHtml" | "allText",
+): string {
+  if (extract === "html") return innerHtmlOfElementNode(node);
+  if (extract === "outerHtml") return serializeXPathNode(node);
+  return textOfXPathNode(node);
+}
+
 export function selectXPath(
   rule: string,
   html: string,
@@ -237,8 +351,9 @@ export function selectXPath(
   const viaCheerio = xpathViaCheerio(rule, html, list);
   if (viaCheerio !== undefined) return viaCheerio;
 
+  const { baseRule, extract } = splitJsoupXPathExtract(rule);
   const doc = parseHtmlDocument(html);
-  const expr = xpathIgnoreXhtmlDefaultNs(rule.trim());
+  const expr = xpathIgnoreXhtmlDefaultNs(baseRule);
   let raw: unknown;
   try {
     raw = xpath.select(expr, doc as unknown as Node);
@@ -248,11 +363,19 @@ export function selectXPath(
   const nodes = normalizeXPathNodes(raw);
   if (!nodes.length) return list ? [] : "";
 
+  if (extract) {
+    const parts = nodes.map((n) => applyJsoupXPathExtract(n, extract));
+    if (list) return parts;
+    return parts.join("\n");
+  }
+
   if (list) {
     // getElements：元素序列化为 HTML；属性/文本节点仍为字符串
     return nodes.map(serializeXPathNode);
   }
-  return textOfXPathNode(nodes[0]!);
+  // 对齐 Legado AnalyzeByXPath.getString：多节点用 \n 拼接（如 //*[@id=content]/p/text()）
+  if (nodes.length === 1) return textOfXPathNode(nodes[0]!);
+  return nodes.map(textOfXPathNode).join("\n");
 }
 
 function textOfXPathNode(node: Node): string {
