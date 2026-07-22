@@ -1,10 +1,10 @@
 import type { AnyNode, Element as DomElement } from "domhandler";
 import type { Cheerio, CheerioAPI } from "cheerio";
-import { decodeHttpResponseBody } from "../../detectTextEncoding";
 import { getBookSourceJsHost } from "./bookSourceJsContext";
+import { fetchViaChromiumNet } from "./chromiumNetFetch";
 import { normalizeLegadoCssAttrContains } from "./legadoAttrSelector";
 import { loadCheerioHtml } from "./legadoDefaultRule";
-import { syncBookSourceHttpBody } from "./syncBookSourceFetch";
+import { prepareSyncBookSourceHeaders } from "./syncBookSourceFetch";
 
 /**
  * Legado / Rhino `org.jsoup.*` 兼容层（cheerio 实现）。
@@ -625,20 +625,26 @@ function createJsoupConnection(url: string): Record<string, unknown> {
   const self: Record<string, unknown> = {};
   const chain = (): typeof self => self;
 
-  const fetchDocument = (): JsoupElement => {
+  /**
+   * 异步拉页（`fetchViaChromiumNet`）。勿用 spawnSync：搜索 lastChapter 等
+   * 会对每条结果 `.get()`，同步子进程会卡死主进程 UI。
+   * 规则侧由 `injectLegadoAsyncAwaits` 自动补 `await`。
+   */
+  const fetchDocument = async (): Promise<JsoupElement> => {
     if (!state.url) return parseHtml("");
     const host = getBookSourceJsHost();
-    const buf = syncBookSourceHttpBody(
-      {
-        url: state.url,
-        headers: { ...state.headers },
-        method: state.method,
-        body: state.body,
-      },
+    const headers = prepareSyncBookSourceHeaders(
+      state.url,
+      { ...state.headers },
       host?.source,
     );
-    const html = decodeHttpResponseBody(buf, {});
-    return parseHtml(html);
+    const res = await fetchViaChromiumNet({
+      url: state.url,
+      method: state.method,
+      headers,
+      body: state.body,
+    });
+    return parseHtml(res.body);
   };
 
   Object.assign(self, {
@@ -711,8 +717,8 @@ function createJsoupConnection(url: string): Record<string, unknown> {
       state.method = "POST";
       return fetchDocument();
     },
-    execute() {
-      const doc = fetchDocument();
+    async execute() {
+      const doc = await fetchDocument();
       return {
         statusCode: () => 200,
         body: () => doc.outerHtml(),

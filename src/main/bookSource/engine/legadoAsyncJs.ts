@@ -2063,6 +2063,8 @@ export function injectLegadoAsyncAwaits(
     "(await java.ajaxAll($1))[",
   );
 
+  s = injectJsoupConnectAwaits(s);
+
   s = wrapAwaitJavaHttpMemberAccess(s);
   s = s.replace(/\bawait\s+await\s+/g, "await ");
   s = promoteLegadoAsyncCallChain(s, extraAsyncNames);
@@ -2121,6 +2123,64 @@ export function prepareLegadoAsyncJs(
   let s = prepareLegadoJs(script);
   s = injectLegadoAsyncAwaits(s, extraAsyncNames);
   return `(async () => {\n${s}\n})()`;
+}
+
+/**
+ * `org.jsoup.Jsoup.connect(url).….get()` / `.post()` / `.execute()`：
+ * Rhino 同步阻塞；Node 中 `.get()` 已改为 Promise，须自动补 await，
+ * 否则搜索 lastChapter 等会对每条结果 spawnSync，卡死主进程 UI。
+ */
+function injectJsoupConnectAwaits(script: string): string {
+  const connectRe =
+    /(?<![\w.$])(?:Packages\s*\.\s*)?(?:org\s*\.\s*jsoup\s*\.\s*)?Jsoup\s*\.\s*connect\s*\(/gi;
+  let s = script;
+  let searchFrom = 0;
+  while (searchFrom < s.length) {
+    connectRe.lastIndex = searchFrom;
+    const m = connectRe.exec(s);
+    if (!m || m.index == null) break;
+    const exprStart = m.index;
+    const before = s.slice(Math.max(0, exprStart - 8), exprStart);
+    if (/\bawait\s*$/.test(before)) {
+      searchFrom = exprStart + m[0].length;
+      continue;
+    }
+    const openParen = exprStart + m[0].length - 1;
+    const connectClose = findMatchingParen(s, openParen);
+    if (connectClose < 0) {
+      searchFrom = openParen + 1;
+      continue;
+    }
+    let pos = connectClose + 1;
+    let lastMethod: string | null = null;
+    while (true) {
+      const chain = /^\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/.exec(s.slice(pos));
+      if (!chain) break;
+      lastMethod = chain[1] ?? null;
+      const methodOpen = pos + chain[0].length - 1;
+      const methodClose = findMatchingParen(s, methodOpen);
+      if (methodClose < 0) break;
+      pos = methodClose + 1;
+      if (
+        lastMethod === "get" ||
+        lastMethod === "post" ||
+        lastMethod === "execute"
+      ) {
+        break;
+      }
+    }
+    if (
+      lastMethod !== "get" &&
+      lastMethod !== "post" &&
+      lastMethod !== "execute"
+    ) {
+      searchFrom = pos;
+      continue;
+    }
+    s = `${s.slice(0, exprStart)}await ${s.slice(exprStart)}`;
+    searchFrom = pos + "await ".length;
+  }
+  return s;
 }
 
 /**
